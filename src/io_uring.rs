@@ -1,7 +1,9 @@
 use io_uring::{opcode, types, IoUring};
 use io_uring::squeue::PushError;
+use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::AsRawFd;
 use std::{fs, io};
+use libc;
 
 fn io_uring() -> io::Result<()> {
     let mut ring = IoUring::builder()
@@ -9,7 +11,10 @@ fn io_uring() -> io::Result<()> {
 
     let mut buf = vec![0; 1024];
 
-    let fd = fs::File::open("README.md")?;
+    let fd = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECT)
+        .open("README.md")?;
 
     submit_read(
         &mut ring,
@@ -24,6 +29,9 @@ fn io_uring() -> io::Result<()> {
 
     assert_eq!(cqe.user_data(), 0x42);
     assert!(cqe.result() >= 0, "read error: {}", cqe.result());
+
+    let s = String::from_utf8_lossy(&buf[..100]);
+    println!("READ THIS DATA:\n{}", s);
 
     Ok(())
 }
