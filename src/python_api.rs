@@ -1,9 +1,9 @@
+use std::path;
 use pyo3::prelude::*;
 
-/// Formats the sum of two numbers as string.
 #[pyfunction]
-fn sum_as_string(a: usize, b: usize) -> PyResult<String> {
-    Ok((a + b).to_string())
+fn read(filename: path::PathBuf) -> PyResult<String> {
+    Ok(filename.into_os_string().into_string().unwrap())
 }
 
 /// A Python module implemented in Rust. The name of this function must match
@@ -11,6 +11,6 @@ fn sum_as_string(a: usize, b: usize) -> PyResult<String> {
 /// import the module.
 #[pymodule]
 fn _light_speed_io(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(sum_as_string, m)?)?;
+    m.add_function(wrap_pyfunction!(read, m)?)?;
     Ok(())
 }
