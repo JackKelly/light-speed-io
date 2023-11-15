@@ -1,5 +1,15 @@
 /// This is just me sketching out pseudo-code for the design of the API,
 /// and sketching out some of the important internals.
+/// 
+/// Use-cases that this design needs to be tested against:
+/// 1. Load ends of files (e.g. Zarr shard_index)
+/// 2. Cache the lengths of files.
+/// 3. Load huge numbers of files (e.g. non-sharded Zarrs)
+/// 4. Load huge numbers of chunks from a small number of files.
+/// 5. "Scatter" data to multiple arrays 
+///    (e.g. loading uncompressed Zarr / EUMETSAT / GRIB files into final numpy array)
+/// 6. Per chunk: Decompress, process, and copy to final array.
+/// 7. Allow LSIO to merge nearby chunks.
 
 fn main() -> () {
     // Set config options (latency, bandwidth, maybe others)
@@ -16,20 +26,23 @@ fn main() -> () {
     let chunks = vec![
         FileChunks{
             path: "/foo/bar",
-            range: Range::All, // Read all of file
+            range: Range::EntireFile, // Read all of file
         },
         FileChunks{
             path: "/foo/baz", 
             range: Range::MultiRange(
                 vec![
-                    // TODO: Should these be specified using Rust's builtin ranges?
+                    // Should these be specified using Rust's builtin ranges?
+                    // Rust ranges can't express "get the last n elements".
+                    // But maybe I should create a little crate which allows 
+                    // for Ranges from the end, like -10.. (the last 10 elements) or -10..-5.
                     Chunk{  // Read the first 1,000 bytes:
                         offset: Offset::FromStart(0), 
                         len: Len::Bytes(1000),
                     },
                     Chunk{  // Read the last 200 bytes:
                         offset: Offset::FromEnd(200),
-                        len: Len::Bytes(200),
+                        len: Len::ToEnd,
                     },
                     ],
             ),
