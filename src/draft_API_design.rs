@@ -3,17 +3,41 @@
 
 fn main() -> () {
     // Set config options (latency, bandwidth, maybe others)
-    let config = Config::ssd_pcie_gen4_default();
-
+    let config = LocalIoConfig::SSD_PCIe_gen4;
+    
     // Or do this :)
-    let config = Config::auto_calibrate();
+    let config = LocalIoConfig::FromFile("filename");
+    let config = LocalIoConfig::AutoCalibrate;
+    
+    // Init:
+    let reader = IoUringLocal::from_config(&config);
 
     // Define which chunks to load:
-    let chunks = vec![FileChunks{path1, chunks1}, FileChunks{path2, chunks2}];
+    let chunks = vec![
+        FileChunks{
+            path: "/foo/bar",
+            range: Range::All, // Read all of file
+        },
+        FileChunks{
+            path: "/foo/baz", 
+            range: Range::MultiRange(
+                vec![
+                    // TODO: Should these be specified using Rust's builtin ranges?
+                    Chunk{  // Read the first 1,000 bytes:
+                        offset: Offset::FromStart(0), 
+                        len: Len::Bytes(1000),
+                    },
+                    Chunk{  // Read the last 200 bytes:
+                        offset: Offset::FromEnd(200),
+                        len: Len::Bytes(200),
+                    },
+                    ],
+            ),
+        },
+        ];
 
     // Start async loading of data from disk:
     let future = light_speed_io::IoUringLocal::read_chunks(&chunks, &config);
-
 
     // Read the shard_indexes from the end of files
     let file_chunks_to_load = vec![
@@ -40,28 +64,46 @@ fn main() -> () {
 }
 
 // -------------- CONFIG -----------------------
-struct Config {
+// But, how to express that SSD_PCIe_gen4 isn't a valid config for, say, network IO?
+// Maybe don't pass in a config Enum variant,
+// instead have a ssd_pcie_gen4() method on IoUringLocal?
+enum LocalIoConfig {
+    SSD_PCIe_gen4,
+    AutoCalibrate,
+    FromFile(PathBuf),
+}
+
+trait LocalIo {
+    fn from_config(config: &LocalIoConfig) -> Self {
+        match config {
+            SSD_PCIe_gen4 => LocalIoConfig {
+                latency_ms: 0.001,
+                bandwidth_gbps: 8,
+            },
+            AutoCalibrate => {
+                // TODO: Automatically calibrate.
+            },
+            FromFile(filename) => {
+                // TODO: Load filename.
+            }
+        }
+    }
+}
+struct IoUringLocal {
     latency_ms: f64,
     bandwidth_gbps: f64,
 }
 
-impl Config {
-    fn ssd_pcie_gen4_default() -> Self {
-        Config {
-            latency_ms: 0.001,
-            bandwidth_gbps: 8,
-        }
-    }
-}
+impl LocalIo for IoUringLocal {}
 
 struct FileChunks {
     path: &Path,
     chunks: Vector<Chunk>,
 }
 
-enum Chunk {
-    offset(u64),
-    len(u32),
+struct Chunk {
+    offset: u64,
+    len: u64,
 }
 
 trait Reader {
