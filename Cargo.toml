@@ -2,9 +2,28 @@
 name = "light-speed-io"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+homepage = "https://github.com/JackKelly/light-speed-io"
+repository = "https://github.com/JackKelly/light-speed-io"
+readme = "README.md"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# Note that lib.name is automatically created from package.name,
+# with hyphens replaced by underscores.
+
+# "cdylib" is necessary to produce a shared library for Python to import from.
+#
+# Downstream Rust code (including code in `bin/`, `examples/`, and `tests/`) will not be able
+# to `use string_sum;` unless the "rlib" or "lib" crate type is also included, e.g.:
+# crate-type = ["cdylib", "rlib"]. Also see:
+# reddit.com/r/rust/comments/p9ibhf/differences_between_lib_and_rlib_cratetype/
+crate-type = ["cdylib", "lib"]
 
 [dependencies]
 io-uring = "0.6"
 libc = "0.2"  # Just used for libc::O_DIRECT in src/io_uring.rs
+
+[dependencies.pyo3]
+version = "0.20.0"
