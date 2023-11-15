@@ -2,33 +2,18 @@
 /// and sketching out some of the important internals.
 
 fn main() -> () {
-    // Initialise
-    let reader = LightSpeedIO::builder()
-        .base_path("/mnt/storage_ssd")  // So LSIO can infer which backend to use
-        .latency_miliseconds(0.001)  // So LSIO knows when to merge nearby reads
-        .bandwidth_gb_per_sec(10)
-        .build();
+    // Set config options (latency, bandwidth, maybe others)
+    let config = Config::ssd_pcie_gen4_default();
 
-    // Question: Maybe reader doesn't have to be stateful? Maybe we can just do stateless function
-    // calls like read_rel_to_file_ends. But then we wouldn't be able to pre-allocate memory, etc.
-    // But maybe that's not necessary?
-    // Advantages of stateful (like above):
-    // - Nice API to customise, but customisation could still be done with stateless calls:
-    //     read_builder().foo(x).read("filename");
-    //   or: 
-    //     let config = SSDConfig::auto_calibrate();
-    //       or:
-    //     let config = SSDConfig::new().latency_ms(0.001).bw_gbps(10);
-    //     let future = LightSpeedIO::IoUringLocal::read(&filename, &config)
-    // - 
+    // Or do this :)
+    let config = Config::auto_calibrate();
 
-    // Or maybe it'd be better to specify the precise struct for the workload,
-    // and only the Python API will automatically find the right class, given the
-    // base path? This way, Rust can do more compile-time checks.
-    let reader = LightSpeedIO::IoUringSSD::builder()
-        .latency_miliseconds(0.001)  // So LSIO knows when to merge nearby reads
-        .bandwidth_gb_per_sec(10)
-        .build();
+    // Define which chunks to load:
+    let chunks = vec![FileChunks{path1, chunks1}, FileChunks{path2, chunks2}];
+
+    // Start async loading of data from disk:
+    let future = light_speed_io::IoUringLocal::read_chunks(&chunks, &config);
+
 
     // Read the shard_indexes from the end of files
     let file_chunks_to_load = vec![
@@ -44,13 +29,13 @@ fn main() -> () {
     let data: Vec<Vec<u8>> = future.wait();
 
     // Read all of some files (e.g. reading many unsharded Zarr chunks)
-    let future = reader.read_entire_files(vec!["foo/bar", "foo/baz"])
+    let future = reader.read_entire_files(vec!["foo/bar", "foo/baz"]);
     // Under the hood, this needs to first chain {open, statx} in io_uring to get the filesizes, 
     // then have a threadpool allocate appropriate-sized buffers, 
     // and then chain {read, close} in io_uring to get the data.
 
     // Read many chunks from a small number of files
-    let future = reader.read_chunks(vec![FileChunks{path, chunks}, FileChunks{path2, chunks2}]);
+    let future = reader.read_chunks(&chunks);
     // This time, we don't need the filesize ahead of time! So don't bother doing `statx`.
 }
 
