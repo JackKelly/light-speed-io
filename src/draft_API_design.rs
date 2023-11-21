@@ -17,6 +17,7 @@ fn main() -> () {
     
     // Or do this :)
     let config = LocalIoConfig::FromFile("filename");
+    // ...or...
     let config = LocalIoConfig::AutoCalibrate;
     
     // Init:
@@ -37,7 +38,7 @@ fn main() -> () {
                     -500..-100, // Read 400 bytes, until the 100th byte before the end
                     ],
             ),
-            // I had considered also including `destinations` (mutable references to)
+            // I had considered also including `destinations` field, holding Vec of mutable references to
             // the target memory buffers. But - at this point in the code - we 
             // don't know the sizes of the chunks that are relative to the end of the file.
         },
