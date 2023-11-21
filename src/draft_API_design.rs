@@ -55,6 +55,7 @@ fn main() -> () {
         const OVER_ALLOCATION_RATIO: usize = 4;
         let mut decompressed_chunk = Vec::with_capacity(OVER_ALLOCATION_RATIO * chunk.size());
         decompress(&chunk, &mut decompressed_chunk);
+        decompressed_chunk.shrink_to_fit();
 
         // ******** PROCESS ***********
         decompressed_chunk = decompressed_chunk / 2;  // to give a very simple example!
