@@ -13,25 +13,22 @@
 
 fn main() -> () {
     // Set config options (latency, bandwidth, maybe others)
-    let config = LocalIoConfig::SSD_PCIe_gen4;
-    
+    let config = SSD_PCIE_GEN4;
     // Or do this :)
-    let config = LocalIoConfig::FromFile("filename");
-    // ...or...
-    let config = LocalIoConfig::AutoCalibrate;
+    let config = IoConfig::auto_calibrate();
     
     // Init:
-    let reader = IoUringLocal::from_config(&config);
+    let reader = IoUringLocal::new(&config);
 
     // Define which chunks to load:
     let chunks = vec![
         FileChunks{
             path: "/foo/bar",
-            range: FileRange::EntireFile, // Read all of file
+            byte_range: ByteRange::EntireFile, // Read all of file
         },
         FileChunks{
             path: "/foo/baz", 
-            range: FileRange::MultiRange(
+            byte_range: ByteRange::MultiRange(
                 vec![
                     ..1000,     // Read the first 1,000 bytes
                     -500..,     // Read the last    500 bytes
@@ -50,42 +47,44 @@ fn main() -> () {
 
     // Or, read chunks and apply a function:
     let mut final_array = Array();
+    let chunk_idx_to_array_loc = Vec::new();
     let processing_fn = |chunk_idx: u64, chunk: &[u8]| -> &[u8] {
-        // * decompress
-        // * process
-        // * move chunk to final array (the address of the final array would be passed into the closure?)
+        // ******** DECOMRESS ************
+        // If we don't know the size of the uncompressed chunk, then 
+        // deliberately over-allocate, and shrink later...
+        const OVER_ALLOCATION_RATIO: usize = 4;
+        let mut decompressed_chunk = Vec::with_capacity(OVER_ALLOCATION_RATIO * chunk.size());
+        decompress(&chunk, &mut decompressed_chunk);
+
+        // ******** PROCESS ***********
+        decompressed_chunk = decompressed_chunk / 2;  // to give a very simple example!
+
+        // ******** COPY TO FINAL ARRAY **************
+        final_array[chunk_idx_to_array_loc[chunk_idx]] = decompressed_chunk;
     };
     let future = read.read_chunks_and_apply(&chunks, processing_fn);
-
-
+    future.wait();
+    pass_to_python(&final_array);
 }
 
-// But, how to express that SSD_PCIe_gen4 isn't a valid config for, say, network IO?
-// Maybe don't pass in a config Enum variant,
-// instead have a ssd_pcie_gen4() method on IoUringLocal?
-enum LocalIoConfig {
-    SSD_PCIe_gen4,
-    AutoCalibrate,
-    FromFile(PathBuf),
+pub struct IoConfig {
+    pub latency_millisecs: f64,
+    pub bandwidth_gbytes_per_sec: f64,
 }
 
-trait LocalIo {
-    fn from_config(config: &LocalIoConfig) -> Self {
-        match config {
-            SSD_PCIe_gen4 => LocalIoConfig {
-                latency_ms: 0.001,
-                bandwidth_gbps: 8,
-            },
-            AutoCalibrate => {
-                // TODO: Automatically calibrate.
-            },
-            FromFile(filename) => {
-                // TODO: Load config from filename.
-            }
-        }
-    }
+impl IoConfig {
+    fn auto_calibrate() -> Self {}
+    // Use Serde to save / load IoConfig to disk.
+}
+
+const SSD_PCIE_GEN4: IoConfig = IoConfig{latency_millisecs: 0.001, bandwidth_gbytes_per_sec: 8};
+
+trait Reader {
+    fn new(config: &IoConfig) -> Self { Self {config} }
 
     fn read_chunks(&self, chunks: &Vec<FileChunks>) -> Future<Vec<Vec<u8>>> {
+        // (Implement all the general-purpose functionality in the Reader trait,
+        //  and implement the io_uring-specific stuff in IoUringLocal.)
         // Split `chunks` and send to threads (if there are enough chunks to be worth the hassle)
         // If there are >1,000 files to open then we'll have to process them in batches,
         // so as not to exceed the max filehandles per process.``
@@ -109,8 +108,7 @@ trait LocalIo {
         // In a later version of LSIO, some of those CQEs will contain the filesize, and we'll have to submit a read request.
     }
 
-    fn get_nbytes(&self, path: &PathBuf) -> u64 {
-        // TODO: Use POSIX standard function name.
+    fn get_file_size_in_bytes(&self, path: &PathBuf) -> u64 {
         // first check our local cache of file sizes. If that's empty, then
         // for the MVP, just use Rust's standard way to get the file length. Later, we may use io_uring by 
         // chaining {open, statx, close}.
@@ -118,19 +116,20 @@ trait LocalIo {
     }
 }
 struct IoUringLocal {
-    latency_ms: f64,
-    bandwidth_gbps: f64,
-    cache_of_nbytes_per_filename: map<PathBuf, u64>,
+    config: &IoConfig,
+    cached_file_sizes_in_bytes: map<PathBuf, u64>,
+}
+
+impl LocalIo for IoUringLocal {
+    // Implement io_uring-specific stuff...
 }
 
 struct FileChunks {
     path: &Path,
-    range: FileRange,
+    byte_range: ByteRange,
 }
 
-enum FileRange {
+enum ByteRange {
     EntireFile,
     MultiRange(Vec<Range>),
 }
-
-impl LocalIo for IoUringLocal {}
