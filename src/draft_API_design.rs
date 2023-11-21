@@ -2,14 +2,14 @@
 /// and sketching out some of the important internals.
 /// 
 /// Use-cases that this design needs to be tested against:
-/// 1. Load ends of files (e.g. Zarr shard_index)
-/// 2. Cache the lengths of files.
-/// 3. Load huge numbers of files (e.g. non-sharded Zarrs)
-/// 4. Load huge numbers of chunks from a small number of files.
-/// 5. "Scatter" data to multiple arrays 
-///    (e.g. loading uncompressed Zarr / EUMETSAT / GRIB files into final numpy array using DMA!)
-/// 6. Per chunk: Decompress, process, and copy to final array.
-/// 7. Allow LSIO to merge nearby chunks.
+/// - [x] Load ends of files (e.g. Zarr shard_index)
+/// - [x] Cache the lengths of files.
+/// - [x] Load huge numbers of files (e.g. non-sharded Zarrs)
+/// - [x] Load huge numbers of chunks from a small number of files.
+/// - [x] "Scatter" data to multiple arrays 
+///       (e.g. loading uncompressed Zarr / EUMETSAT / GRIB files into final numpy array using DMA!)
+/// - [x] Per chunk: Decompress, process, and copy to final array.
+/// - [x] Allow LSIO to merge nearby chunks.
 
 fn main() -> () {
     // Set config options (latency, bandwidth, maybe others)
@@ -32,13 +32,14 @@ fn main() -> () {
             path: "/foo/baz", 
             range: FileRange::MultiRange(
                 vec![
-                    // Rust ranges can't express "get the last n elements".
-                    // I'll assume I can create a little crate which allows 
-                    // for Ranges from the end, like -10.. (the last 10 elements) or -10..-5.
-                    ..1000, // Read the first 1,000 bytes
-                    -200.., // Read the last 200 bytes
+                    ..1000,     // Read the first 1,000 bytes
+                    -500..,     // Read the last    500 bytes
+                    -500..-100, // Read 400 bytes, until the 100th byte before the end
                     ],
             ),
+            // I had considered also including `destinations` (mutable references to)
+            // the target memory buffers. But - at this point in the code - we 
+            // don't know the sizes of the chunks that are relative to the end of the file.
         },
         ];
 
@@ -54,6 +55,8 @@ fn main() -> () {
         // * move chunk to final array (the address of the final array would be passed into the closure?)
     };
     let future = read.read_chunks_and_apply(&chunks, processing_fn);
+
+
 }
 
 // But, how to express that SSD_PCIe_gen4 isn't a valid config for, say, network IO?
