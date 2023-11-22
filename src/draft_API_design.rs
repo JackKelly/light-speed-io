@@ -35,9 +35,9 @@ fn main() -> () {
                     -500..-100, // Read 400 bytes, until the 100th byte before the end
                     ],
             ),
-            // I had considered also including `destinations` field, holding Vec of mutable references to
+            // I had considered also including a `destinations` field, holding Vec of mutable references to
             // the target memory buffers. But - at this point in the code - we 
-            // don't know the sizes of the chunks that are relative to the end of the file.
+            // don't know the file sizes, so we can't allocate buffers yet for EntireFiles.
         },
         ];
 
@@ -49,7 +49,7 @@ fn main() -> () {
     let mut final_array = Array();
     let chunk_idx_to_array_loc = Vec::new();
     let processing_fn = |chunk_idx: u64, chunk: &[u8]| -> &[u8] {
-        // ******** DECOMRESS ************
+        // ******** DECOMPRESS ************
         // If we don't know the size of the uncompressed chunk, then 
         // deliberately over-allocate, and shrink later...
         const OVER_ALLOCATION_RATIO: usize = 4;
