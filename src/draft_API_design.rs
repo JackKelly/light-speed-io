@@ -10,6 +10,9 @@
 ///       (e.g. loading uncompressed Zarr / EUMETSAT / GRIB files into final numpy array using DMA!)
 /// - [x] Per chunk: Decompress, process, and copy to final array.
 /// - [x] Allow LSIO to merge nearby chunks.
+/// 
+/// This file will soon be merged into, and replaced by:
+/// https://github.com/JackKelly/light-speed-io/blob/draft-API-design/design.md
 
 fn main() -> () {
     // Set config options (latency, bandwidth, maybe others)
