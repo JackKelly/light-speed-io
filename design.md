@@ -61,6 +61,8 @@ TODO! (But, for now, see the file [`src/draft_API_design.rs` in this pull reques
 
 First, the user must describe the performance characteristics of their storage subsystem. This can be done using pre-defined defaults, or auto calibration, or manually specifying options, or loading from disk (using [`serde`](https://serde.rs/)). This information will be used by LSIO to optimize the sequence of chunks for the user's storage system, prior to submitting IO operations to the hardware. The user's code would look like this:
 
+##### User code
+
 ```rust
 let config = SSD_NVME_PCIE_GEN4;
 
@@ -68,7 +70,7 @@ let config = SSD_NVME_PCIE_GEN4;
 let config = IoConfig::auto_calibrate();
 ```
 
-Under the hood (in LSIO):
+##### Under the hood (in LSIO)
 
 ```rust
 /// Describe the performance characteristics of the storage subsystem
@@ -103,23 +105,27 @@ pub const SSD_NVME_PCIE_GEN4: IoConfig = IoConfig{
 
 Using a persistent object will allow us to cache (in memory) values such as file sizes. And provides an opportunity to pre-allocated memory buffers (where possible).
 
-User code:
+##### User code
 
 ```rust
 let reader = IoUringLocal::new(config);
 ```
 
-Under the hood (in LSIO):
+##### Under the hood (in LSIO)
 
 ```rust
 pub trait Reader {
     pub fn new(config: IoConfig) -> Self { Self {config} }
 }
 
+/// Linux io_uring for locally-attached disks.
 pub struct IoUringLocal {
     config: IoConfig,
 
-    /// Map from the full file name to the file size in bytes
+    /// Map from the full file name to the file size in bytes.
+    /// We need to know the length of each file if we want to read the file
+    /// in its entirety, or if we want to seek to a position relative to the
+    /// end of the file.
     cached_file_sizes_in_bytes: map<PathBuf, u64>,
 }
 
@@ -127,3 +133,128 @@ impl Reader for IoUringLocal {
     // Implement io_uring-specific stuff...
 }
 ```
+
+#### Specify which chunks to read
+
+##### User code
+
+In this example, we read the entirety of `/foo/bar`, and we also read three chunks from `/foo/baz`:
+
+```rust
+let chunks = vec![
+    FileChunks{
+        path: "/foo/bar",
+        byte_range: ByteRange::EntireFile, // Read all of file
+    },
+    FileChunks{
+        path: "/foo/baz", 
+        byte_range: ByteRange::MultiRange(
+            vec![
+                ..1000,     // Read the first 1,000 bytes
+                -500..-200, // Read 300 bytes, until the 200th byte from the end
+                -100..,     // Read the last 100 bytes. For example, shared Zarrs store
+                            // the shard index at the end of each file.
+                ],
+        ),
+        // I considered also including a `destinations` field, holding Vec of mutable references to
+        // the target memory buffers. But - at this point in the code - we 
+        // don't know the file sizes, so we can't allocate buffers yet for `EntireFiles`.
+    },
+];
+```
+
+##### Under the hood (in LSIO)
+
+```rust
+pub struct FileChunks {
+    pub path: Path,
+    pub byte_range: ByteRange,
+}
+
+pub enum ByteRange {
+    EntireFile,
+    MultiRange(Vec<Range>),
+}
+```
+
+#### Async reading of chunks
+
+##### User code
+
+```rust
+// Start async loading of data from disk:
+let future = reader.read_chunks(&chunks);
+
+// Wait for data to all be ready:
+// We need one `Result` per chunk, because reading each chunk could fail:
+let data: Vec<Result<&[u8]>> = future.wait();
+```
+
+Or, if we want to apply a function to each chunk, we could do something like this. This example
+is based on the Zarr use-case. For each chunk, want to decompress, and apply a simple numerical
+transformation, and then move the transformed data into a final array:
+
+```rust
+let mut final_array = Array();
+let chunk_idx_to_array_loc = Vec::new();
+// TODO: Fill out `chunk_idx_to_array_loc`
+
+// processing_fn could fail, so we return a Result.
+// processing_fn may not return any data (because the data has been moved to another location)
+// so we return an Option wrapped in a Result.
+let processing_fn = |chunk_idx: u64, chunk: &[u8]| -> Result<Option<&[u8]>> {
+    // ******** DECOMPRESS ************
+    // If we don't know the size of the uncompressed chunk, then 
+    // deliberately over-allocate, and shrink later...
+    const OVER_ALLOCATION_RATIO: usize = 4;
+    let mut decompressed_chunk = Vec::with_capacity(OVER_ALLOCATION_RATIO * chunk.size());
+    decompress(&chunk, &mut decompressed_chunk)?;
+    decompressed_chunk.shrink_to_fit();
+
+    // ******** PROCESS ***********
+    decompressed_chunk = decompressed_chunk / 2;  // to give a very simple example!
+
+    // ******** COPY TO FINAL ARRAY **************
+    final_array[chunk_idx_to_array_loc[chunk_idx]] = decompressed_chunk;
+    Ok(None)  // We're deliberately not passing back the decompressed array.
+};
+let future = read.read_chunks_and_apply(&chunks, processing_fn);
+let results = future.wait();
+// TODO: check `results` for any failures
+pass_to_python(&final_array);
+```
+
+### Internal design of LSIO
+
+TODO. Things to consider:
+
+Within LSIO, the pipeline for the IO ops is something like this:
+
+- User submits a Vector of `FileChunks`.
+- In the main thread:
+    - We need to get the file size for:
+        - any `EntireFiles`. If these exist, then we need to get the file size ahead-of-time, so we can pre-allocate a memory buffer.
+        - any `MultiRange`s which include offsets from the end of the file, iff the backend doesn't natively support offsets from the end of the file (or maybe this should be the backend's problem? Although I'd guess it'd be faster to get all file sizes in one go, ahead of time?)
+    - For any `MultiRange`s, LSIO optimizes the sequence of ranges. This is dependent on `IoConfig`, but shouldn't be dependent on the IO backend. Maybe this could be implemented as a set of methods on `ByteRange`?
+        - Merge any overlapping read requests (e.g. if the user requests `[..1000, ..100]` then only actually read `..1000`, but return - as the second chunk - a memory copy of the last 100 bytes). Maybe don't implement this in the MVP. But check that the design can support this.
+        - Merge nearby reads into smaller reads, depending on `IoConfig`.
+        - Split large reads into multiple smaller reader, depending on `IoConfig.max_megabytes_of_single_read`.
+        - Perhaps we need a new type for the _optimized_ byte ranges? We need to express:
+        - "_this single optimized read started life as multiple, nearby reads. After performing this single read, the memory buffer will need to be split into sub-chunks, and those sub-chunks processed in parallel. And we may want to throw away some data. The IO backend should be encouraged to use `readv` if available, to directly read into multiple buffers. (POSIX can use `readv` to read sockets as well as files.)_"
+        - "_this single optimized read started life as n multiple, overlapping reads. The user is expecting n slices (views) of this memory buffer_"
+        - "_these multiple optimized reads started life as a single read request. Create one large memory buffer. And each sub-chunk should be read directly into a different slice of the memory buffer._"
+        - Maybe the answer is that the optimization step should be responsible for allocating the memory buffers, and it just submits a sequence of abstracted `readv` operations to the IO backend? If the backend can't natively perform `readv` then it's trivial for the backend to split one `readv` call into multiple `read`s. But! We should only allocate memory buffers when we're actually ready to read! Say we want to read 1,000,000 chunks. Using io_uring, we won't actually submit all 1,000,000 read requests at once: instead we'll keep the submission ring topped up with, say, 64 tasks. If the user wants all 1,000,000 chunks returned then we have no option but to allocate all 1,000,000 chunks. But if, instead, the user wants each chunk to be processed and then moved into a common final array, then we only have to allocate 64 buffers per thread.
+    - Pass this optimized sequence to the IO backend (e.g. `IoUringLocal`).
+- For `IoUringLocal`, the main thread spins up _n_ io_uring rings, and _n_ worker threads (where _n_ defaults to the number of logical CPU cores, or the number of requested read ops, which ever is smaller - there's no point spinning up 32 threads if we only have 2 read operations!). Each worker thread gets its own completion ring. The main thread is responsible for submitting operations to all _n_ submission rings. The worker threads all write to a single, shared channel, to say when they've completed a task, which tells the main thread to submit another task to that thread's submission queue. This design should be faster than the main thread creating single queue of tasks, which each worker thread reads from. Queues block. Blocking is bad!
+    - The main thread:
+        - Starts by splitting all the operations into _n_ lists. For example, if we start with 1,000,000 read operations, and have 10 CPU cores, then we end up with 100,000 read ops per CPU core.
+        - But we don't want to simply submit all 100,000 ops to each submission queue, in one go. That doesn't give us the opportunity to balance work across the worker threads. (Some read ops might take longer than others.) And, we can't use that many filehandles per process!
+        - Allocate filehandles for each read op in flight. (So io_uring can chain open(fh), read(fh), close(fh)).
+        - Submit the first, say, 64 read ops to each thread's submission queue. (Each "read op" would actually be a chain of open, read, close).
+        - Block on `channel.recv()`. When a message arrives, submit another task to that thread's submission ring.
+    - Each worker thread:
+        - Blocks waiting for data from its io_uring completion queue.
+        - When data arrives, it checks for errors, and performs the requested processing.
+        - The worker thread ends its ID to the channel, to signal that it has completed a task.
+    - BUT! In cases where the user has not requested any processing, then the worker threads are redundant??? Maybe we simply don't spin up any worker threads, in that case? Although, actually, we still need to check each completion queue entry for errors, I think? Maybe threads would be useful for that???
+    - AND! What about when we're reading uncompressed Zarr chunks directly into the final merged array? How does the user specify that?!
