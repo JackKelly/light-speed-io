@@ -165,9 +165,10 @@ let chunks = vec![
         // If the user wants LSIO to allocate the buffers:
         buffer: None,
 
-        // Else, if the user wants to supply buffers, then use Some(Vec<&mut [u8]>)
+        // Else, if the user wants to supply buffers, then use `Some(Vec<&mut [u8]>)`
+        // with one buffer per element in the `byte_range` vector.
         // For example, this would allow us to bypass the CPU when copying multiple
-        // uncompressed chunks from a sharded zarr directly into the final array.
+        // uncompressed chunks from a sharded Zarr directly into the final array.
         // The buffers could point to different slices of the final array.
         // This mechanism could even be used when creating the final array is more
         // complicated than simply appending chunks: you could, for example, read each
