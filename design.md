@@ -32,7 +32,7 @@
 
 Allow for very fast access to:
 * [Zarr](https://zarr.dev/) arrays. Jack is mostly focused on [sharded Zarr arrays](https://zarr.dev/zeps/accepted/ZEP0002.html). But LSIO could also be helpful for non-sharded Zarr arrays.
-    * Jack is particularly focused on speeding up the data pipeline for training machine learning models on multi-dimensional datasets. This is described below in the [Priorities](#priorities) section.
+    * Jack is particularly focused on speeding up the data pipeline for training machine learning models on multi-dimensional datasets, where we want to select random crops of data, as fast as the hardware will allow. This is described below in the [Priorities](#priorities) section.
 * Other file formats used for multi-dimensional arrays, such as NetCDF, GRIB, and EUMETSAT's native file format. (LSIO could help to speed up [kerchunk](https://fsspec.github.io/kerchunk/))
 
 ## Timeline
