@@ -54,3 +54,35 @@ Ha! :smiley:. This project is in the earliest planning stages! It'll be _months_
 ## Design
 
 TODO! (But, for now, see the file [`src/draft_API_design.rs` in this pull request](https://github.com/JackKelly/light-speed-io/blob/draft-API-design/src/draft_API_design.rs))
+
+### Public Rust API
+
+#### Configuration
+
+First, the user must set the configuration options using pre-defined defaults, or auto calibration, or manually specifying options, 
+or loading from disk (using [`serde`](https://serde.rs/)). The user's code would look like this:
+
+```rust
+let config = SSD_PCIE_GEN4;
+// Or do this :)
+let config = IoConfig::auto_calibrate();
+```
+
+Under the hood (in LSIO):
+
+```rust
+pub struct IoConfig {
+    pub latency_millisecs: f64,
+    pub bandwidth_gbytes_per_sec: f64,
+}
+
+impl IoConfig {
+    pub fn auto_calibrate() -> Self {}
+    // Use Serde to save / load IoConfig to disk.
+}
+
+pub const SSD_PCIE_GEN4: IoConfig = IoConfig{
+    latency_millisecs: 0.001,
+    bandwidth_gbytes_per_sec: 8,
+};
+```

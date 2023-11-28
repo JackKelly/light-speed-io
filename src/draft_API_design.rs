@@ -77,11 +77,14 @@ pub struct IoConfig {
 }
 
 impl IoConfig {
-    fn auto_calibrate() -> Self {}
+    pub fn auto_calibrate() -> Self {}
     // Use Serde to save / load IoConfig to disk.
 }
 
-const SSD_PCIE_GEN4: IoConfig = IoConfig{latency_millisecs: 0.001, bandwidth_gbytes_per_sec: 8};
+pub const SSD_PCIE_GEN4: IoConfig = IoConfig{
+    latency_millisecs: 0.001,
+    bandwidth_gbytes_per_sec: 8,
+};
 
 trait Reader {
     fn new(config: &IoConfig) -> Self { Self {config} }
