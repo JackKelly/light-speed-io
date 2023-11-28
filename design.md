@@ -146,11 +146,15 @@ let mut buf1 = vec![0;  300];
 let mut buf2 = vec![0;  100];
 
 let chunks = vec![
+
+    // Read the entirity of /foo/bar
     FileChunks{
         path: "/foo/bar",
         byte_range: ByteRange::EntireFile, // Read all of file
         buffer: None, // LSIO takes responsibility for allocating a memory buffer
     },
+
+    // Read 3 chunks from /foo/baz
     FileChunks{
         path: "/foo/baz", 
         byte_range: ByteRange::MultiRange(
@@ -162,10 +166,7 @@ let chunks = vec![
                 ],
         ),
 
-        // If the user wants LSIO to allocate the buffers:
-        buffer: None,
-
-        // Else, if the user wants to supply buffers, then use `Some(Vec<&mut [u8]>)`
+        // If the user wants to supply buffers, then use `Some(Vec<&mut [u8]>)`
         // with one buffer per element in the `byte_range` vector.
         // For example, this would allow us to bypass the CPU when copying multiple
         // uncompressed chunks from a sharded Zarr directly into the final array.
@@ -211,9 +212,10 @@ pub enum ByteRange {
 // Start async loading of data from disk:
 let future = reader.read_chunks(&chunks);
 
-// Wait for data to all be ready:
-// We need one `Result` per chunk, because reading each chunk could fail:
-let data: Vec<Result<&[u8]>> = future.wait();
+// Wait for data to all be ready.
+// We need one `Result` per chunk, because reading each chunk could fail.
+// Note that we take ownership of the returned vectors of bytes.
+let data: Vec<Result<Vec<u8>>> = future.wait();
 ```
 
 Or, if we want to apply a function to each chunk, we could do something like this. This example
