@@ -127,7 +127,7 @@ struct IoUringLocal {
     cached_file_sizes_in_bytes: map<PathBuf, u64>,
 }
 
-impl LocalIo for IoUringLocal {
+impl Reader for IoUringLocal {
     // Implement io_uring-specific stuff...
 }
 
