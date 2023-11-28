@@ -63,6 +63,7 @@ First, the user must describe the performance characteristics of their storage s
 
 ```rust
 let config = SSD_NVME_PCIE_GEN4;
+
 // Or do this :)
 let config = IoConfig::auto_calibrate();
 ```
@@ -96,4 +97,33 @@ pub const SSD_NVME_PCIE_GEN4: IoConfig = IoConfig{
     bandwidth_megabytes_per_sec: 8000,
     max_megabytes_of_single_read: None,
 };
+```
+
+#### Initialize a `Reader` struct
+
+Using a persistent object will allow us to cache (in memory) values such as file sizes. And provides an opportunity to pre-allocated memory buffers (where possible).
+
+User code:
+
+```rust
+let reader = IoUringLocal::new(config);
+```
+
+Under the hood (in LSIO):
+
+```rust
+pub trait Reader {
+    pub fn new(config: IoConfig) -> Self { Self {config} }
+}
+
+pub struct IoUringLocal {
+    config: IoConfig,
+
+    /// Map from the full file name to the file size in bytes
+    cached_file_sizes_in_bytes: map<PathBuf, u64>,
+}
+
+impl LocalIo for IoUringLocal {
+    // Implement io_uring-specific stuff...
+}
 ```
