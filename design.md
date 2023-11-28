@@ -22,7 +22,7 @@
         - [ ] Windows [I/O Ring](https://windows-internals.com/i-o-rings-when-one-i-o-operation-is-not-enough/).
         - [ ] MacOS X [kqueue](https://en.wikipedia.org/wiki/Kqueue).
     - These storage systems:
-        - [ ] Local disks.
+        - [ ] Local disks. (With different optimizations for SSDs and HDDs).
         - [ ] Cloud storage buckets.
         - [ ] HTTP.
 - [ ] Provide an async Rust API
@@ -35,10 +35,6 @@ Allow for very fast access to:
     * Jack is particularly focused on speeding up the data pipeline for training machine learning models on multi-dimensional datasets, where we want to select random crops of data, as fast as the hardware will allow. This is described below in the [Priorities](#priorities) section.
 * Other file formats used for multi-dimensional arrays, such as NetCDF, GRIB, and EUMETSAT's native file format. (LSIO could help to speed up [kerchunk](https://fsspec.github.io/kerchunk/))
 
-## Timeline
-
-Ha! :smiley:. This project is in the earliest planning stages! It'll be _months_ before it does anything vaguely useful! And, for now at least, this project is just Jack hacking away his spare time, whilst learning Rust!
-
 ## Priorities
 
 Jack's main hypothesis is that it _should_ be possible to train large machine learning (ML) models _directly_ from multi-dimensional data stored on disk as Zarr arrays, instead of having to prepare ML training batches ahead of time. These ML models require random crops to be selected from multi-dimensional datasets, at several gigabytes per second. (See [Jack's blog post](https://jack-kelly.com/blog/2023-07-28-speeding-up-zarr) for more details. An example multi-dimensional dataset is satellite imagery over time.)
@@ -50,6 +46,10 @@ The ultimate test is: Can LSIO enable us to train ML models directly from Zarr? 
 If this provides a significant speed-up, then Jack will focus on implementing reading from Google Cloud Storage buckets, maybe using io_uring for async network IO.
 
 If this does not provide a speed-up, then - to be frank - LSIO will probably be abandoned!
+
+## Timeline
+
+Ha! :smiley:. This project is in the earliest planning stages! It'll be _months_ before it does anything vaguely useful! And, for now at least, this project is just Jack hacking away his spare time, whilst learning Rust!
 
 ## Design
 
