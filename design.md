@@ -41,10 +41,15 @@ Ha! :smiley:. This project is in the earliest planning stages! It'll be _months_
 
 ## Priorities
 
-Jack's priority is to build an MVP that's sufficient for loading sharded Zarrs from a local SSD using Linux io_uring. Benchmark this against existing Zarr implementations. Test in a machine learning pipeline.
+Jack's main hypothesis is that it _should_ be possible to train large machine learning (ML) models _directly_ from multi-dimensional data (e.g. many timesteps of satellite imagery) stored on disk as Zarr arrays, instead of having to prepare ML training batches ahead of time. These ML models require random crops to be selected from multi-dimensional datasets, at several gigabytes per second. (See [Jack's blog post](https://jack-kelly.com/blog/2023-07-28-speeding-up-zarr) for more details.)
 
-If this proves to provide a significant speed-up, then Jack will focus on implementing reading from cloud storage buckets, possibly using io_uring for async network IO.
+(And, even more ambitiously, LSIO may allow us to train directly from the _original data_ stored in, for example, GRIB files). 
 
+The ultimate test is: Can LSIO enable us to train ML models directly from Zarr? (whilst ensuring that the GPU is constantly at near 100% utilization). So, Jack's priority will be to implement just enough of LSIO to enable us to test this hypothesis empirically: and that means implementing just one IO backend (io_uring for local files), to start with.
+
+If this provides a significant speed-up, then Jack will focus on implementing reading from Google Cloud Storage buckets, maybe using io_uring for async network IO.
+
+If this does not provide a speed-up, then - to be frank - LSIO will probably be abandoned!
 
 ## Design
 
