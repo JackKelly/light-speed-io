@@ -57,13 +57,12 @@ TODO! (But, for now, see the file [`src/draft_API_design.rs` in this pull reques
 
 ### Public Rust API
 
-#### Configuration
+#### Describe the performance characteristics of the storage subsystem
 
-First, the user must set the configuration options using pre-defined defaults, or auto calibration, or manually specifying options, 
-or loading from disk (using [`serde`](https://serde.rs/)). The user's code would look like this:
+First, the user must describe the performance characteristics of their storage subsystem. This can be done using pre-defined defaults, or auto calibration, or manually specifying options, or loading from disk (using [`serde`](https://serde.rs/)). This information will be used by LSIO to optimize the sequence of chunks for the user's storage system, prior to submitting IO operations to the hardware. The user's code would look like this:
 
 ```rust
-let config = SSD_PCIE_GEN4;
+let config = SSD_NVME_PCIE_GEN4;
 // Or do this :)
 let config = IoConfig::auto_calibrate();
 ```
@@ -71,18 +70,30 @@ let config = IoConfig::auto_calibrate();
 Under the hood (in LSIO):
 
 ```rust
+/// Describe the performance characteristics of the storage subsystem
 pub struct IoConfig {
     pub latency_millisecs: f64,
-    pub bandwidth_gbytes_per_sec: f64,
+    pub bandwidth_megabytes_per_sec: f64,
+
+    /// Files larger than this will be broken into consecutive chunks,
+    /// and the chunks will be requested concurrently.
+    /// Breaking up files may speed up reading from cloud storage buckets.
+    /// Each chunk will be no larger than this size.
+    /// Set this to `None` if you never want to break files apart.
+    pub max_megabytes_of_single_read: Option<f64>,
 }
 
 impl IoConfig {
-    pub fn auto_calibrate() -> Self {}
-    // Use Serde to save / load IoConfig to disk.
+    pub fn auto_calibrate() -> Self {
+        // TODO
+    }
+    // Use Serde to save and load IoConfig.
 }
 
-pub const SSD_PCIE_GEN4: IoConfig = IoConfig{
+/// Default config options for NVMe SSDs using PCIe generation 4.
+pub const SSD_NVME_PCIE_GEN4: IoConfig = IoConfig{
     latency_millisecs: 0.001,
-    bandwidth_gbytes_per_sec: 8,
+    bandwidth_megabytes_per_sec: 8000,
+    max_megabytes_of_single_read: None,
 };
 ```
