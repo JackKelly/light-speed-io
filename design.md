@@ -141,10 +141,15 @@ impl Reader for IoUringLocal {
 In this example, we read the entirety of `/foo/bar`, and we also read three chunks from `/foo/baz`:
 
 ```rust
+let mut buf0 = vec![0; 1000];
+let mut buf1 = vec![0;  300];
+let mut buf2 = vec![0;  100];
+
 let chunks = vec![
     FileChunks{
         path: "/foo/bar",
         byte_range: ByteRange::EntireFile, // Read all of file
+        buffer: None, // LSIO takes responsibility for allocating a memory buffer
     },
     FileChunks{
         path: "/foo/baz", 
@@ -156,9 +161,25 @@ let chunks = vec![
                             // the shard index at the end of each file.
                 ],
         ),
-        // I considered also including a `destinations` field, holding Vec of mutable references to
-        // the target memory buffers. But - at this point in the code - we 
-        // don't know the file sizes, so we can't allocate buffers yet for `EntireFiles`.
+
+        // If the user wants LSIO to allocate the buffers:
+        buffer: None,
+
+        // Else, if the user wants to supply buffers, then use Some(Vec<&mut [u8]>)
+        // For example, this would allow us to bypass the CPU when copying multiple
+        // uncompressed chunks from a sharded zarr directly into the final array.
+        // The buffers could point to different slices of the final array.
+        // This mechanism could even be used when creating the final array is more
+        // complicated than simply appending chunks: you could, for example, read each
+        // row of each chunk into a different `&mut [u8]`. Under the hood, LSIO would
+        // notice the consecutive reads, and would use `readv` where available.
+        buffer: Some(
+            vec![
+                &mut buf0,
+                &mut buf1,
+                &mut buf2,
+            ]
+        )
     },
 ];
 ```
@@ -169,6 +190,10 @@ let chunks = vec![
 pub struct FileChunks {
     pub path: Path,
     pub byte_range: ByteRange,
+
+    // If buffer is None, then LSIO will take responsibility for allocating
+    // the memory buffers. This should be the preferred approach.
+    pub buffer: Option<Vec<&mut [u8]>>,
 }
 
 pub enum ByteRange {
@@ -238,7 +263,8 @@ Within LSIO, the pipeline for the IO ops is something like this:
     - For any `MultiRange`s, LSIO optimizes the sequence of ranges. This is dependent on `IoConfig`, but shouldn't be dependent on the IO backend. Maybe this could be implemented as a set of methods on `ByteRange`?
         - Merge any overlapping read requests (e.g. if the user requests `[..1000, ..100]` then only actually read `..1000`, but return - as the second chunk - a memory copy of the last 100 bytes). Maybe don't implement this in the MVP. But check that the design can support this.
         - Merge nearby reads into smaller reads, depending on `IoConfig`.
-        - Split large reads into multiple smaller reader, depending on `IoConfig.max_megabytes_of_single_read`.
+        - Split large reads into multiple smaller reads, depending on `IoConfig.max_megabytes_of_single_read`.
+        - Detect contiguous chunks, and use `readv`. (Although we should benchmark `readv` vs `read`).
         - Perhaps we need a new type for the _optimized_ byte ranges? We need to express:
         - "_this single optimized read started life as multiple, nearby reads. After performing this single read, the memory buffer will need to be split into sub-chunks, and those sub-chunks processed in parallel. And we may want to throw away some data. The IO backend should be encouraged to use `readv` if available, to directly read into multiple buffers. (POSIX can use `readv` to read sockets as well as files.)_"
         - "_this single optimized read started life as n multiple, overlapping reads. The user is expecting n slices (views) of this memory buffer_"
@@ -256,5 +282,4 @@ Within LSIO, the pipeline for the IO ops is something like this:
         - Blocks waiting for data from its io_uring completion queue.
         - When data arrives, it checks for errors, and performs the requested processing.
         - The worker thread ends its ID to the channel, to signal that it has completed a task.
-    - BUT! In cases where the user has not requested any processing, then the worker threads are redundant??? Maybe we simply don't spin up any worker threads, in that case? Although, actually, we still need to check each completion queue entry for errors, I think? Maybe threads would be useful for that???
-    - AND! What about when we're reading uncompressed Zarr chunks directly into the final merged array? How does the user specify that?!
+    - BUT! In cases where the user has not requested any processing, then the worker threads are redundant??? Maybe we simply don't spin up any worker threads, in that case? Although, actually, we still need to check each completion queue entry for errors, I think? Maybe threads would be useful for that??? And, for the MVP, maybe we should always spin up threads, so we don't have to worry about a separate code path for the "no processing" case?
