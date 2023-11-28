@@ -32,11 +32,19 @@
 
 Allow for very fast access to:
 * [Zarr](https://zarr.dev/) arrays. Jack is mostly focused on [sharded Zarr arrays](https://zarr.dev/zeps/accepted/ZEP0002.html). But LSIO could also be helpful for non-sharded Zarr arrays.
+    * Jack is particularly focused on speeding up the data pipeline for training machine learning models on multi-dimensional datasets. This is described in [Jack's blog post](https://jack-kelly.com/blog/2023-07-28-speeding-up-zarr).
 * Other file formats used for multi-dimensional arrays, such as NetCDF, GRIB, and EUMETSAT's native file format. (LSIO could help to speed up [kerchunk](https://fsspec.github.io/kerchunk/))
 
 ## Timeline
 
 Ha! :smiley:. This project is in the earliest planning stages! It'll be _months_ before it does anything vaguely useful! And, for now at least, this project is just Jack hacking away his spare time, whilst learning Rust!
+
+## Priorities
+
+Jack's priority is to build an MVP that's sufficient for loading sharded Zarrs from a local SSD using Linux io_uring. Benchmark this against existing Zarr implementations. Test in a machine learning pipeline.
+
+If this proves to provide a significant speed-up, then Jack will focus on implementing reading from cloud storage buckets, possibly using io_uring for async network IO.
+
 
 ## Design
 
