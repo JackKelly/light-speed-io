@@ -272,6 +272,12 @@ Within LSIO, the pipeline for the IO ops will be something like this:
         - Detect contiguous chunks destined for different buffers, and use `readv` to read these. (Although we should benchmark `readv` vs `read`).
         - Merging and splitting read operations means that there's no longer a one-to-one mapping between chunks that the _user_ requested, and chunks that LSIO will request from the storage subsystem. This raises some important design questions:
             - How do we ensure that each of the user's chunks are processes in their own threads. (The transform function supplied by the user probably expects the chunks that the user requested)
+                - Some potential answers:
+                    - Use tokio! This might be a classic use-case requiring tokio. But! We'll still have tasks which block for much longer than the 100 microseconds recommended by Tokio. So maybe I should use Rayon's join API?
+                    - Use a manually-coded thread pool. If a thread gets a read from its io_uring completion queue that requires splitting, then just loop within that thread to do each task sequentially. But that could result in some CPU cores being busy, and others not.
+                    - Can io_uring communicate tasks to other threads? Or maybe worker threads can use the common channel to tell the main thread to put a new (non-IO) task into the queue that will be shared amongst worker threads.
+                    - Or, using manually-coded thread pools, threads could also share a _second_ queue, for non-IO tasks. And, if there's no data ready on a thread's io_uring, then it checks that queue.
+                    - When we want to merge multiple reads into a single memory location, then that's a bit harder, and requires us to join on all those tasks.
             - Perhaps we need a new type for the _optimized_ byte ranges? We need to express:
                 - "_this single optimized read started life as multiple, nearby reads. After performing this single read, the memory buffer will need to be sliced, and those slices processed in parallel. And we may want to throw away some data. The IO backend should be encouraged to use `readv` if available, to directly read into multiple buffers. (POSIX can use `readv` to read sockets as well as files.)_"
                 - "_this single optimized read started life as n multiple, overlapping reads. The user is expecting n slices (views) of this memory buffer_"
