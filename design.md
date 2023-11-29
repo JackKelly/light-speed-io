@@ -261,7 +261,7 @@ Within LSIO, the pipeline for the IO ops will be something like this:
 - User submits a Vector of `FileChunks`.
 - In the main thread:
     - We need to get the file size for:
-        - any `EntireFiles`. If these exist, then we need to get the file size ahead-of-time, so we can pre-allocate a memory buffer.
+        - any `EntireFiles` (where `buffer` is `None`). If `EntireFiles` exist, then we need to get the file size ahead-of-time, so we can pre-allocate a memory buffer.
         - any `MultiRange`s which include offsets from the end of the file, iff the backend doesn't natively support offsets from the end of the file (or maybe this should be the backend's problem? Although I'd guess it'd be faster to get all file sizes in one go, ahead of time?)
         - in the MVP, let's get the file sizes in the main thread, using the easiest (blocking) method. In later versions, we can get the file sizes async. (Getting filesizes async might be useful when, for example, we need to read huge numbers of un-sharded Zarr chunks).
     - For any `MultiRange`s, LSIO optimizes the sequence of ranges. This is dependent on `IoConfig`, but shouldn't be dependent on the IO backend. Maybe this could be implemented as a set of methods on `ByteRange`?
@@ -273,7 +273,10 @@ Within LSIO, the pipeline for the IO ops will be something like this:
         - Merging and splitting read operations means that there's no longer a one-to-one mapping between chunks that the _user_ requested, and chunks that LSIO will request from the storage subsystem. This raises some important design questions:
             - How do we ensure that each of the user's chunks are processes in their own threads. (The transform function supplied by the user probably expects the chunks that the user requested)
                 - Some potential answers:
-                    - Use tokio! This might be a classic use-case requiring tokio. But! We'll still have tasks which block for much longer than the 100 microseconds recommended by Tokio. So maybe I should use Rayon's join API?
+                    - Use tokio! This might be a classic use-case requiring tokio. But! We'll still have tasks which block for much longer than the 100 microseconds recommended by Tokio. So...
+                    - Use Rayon! <--- **CURRENTLY MY PREFERRED IDEA!!**
+                        - Hmm... Can we just use `ring.completion().par_iter()`??? Which I _think_ wouldn't use a blocking thread synchronization primitive (instead it would use work steeling). I could test this pretty easily (10 lines of Rust?!)
+                        - [`ndarray` uses Rayon](https://docs.rs/ndarray/latest/ndarray/parallel/index.html).
                     - Use a manually-coded thread pool. If a thread gets a read from its io_uring completion queue that requires splitting, then just loop within that thread to do each task sequentially. But that could result in some CPU cores being busy, and others not.
                     - Can io_uring communicate tasks to other threads? Or maybe worker threads can use the common channel to tell the main thread to put a new (non-IO) task into the queue that will be shared amongst worker threads.
                     - Or, using manually-coded thread pools, threads could also share a _second_ queue, for non-IO tasks. And, if there's no data ready on a thread's io_uring, then it checks that queue.
