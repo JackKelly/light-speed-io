@@ -265,10 +265,10 @@ Within LSIO, the pipeline for the IO ops will be something like this:
         - any `MultiRange`s which include offsets from the end of the file, iff the backend doesn't natively support offsets from the end of the file (or maybe this should be the backend's problem? Although I'd guess it'd be faster to get all file sizes in one go, ahead of time?)
         - in the MVP, let's get the file sizes in the main thread, using the easiest (blocking) method. In later versions, we can get the file sizes async. (Getting filesizes async might be useful when, for example, we need to read huge numbers of un-sharded Zarr chunks).
     - For any `MultiRange`s, LSIO optimizes the sequence of ranges. This is dependent on `IoConfig`, but shouldn't be dependent on the IO backend. Maybe this could be implemented as a set of methods on `ByteRange`?
-        - Merge any overlapping read requests (e.g. if the user requests `[..1000, ..100]` then only actually read `..1000`, but return - as the second chunk - an immutable slice of the last 100 bytes). Maybe don't implement this in the MVP. But check that the design can support this.
+        - Merge any overlapping read requests (e.g. if the user requests `[..1000, ..100]` then only actually read `..1000`, but return - as the second chunk - an immutable slice of the last 100 bytes). Maybe don't implement this in the MVP. But check that the design can support this. Although don't worry too much - I'm not even sure if this issue would arise in the real world.
         - (We should probably enforce that the data read from disk is always immutable. That will make the design easier and faster: If the data is always immutable, then we can use slices instead of copies when apportioning merged reads).
-        - Merge nearby reads into smaller reads, depending on `IoConfig`.
-        - Split large reads into multiple smaller reads, depending on `IoConfig.max_megabytes_of_single_read`.
+        - Merge nearby reads, depending on `IoConfig`, possibly using `readv` to scatter the single read into the requested vectors (and can we scatter the unwanted data to /dev/null?!? Prob not?)
+        - Split large reads into multiple smaller reads, depending on `IoConfig.max_megabytes_of_single_read`. (Maybe don't worry about this for now, given that this isn't relevant for reading local SSDs using io_uring. This may still be possible in a single vectored read operation, which reads into slices of the same underlying array. Or, if that's not possible, maybe spin up a separate io_uring context just for the individual reads that make up the single requested read, so it's clear when all the reads have finished.)
         - Detect contiguous chunks destined for different buffers, and use `readv` to read these. (Although we should benchmark `readv` vs `read`).
         - Merging and splitting read operations means that there's no longer a one-to-one mapping between chunks that the _user_ requested, and chunks that LSIO will request from the storage subsystem. This raises some important design questions:
             - How do we ensure that each of the user's chunks are processes in their own threads. (The transform function supplied by the user probably expects the chunks that the user requested)
@@ -304,3 +304,30 @@ Within LSIO, the pipeline for the IO ops will be something like this:
         - When data arrives, it checks for errors, and performs the requested processing.
         - The worker thread ends its ID to the channel, to signal that it has completed a task.
     - BUT! In cases where the user has not requested any processing, then the worker threads are redundant??? Maybe we simply don't spin up any worker threads, in that case? Although, actually, we still need to check each completion queue entry for errors, I think? Maybe threads would be useful for that??? And, for the MVP, maybe we should always spin up threads, so we don't have to worry about a separate code path for the "no processing" case?
+
+
+Assuming we do have to keep track of how many entries...
+```rust
+use std::sync::mpsc::channel;
+
+let mut ring = IoUring::new();
+let (sender, receiver) = channel();
+
+// Start a thread which is responsible for keeping the submission queue
+// topped up with, say, 64 entries. It blocks, reading from a channel.
+// Threads send a message to the channel when they're done.
+
+// Assuming the transform function also copies to the final memory location:
+// If we want this to return a vector of arrays then use `map_with()`.
+ring.completion().par_iter().for_each_with(
+  sender,
+  |s, cqe| {
+    let mut vec = Vector::with_capacity();
+    decompress(&cqe, &mut vec);
+    s.send(1);
+  }
+)
+```
+
+TODO: Test if we'll overflow the submission queue if we don't manually keep track
+of how many entries have popped up on the completion queue.
