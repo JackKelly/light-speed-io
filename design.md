@@ -275,9 +275,10 @@ Within LSIO, the pipeline for the IO ops will be something like this:
                 - Some potential answers:
                     - Use tokio! This might be a classic use-case requiring tokio. But! We'll still have tasks which block for much longer than the 100 microseconds recommended by Tokio. So...
                     - Use Rayon! <--- **CURRENTLY MY PREFERRED IDEA!!**
-                        - Hmm... Can we just use `ring.completion().par_iter()`??? Which I _think_ wouldn't use a blocking thread synchronization primitive (instead it would use work steeling). I could test this pretty easily (10 lines of Rust?!). I think I'd still need a mechanism to keep the submission queue topped up.
+                        - Hmm... Can we just use `ring.completion().par_iter()`??? Which I _think_ wouldn't use a blocking thread synchronization primitive (instead it would use work steeling). I could test this pretty easily (10 lines of Rust?!). 
+                        - How to keep the submission queue topped up? Maybe a separate thread (not part of the worker thread pool, because we don't want to take CPU cores away from decompression). Set `IORING_SETUP_CQ_NODROP`. Then check for `-EBUSY` returned from `io_uring_submit()`, and wait before submitting, and warn the user that the CQ needs to be larger. When using `IORING_SETUP_SQPOLL`, also need to check `io_uring_has_overflow()` before submitting (and warn the user if overflow). See [my SO Q&A](https://stackoverflow.com/questions/77580828/how-to-guarantee-that-the-io-uring-completion-queue-never-overflows/77580829#77580829).
                         - [`ndarray` uses Rayon](https://docs.rs/ndarray/latest/ndarray/parallel/index.html).
-                        - can we make life as simple as possible: We start by doing `file_chunks.par_iter().for_each_init(init, op)`. Each worker thread will have its own entire io_uring: each thread will have a submission queue and a completion queue (initialised by the `init` closure). The `op` closure will call `join(a, b)`. Closure `a` submits a read op to the submission queue (or blocks if the submission queue is full). Closure `b` takes a single item from the completion queue, and processes it; or blocks if there's no data yet. No, no, this won't work: this will only submit one request at once, because this thread will block!
+                        - **I don't think the following idea will work...** can we make life as simple as possible: We start by doing `file_chunks.par_iter().for_each_init(init, op)`. Each worker thread will have its own entire io_uring: each thread will have a submission queue and a completion queue (initialised by the `init` closure). The `op` closure will call `join(a, b)`. Closure `a` submits a read op to the submission queue (or blocks if the submission queue is full). Closure `b` takes a single item from the completion queue, and processes it; or blocks if there's no data yet. No, no, this won't work: this will only submit one request at once, because this thread will block!
                           - But how to persist io_urings in Rayon?
                             - It may be as simple as using [`for_each_init`](https://docs.rs/rayon/latest/rayon/iter/trait.ParallelIterator.html#method.for_each_init) to init an io_uring for each thread. But [this github comment](https://github.com/rayon-rs/rayon/issues/718) from 2020 suggests that the init function is called many more times than the number of threads.
                             - Failing that, use the [`thread_local` crate](https://docs.rs/thread_local/1.1.7/thread_local/), to create a separate io_uring local to each thread?
@@ -306,7 +307,7 @@ Within LSIO, the pipeline for the IO ops will be something like this:
     - BUT! In cases where the user has not requested any processing, then the worker threads are redundant??? Maybe we simply don't spin up any worker threads, in that case? Although, actually, we still need to check each completion queue entry for errors, I think? Maybe threads would be useful for that??? And, for the MVP, maybe we should always spin up threads, so we don't have to worry about a separate code path for the "no processing" case?
 
 
-Assuming we do have to keep track of how many entries...
+Assuming we do have to keep track of how many entries... UPDATE, DON'T NEED TO KEEP TRACK OF HOW MANY ENTRIES ARE IN FLIGHT
 ```rust
 use std::sync::mpsc::channel;
 
@@ -329,5 +330,4 @@ ring.completion().par_iter().for_each_with(
 )
 ```
 
-TODO: Test if we'll overflow the submission queue if we don't manually keep track
-of how many entries have popped up on the completion queue.
+TODO: Finish this design - perhaps without optimising FileChunks - and try using Rayon with `ring.completion().par_iter().for_each()`, and a separate thread for keeping the submission queue topped up.
