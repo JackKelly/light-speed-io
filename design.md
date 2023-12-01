@@ -4,8 +4,9 @@
 
 ## Planned features
 
-- [ ] Provide a simple, async API for reading many chunks of files (and/or many files) with single API call. Users will be able to ask LSIO: "_Please get me these million file chunks, and apply this function to each chunk. Tell me when you're done._".
+- [ ] Provide a simple API (using Rust's iterators) for reading many chunks of files (and/or many files) with single API call. Users will be able to ask LSIO: "_Please get me these million file chunks, and apply this function to each chunk, and then move the resulting data to these array locations._".
 - [ ] The API will be the same, no matter which operating system you're on, and no matter whether the data is on local disk, or a cloud storage bucket, or available over HTTP. (Inspired by [fsspec](https://filesystem-spec.readthedocs.io/en/latest/) :smiley:!)
+- [ ] Expose a Rust API and a Python API.
 - [ ] Laser-focus on _speed_:
   - Achieve many [input/output operations per second](https://en.wikipedia.org/wiki/IOPS) (IOPS), high bandwidth, and low latency by exploiting "modern" operating system storage APIs, and designing for inherently parallel storage systems like NVMe SSDs and cloud storage buckets.
   - Before submitting any IO operations, tune the sequence of IO operations according to the performance characteristics of each storage system. For example, on a hard drive (with spinning platters), the performance of random reads is dominated by the time taken to move the read head. So LSIO will merge nearby reads, even if those reads aren't strictly consecutive: For example, if we want to read every third block of a file, it may be faster to read the entire file, even if we immediately throw away two thirds of the data. Or, when reading large files from a cloud storage bucket, it may be faster to split each file into consecutive chunks, and request those chunks in parallel.
@@ -15,7 +16,7 @@
   - When scheduling work across multiple CPU cores: Avoid locks, or any synchronization primitives that would block a CPU core, wherever possible.
   - Look for opportunities to completely cut the CPU out of the data path. For example, if we're loading uncompressed [Zarr](https://zarr.dev/) chunks that are destined to be merged into a final numpy array, then we may be able to use [direct memory access](https://en.wikipedia.org/wiki/Direct_memory_access) (DMA) to directly copy chunks into the final numpy array from IO, without the CPU ever touching the data. This may be possible even in cases where the creation of the final array is more complicated than simply concatenating the chunks in RAM.
   - Where appropriate, align chunks in RAM (and pad the ends of chunks) so the CPU & compiler can easily use SIMD instructions, and minimize the number of cache lines that must be read. (Using SIMD may provide a large speedup "just" for memory copies, even if the transform function doesn't use SIMD).
-- [ ] The user-supplied function that's applied to each chunk could include, for example, decompression, followed by some numerical transformation, followed by copying the transformed data to a large array which is the concatenation of all the chunks. As much of this as possible should happen whilst the chunk is in the CPU cache (without time-consuming round-trips to RAM).
+- [ ] For each chunk, the user could request, for example, that the chunk be decompressed, followed by some numerical transformation, followed by moving the transformed data to a large array which is the concatenation of all the chunks. As much of this as possible should happen whilst the chunk is in the CPU cache (without time-consuming round-trips to RAM).
 - [ ] LSIO will implement multiple IO backends. Each backend will exploit the performance features of a particular operating system and storage system. The ambition is to support:
     - These operating system APIs:
         - [ ] Linux [io_uring](https://en.wikipedia.org/wiki/Io_uring) (for local storage and network storage).
@@ -25,8 +26,6 @@
         - [ ] Local disks. (With different optimizations for SSDs and HDDs).
         - [ ] Cloud storage buckets.
         - [ ] HTTP.
-- [ ] Async Rust API.
-- [ ] Async Python API.
 
 ## Use cases
 
@@ -52,8 +51,6 @@ On the other hand, if LSIO does _not_ provide a speed-up, then - to be frank - L
 Ha! :smiley:. This project is in the earliest planning stages! It'll be _months_ before it does anything vaguely useful! And, for now at least, this project is just Jack hacking away his spare time, whilst learning Rust!
 
 ## Design
-
-TODO! (But, for now, see the file [`src/draft_API_design.rs` in this pull request](https://github.com/JackKelly/light-speed-io/blob/draft-API-design/src/draft_API_design.rs))
 
 ### Public Rust API
 
@@ -138,7 +135,7 @@ impl Reader for IoUringLocal {
 
 ##### User code
 
-In this example, we read the entirety of `/foo/bar`, and we also read three chunks from `/foo/baz`:
+In this example, we read the entirety of `/foo/bar`. And we read three chunks from `/foo/baz`:
 
 ```rust
 let mut buf0 = vec![0; 1000];
@@ -147,42 +144,36 @@ let mut buf2 = vec![0;  100];
 
 let chunks = vec![
 
-    // Read the entirity of /foo/bar
+    // Read entirety of /foo/bar, and ask LSIO to allocate the memory buffer:
     FileChunks{
-        path: "/foo/bar",
-        byte_range: ByteRange::EntireFile, // Read all of file
-        buffer: None, // LSIO takes responsibility for allocating a memory buffer
+        path: "/foo/bar", 
+        chunks: vec![
+            Chunk{
+                byte_range: ...,
+                final_buffers: None,
+            },
+        ],
     },
 
     // Read 3 chunks from /foo/baz
     FileChunks{
         path: "/foo/baz", 
-        byte_range: ByteRange::MultiRange(
-            vec![
-                ..1000,     // Read the first 1,000 bytes
-                -500..-200, // Read 300 bytes, until the 200th byte from the end
-                -100..,     // Read the last 100 bytes. For example, shared Zarrs store
-                            // the shard index at the end of each file.
-                ],
-        ),
-
-        // If the user wants to supply buffers, then use `Some(Vec<&mut [u8]>)`
-        // with one buffer per element in the `byte_range` vector.
-        // For example, this would allow us to bypass the CPU when copying multiple
-        // uncompressed chunks from a sharded Zarr directly into the final array.
-        // The buffers could point to different slices of the final array.
-        // This mechanism could even be used when creating the final array is more
-        // complicated than simply appending chunks: you could, for example, read each
-        // row of each chunk into a different `&mut [u8]`. Under the hood, LSIO would
-        // notice the consecutive reads, and would use `readv` where available.
-        buffer: Some(
-            vec![
-                &mut buf0,
-                &mut buf1,
-                &mut buf2,
-            ]
-        )
+        chunks: vec![
+            Chunk{
+                byte_range: ..1000,     // Read the first 1,000 bytes
+                final_buffers: Some(vec![&mut buf0])
+            },
+            Chunk{
+                byte_range: -500..-200, // Read 300 bytes, until the 200th byte from the end
+                final_buffers: Some(vec![&mut buf1])
+            },
+            Chunk{
+                byte_range: -100..,                   // Read the last 100 bytes. For example, shared Zarrs store
+                final_buffers: Some(vec![&mut buf2])  // the shard index at the end of each file.
+            },
+        ],
     },
+
 ];
 ```
 
@@ -191,66 +182,53 @@ let chunks = vec![
 ```rust
 pub struct FileChunks {
     pub path: Path,
-    pub byte_range: ByteRange,
-
-    // If buffer is None, then LSIO will take responsibility for allocating
-    // the memory buffers. This should be the preferred approach.
-    pub buffer: Option<Vec<&mut [u8]>>,
+    pub chunks: Vec<Chunk>,
 }
 
-pub enum ByteRange {
-    EntireFile,
-    MultiRange(Vec<Range>),
+pub struct Chunk{
+    pub byte_range: Range<i64>,
+
+    // If final_buffers is None, then LSIO will take responsibility for allocating
+    // the memory buffers.
+    // If the user wants to supply buffers, then use `Some(Vec<&mut [u8]>)`.
+    // For example, this would allow us to bypass the CPU when copying multiple
+    // uncompressed chunks from a sharded Zarr directly into the final array.
+    // The buffers could point to different slices of the final array.
+    // This mechanism could be used when creating the final array is more
+    // complicated than simply appending chunks: you could, for example, read each
+    // row of a chunk into a different `&mut [u8]`. Under the hood, LSIO would
+    // notice the consecutive reads, and would use `readv` where available.
+    pub final_buffers: Option<Vec<&mut [u8]>>,
 }
 ```
 
-#### Async reading of chunks
+#### Reading chunks
 
 ##### User code
 
 ```rust
-// Start async loading of data from disk:
-let future = reader.read_chunks(&chunks);
-
-// Wait for data to all be ready.
+// Load chunks
 // We need one `Result` per chunk, because reading each chunk could fail.
 // Note that we take ownership of the returned vectors of bytes.
-let data: Vec<Result<Vec<u8>>> = future.wait();
+let results: Vec<Result<(), lsio::Error>> = reader
+    .read_chunks(&chunks)  // Returns a rayon::iter::ParallelIterator.
+    .collect_into_vec();
 ```
 
 Or, if we want to apply a function to each chunk, we could do something like this. This example
-is based on the Zarr use-case. For each chunk, want to decompress, and apply a simple numerical
+is based on the Zarr use-case. For each chunk, we want to decompress, and apply a simple numerical
 transformation, and then move the transformed data into a final array:
 
 ```rust
-let mut final_array = Array();
-let chunk_idx_to_array_loc = Vec::new();
-// TODO: Fill out `chunk_idx_to_array_loc`
-
-// processing_fn could fail, so we return a Result.
-// processing_fn may not return any data (because the data has been moved to another location)
-// so we return an Option wrapped in a Result.
-let processing_fn = |chunk_idx: u64, chunk: &[u8]| -> Result<Option<&[u8]>> {
-    // ******** DECOMPRESS ************
-    // If we don't know the size of the uncompressed chunk, then 
-    // deliberately over-allocate, and shrink later...
-    const OVER_ALLOCATION_RATIO: usize = 4;
-    let mut decompressed_chunk = Vec::with_capacity(OVER_ALLOCATION_RATIO * chunk.size());
-    decompress(&chunk, &mut decompressed_chunk)?;
-    decompressed_chunk.shrink_to_fit();
-
-    // ******** PROCESS ***********
-    decompressed_chunk = decompressed_chunk / 2;  // to give a very simple example!
-
-    // ******** COPY TO FINAL ARRAY **************
-    final_array[chunk_idx_to_array_loc[chunk_idx]] = decompressed_chunk;
-    Ok(None)  // We're deliberately not passing back the decompressed array.
-};
-let future = read.read_chunks_and_apply(&chunks, processing_fn);
-let results = future.wait();
-// TODO: check `results` for any failures
-pass_to_python(&final_array);
+let results: Vec<Result<(), lsio::Error>> = reader
+    .read_chunks(chunks)
+    .decompress_zstd()
+    .map(|chunk| chunk * 2)
+    .mem_move_to_final_buffers();
 ```
+
+`mem_move_to_final_buffers()` moves the data to its final location, specified in `Chunk.final_buffers`.
+
 
 ### Internal design of LSIO
 
