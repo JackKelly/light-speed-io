@@ -221,10 +221,11 @@ transformation, and then move the transformed data into a final array:
 
 ```rust
 let results: Vec<Result<(), lsio::Error>> = reader
-    .read_chunks(chunks)
+    .read_chunks(&chunks)
     .decompress_zstd()
     .map(|chunk| chunk * 2)
-    .mem_move_to_final_buffers();
+    .mem_move_to_final_buffers(&chunks);  // Pass in chunks Vector, so `mem_move_to_final_buffers` can interpret
+    // the user_data, which could be two u32s: index into the FileChunk, and index into the Chunk.
 ```
 
 `mem_move_to_final_buffers()` moves the data to its final location, specified in `Chunk.final_buffers`.
@@ -233,6 +234,8 @@ let results: Vec<Result<(), lsio::Error>> = reader
 ### Internal design of LSIO
 
 TODO. Things to consider:
+
+
 
 Within LSIO, the pipeline for the IO ops will be something like this:
 
@@ -248,6 +251,9 @@ Within LSIO, the pipeline for the IO ops will be something like this:
         - Merge nearby reads, depending on `IoConfig`, possibly using `readv` to scatter the single read into the requested vectors (and can we scatter the unwanted data to /dev/null?!? Prob not?)
         - Split large reads into multiple smaller reads, depending on `IoConfig.max_megabytes_of_single_read`. (Maybe don't worry about this for now, given that this isn't relevant for reading local SSDs using io_uring. This may still be possible in a single vectored read operation, which reads into slices of the same underlying array. Or, if that's not possible, maybe spin up a separate io_uring context just for the individual reads that make up the single requested read, so it's clear when all the reads have finished.)
         - Detect contiguous chunks destined for different buffers, and use `readv` to read these. (Although we should benchmark `readv` vs `read`).
+        - We could make the optimisation modular, using iterators. Maybe we explicity make it a 2-step process.
+            - First, users create a set list of abstracted read operations: `let operations = chunks.merge_overlaps().merge_nearby_reads(threshold)`. (Which makes the code easy to read. But, under the hood, `merge_overlaps` will have to look through all the elements, and then re-emit them for the next iterator... which isn't exactly in the spirit of an iterator!) 
+            - And then we submit those operations and process them: `let data = reader.submit(operations).decompress_zstd().collect()`.
         - Merging and splitting read operations means that there's no longer a one-to-one mapping between chunks that the _user_ requested, and chunks that LSIO will request from the storage subsystem. This raises some important design questions:
             - How do we ensure that each of the user's chunks are processes in their own threads. (The transform function supplied by the user probably expects the chunks that the user requested)
                 - Some potential answers:
