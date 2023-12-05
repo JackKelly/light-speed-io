@@ -1,7 +1,7 @@
 # light-speed-io
 Read many chunks of files at high speed.
 
-For now, this repo is just for me to tinker with ideas. This code won't do anything even vaguely useful for several months!
+For now, this repo is just a place for me to tinker with ideas. This code won't do anything vaguely useful for months!
 
 The ultimate ambition is to enable folks to read huge numbers of chunks from files as fast as modern hardware will allow.
 
@@ -11,4 +11,4 @@ Under the hood, my hope is that light-speed-io will use [`io_uring`](https://ker
 
 My first use-case for light-speed-io is to help to speed up reading [Zarr](https://zarr.dev/). After that, I'm interested in helping to create fast readers for "native" geospatial file formats like GRIB2 and EUMETSAT native files.
 
-For more info, please see [this Google doc](https://docs.google.com/document/d/1_T0ay9wXozgqq334E2w1SROdlAM7y6JSgL1rmXJnIO0/edit).
+For more info, please [the draft design doc](https://github.com/JackKelly/light-speed-io/blob/main/design.md). Comments are very welcome!
