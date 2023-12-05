@@ -7,10 +7,11 @@
 - [ ] Provide a simple API (using Rust's iterators) for reading many chunks of files (and/or many files) with single API call. Users will be able to ask LSIO: "_Please get me these million file chunks, and apply this function to each chunk, and then move the resulting data to these array locations._".
 - [ ] The API will be the same, no matter which operating system you're on, and no matter whether the data is on local disk, or a cloud storage bucket, or available over HTTP. (Inspired by [fsspec](https://filesystem-spec.readthedocs.io/en/latest/) :smiley:!)
 - [ ] Expose a Rust API and a Python API.
+- [ ] Cache compressed chunks in RAM (configurable).
 - [ ] Laser-focus on _speed_:
   - Achieve many [input/output operations per second](https://en.wikipedia.org/wiki/IOPS) (IOPS), high bandwidth, and low latency by exploiting "modern" operating system storage APIs, and designing for inherently parallel storage systems like NVMe SSDs and cloud storage buckets.
   - Before submitting any IO operations, tune the sequence of IO operations according to the performance characteristics of each storage system. For example, on a hard drive (with spinning platters), the performance of random reads is dominated by the time taken to move the read head. So LSIO will merge nearby reads, even if those reads aren't strictly consecutive: For example, if we want to read every third block of a file, it may be faster to read the entire file, even if we immediately throw away two thirds of the data. Or, when reading large files from a cloud storage bucket, it may be faster to split each file into consecutive chunks, and request those chunks in parallel.
-  - "Auto-tune" to each storage system. Or, if users does not want to auto-tune, then provide sane defaults for a range of common storage systems.
+  - "Auto-tune" to each storage system. Or, if users do not want to auto-tune, then provide sane defaults for a range of common storage systems.
   - Exploit CPU caches and hence minimize the number of time-consuming reads from RAM. Once a chunk is loaded into CPU cache, perform all transformations on that chunk in quick succession (to maximize the chance that the data stays in cache), and pin the computation for a given chunk to a single CPU core (because level-1 CPU cache is specific to a CPU core).
   - Use multiple CPU cores in parallel (each working on a different chunk).
   - When scheduling work across multiple CPU cores: Avoid locks, or any synchronization primitives that would block a CPU core, wherever possible.
@@ -40,7 +41,7 @@ Jack's main hypothesis is that it _should_ be possible to train large machine le
 
 (And, even more ambitiously, LSIO may allow us to train directly from the _original data_ stored in, for example, GRIB files). 
 
-The ultimate test is: Can LSIO enable us to train ML models directly from Zarr? (whilst ensuring that the GPU is constantly at near 100% utilization). So, Jack's priority will be to implement just enough of LSIO to enable us to test this hypothesis empirically: and that means implementing just one IO backend (io_uring for local files), to start with.
+The ultimate test is: Can LSIO enable us to train ML models directly from Zarr? (whilst ensuring that the GPU is constantly at near 100% utilization). So, Jack's _first_ priority will be to implement just enough of LSIO to enable us to test this hypothesis empirically: and that means implementing just one IO backend, to start with. That backend will be io_uring for local files.
 
 If this provides a significant speed-up, then Jack will focus on implementing reading from Google Cloud Storage buckets, maybe using io_uring for async network IO.
 
@@ -155,7 +156,7 @@ let chunks = vec![
         ],
     },
 
-    // Read 3 chunks from /foo/baz
+    // Read 3 chunks from /foo/baz:
     FileChunks{
         path: "/foo/baz", 
         chunks: vec![
@@ -168,8 +169,8 @@ let chunks = vec![
                 final_buffers: Some(vec![&mut buf1])
             },
             Chunk{
-                byte_range: -100..,                   // Read the last 100 bytes. For example, shared Zarrs store
-                final_buffers: Some(vec![&mut buf2])  // the shard index at the end of each file.
+                byte_range: -100..,                   // Read the last 100 bytes. For example, shared Zarrs
+                final_buffers: Some(vec![&mut buf2])  // place the shard index at the end of each file.
             },
         ],
     },
@@ -210,9 +211,10 @@ pub struct Chunk{
 // Load chunks
 // We need one `Result` per chunk, because reading each chunk could fail.
 // Note that we take ownership of the returned vectors of bytes.
+let mut data = Vec::with_capacity(chunks.len());
 let results: Vec<Result<(), lsio::Error>> = reader
     .read_chunks(&chunks)  // Returns a rayon::iter::ParallelIterator.
-    .collect_into_vec();
+    .collect_into_vec(&mut data);
 ```
 
 Or, if we want to apply a function to each chunk, we could do something like this. This example
@@ -228,7 +230,7 @@ let results: Vec<Result<(), lsio::Error>> = reader
     // the user_data, which could be two u32s: index into the FileChunk, and index into the Chunk.
 ```
 
-`mem_move_to_final_buffers()` moves the data to its final location, specified in `Chunk.final_buffers`.
+`mem_move_to_final_buffers()` moves the data to its final location. The final location is specified in `Chunk.final_buffers`.
 
 
 ### Internal design of LSIO
