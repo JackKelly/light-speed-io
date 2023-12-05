@@ -55,50 +55,6 @@ Ha! :smiley:. This project is in the earliest planning stages! It'll be _months_
 
 ### Public Rust API
 
-#### Describe the performance characteristics of the storage subsystem
-
-First, the user must describe the performance characteristics of their storage subsystem. This can be done using pre-defined defaults, or auto calibration, or manually specifying options, or loading from disk (using [`serde`](https://serde.rs/)). This information will be used by LSIO to optimize the sequence of chunks for the user's storage system, prior to submitting IO operations to the hardware. The user's code would look like this:
-
-##### User code
-
-```rust
-let config = SSD_NVME_PCIE_GEN4;
-
-// Or do this :)
-let config = IoConfig::auto_calibrate();
-```
-
-##### Under the hood (in LSIO)
-
-```rust
-/// Describe the performance characteristics of the storage subsystem
-pub struct IoConfig {
-    pub latency_millisecs: f64,
-    pub bandwidth_megabytes_per_sec: f64,
-
-    /// Files larger than this will be broken into consecutive chunks,
-    /// and the chunks will be requested concurrently.
-    /// Breaking up files may speed up reading from cloud storage buckets.
-    /// Each chunk will be no larger than this size.
-    /// Set this to `None` if you never want to break files apart.
-    pub max_megabytes_of_single_read: Option<f64>,
-}
-
-impl IoConfig {
-    pub fn auto_calibrate() -> Self {
-        // TODO
-    }
-    // Use Serde to save and load IoConfig.
-}
-
-/// Default config options for NVMe SSDs using PCIe generation 4.
-pub const SSD_NVME_PCIE_GEN4: IoConfig = IoConfig{
-    latency_millisecs: 0.001,
-    bandwidth_megabytes_per_sec: 8000,
-    max_megabytes_of_single_read: None,
-};
-```
-
 #### Initialize a `Reader` struct
 
 Using a persistent object will allow us to cache (in memory) values such as file sizes. And provides an opportunity to pre-allocated memory buffers (where possible).
@@ -106,25 +62,23 @@ Using a persistent object will allow us to cache (in memory) values such as file
 ##### User code
 
 ```rust
-let reader = IoUringLocal::new(config);
+let reader = IoUringLocal::new();
 ```
 
 ##### Under the hood (in LSIO)
 
 ```rust
 pub trait Reader {
-    pub fn new(config: IoConfig) -> Self { Self {config} }
+    pub fn new() -> Self { Self }
 }
 
 /// Linux io_uring for locally-attached disks.
 pub struct IoUringLocal {
-    config: IoConfig,
-
     /// Map from the full file name to the file size in bytes.
     /// We need to know the length of each file if we want to read the file
     /// in its entirety, or if we want to seek to a position relative to the
     /// end of the file.
-    cached_file_sizes_in_bytes: map<PathBuf, u64>,
+    cache_of_file_sizes_in_bytes: Map<PathBuf, u64>,
 }
 
 impl Reader for IoUringLocal {
@@ -151,7 +105,8 @@ let chunks = vec![
         chunks: vec![
             Chunk{
                 byte_range: ...,
-                final_buffers: None,
+                raw_buffers: None,
+                processed_buffers: None,
             },
         ],
     },
@@ -162,15 +117,18 @@ let chunks = vec![
         chunks: vec![
             Chunk{
                 byte_range: ..1000,     // Read the first 1,000 bytes
-                final_buffers: Some(vec![&mut buf0])
+                raw_buffers: Some(vec![&mut buf0]),
+                processed_buffers: None,
             },
             Chunk{
                 byte_range: -500..-200, // Read 300 bytes, until the 200th byte from the end
-                final_buffers: Some(vec![&mut buf1])
+                raw_buffers: Some(vec![&mut buf1]),
+                processed_buffers: None,
             },
             Chunk{
-                byte_range: -100..,                   // Read the last 100 bytes. For example, shared Zarrs
-                final_buffers: Some(vec![&mut buf2])  // place the shard index at the end of each file.
+                byte_range: -100..,                 // Read the last 100 bytes. For example, shared Zarrs
+                raw_buffers: Some(vec![&mut buf2]), // place the shard index at the end of each file.
+                processed_buffers: None,
             },
         ],
     },
@@ -178,7 +136,8 @@ let chunks = vec![
 ];
 ```
 
-It is highly recommended that the user only submits _one_ `FileChunks` object per `path`. This is because LSIO optimises each `FileChunks` object independently of other `FileChunks`.
+It is highly recommended that the user only submits _one_ `FileChunks` object per `path`. 
+This is because LSIO optimises each `FileChunks` object independently of other `FileChunks`.
 
 ##### Under the hood (in LSIO)
 
@@ -191,8 +150,8 @@ pub struct FileChunks {
 pub struct Chunk{
     pub byte_range: Range<i64>,
 
-    // If final_buffers is None, then LSIO will take responsibility for allocating
-    // the memory buffers.
+    // Memory buffers for storing the raw data, straight after the data arrives from IO.
+    // If raw_buffers is None, then LSIO will take responsibility for allocating the buffers.
     // If the user wants to supply buffers, then use `Some(Vec<&mut [u8]>)`.
     // For example, this would allow us to bypass the CPU when copying multiple
     // uncompressed chunks from a sharded Zarr directly into the final array.
@@ -201,60 +160,99 @@ pub struct Chunk{
     // complicated than simply appending chunks: you could, for example, read each
     // row of a chunk into a different `&mut [u8]`. Under the hood, LSIO would
     // notice the consecutive reads, and would use `readv` where available.
-    pub final_buffers: Option<Vec<&mut [u8]>>,
+    //
+    // LSIO borrows a mutable reference to each buffer, so that the user can supply a *slice* to a subset
+    // of a larger array. This does mean that caching within LSIO will be a little slower
+    // when the user supplies raw_buffers, and memory usage will be larger, because LSIO's
+    // cache will have to _copy_ the contents of these memory buffers. LSIO can't use user-supplied
+    // buffers as its cache, because LSIO can't guarantee that the user-supplied buffers will be immutable.
+    pub raw_buffers: Option<Vec<&mut [u8]>>,
+
+    // Memory buffers for storing the data after it has been processed.
+    pub processed_buffers: Option<Vec<&mut [u8]>>,
 }
 ```
 
 #### Optimising the IO plan
 
-Maybe we explicity make it a 2-step process: first, we optimise the IO plan. Then we read from disk.
+LSIO optimizes the sequence of `byte_ranges` read from IO.
+
+We explicitly have 2-steps: first, we optimise the IO plan. Then we read from disk.
 
 We make the optimisation modular by using iterators.
 
 First, users create a set list of abstracted read operations: 
 
 ```rust
+// First, establish a cache for raw chunk data.
+
+/// Used as the key to the cache of raw chunks.
+struct PathAndRange {
+    path: PathBuf,
+    range: Range,
+}
+
+struct CacheOfRawChunks {
+    cache_of_raw_chunks: Map<Path, Map<Range, [u8]>>,
+}
+
+let mut cache = CacheOfRawChunks::new();
+
+struct OptimisedChunk {
+    byte_range: Range, 
+
+    buffers: Optional<Vec<&mut [u8]>>,
+
+    // Index of the original chunks for which this optimised chunk is a superset.
+    // For example, if the user originally requested two chunks: ..100, 200..300,
+    // and we merged these two chunks into a single read of ..300,
+    // then idx_of_original_chunks would be [0, 1].
+    idx_of_original_chunks: Vec<usize>,
+
+    // Keys into the cache, for any cache hits which at least partially satisfy this read.
+    // This is useful so we don't have to completely search the cache a second time.
+    cache_keys: Vec<PathAndRange>,
+}
+
+struct OptimisedFileChunks {
+    original_filechunks: FileChunks,
+    optimised_chunks: Vec<OptChunk>,
+}
+
 let plan = chunks
-    .merge_overlaps()
-    .merge_nearby_reads(merge_threshold_in_megabytes)
-    .detect_contiguous_reads()
+    .par_iter()  // Use Rayon to optimise the plan in parallel
+    .map( |filechunks| 
+        filechunks
+            .check_cache(&cache)
+            .deduplicate()
+            .merge_nearby_reads(merge_threshold_in_megabytes)
+            .detect_contiguous_reads()
+    )
 ```
 
-Each `Item` will be a single `FileChunks` struct. After this line, no processing will have started yet. You'd have to call `collect()` to collect, if you wanted to... but we  want to submit the first few operations before we've finished computing the operations. So, usually, you'd leave `operations` as an uncollected iterator.
-
-For any `MultiRange`s, LSIO optimizes the sequence of ranges. This is dependent on `IoConfig`, but shouldn't be dependent on the IO backend. Maybe this could be implemented as a set of methods on `FileChunks`?
+Each `Item` will be a single `FileChunks` struct. After this line, no processing will have started yet. You'd have to call `collect()` to collect, if you wanted to... but we want to submit the first few operations before we've finished computing the operations. So, usually, you'd leave `plan` as an uncollected iterator.
 
 Data chunks returned to the user will always immutable. That will make the design easier and faster: If the data is always immutable, then we can use slices instead of copies when apportioning merged reads. And it allows LSIO's caching mechanism to be faster than the operating system's page cache because LSIO doesn't have to memcopy anything. In contrast, the OS has to memcopy from page cache into the process' address space.
 
-For now, just optimise each `FileChunks` struct, independently of other `FileChunks`. Let's assume - for now - that the user is well-behaved and only submits one `FileChunks` per file!
+For now, just optimise each `FileChunks` struct, independently of other `FileChunks`. Let's assume - for now - that the user is only submits one `FileChunks` per file!
 
-- Merge any overlapping read requests. For example, if the user requests two chunks `[..1000, ..100]` then only actually read `..1000`, and return - as the second chunk - an immutable slice of the last 100 bytes. <font size="1">(Maybe don't implement this in the MVP. But check that the design can support this. Although don't worry too much - I'm not even sure if this issue would arise in the real world.)</font>
-- Merge nearby reads, even if those reads are not strictly consecutive. Configurable using on `IoConfig`. Use `readv` to scatter the single read into the requested vectors <font size="2">(and - optionally - cache all the data read from disk, or just cache the chunks the user requested, or cache nothing)</font>
-- Split large reads into multiple smaller reads, depending on `IoConfig.max_megabytes_of_single_read`. <font size="2">(Maybe don't worry about this for now, given that this isn't relevant for reading local SSDs using io_uring. This may still be possible in a single vectored read operation, which reads into slices of the same underlying array. Or, if that's not possible, maybe spin up a separate io_uring context just for the individual reads that make up the single requested read, so it's clear when all the reads have finished.)</font>
+Optimisations include:
+
+- Check the cache to see if it already has some of the data we require. It's important to do this first, so that all subsequent operations only operate on just the byte ranges that we actually need to read from disk. Although, this isn't _essential_. If this gets tricky, we could not concern the planning stage with the cache, and only use the cache in the backend. But I think there are a few cases where this would lead to a sub-optimial plan.
+- Deduplicate overlapping read requests. For example, if the user requests two chunks `[..1000, ..100]` then only actually read `..1000`, and return - as the second chunk - an immutable slice of the last 100 bytes. <font size="1">(Maybe don't implement this in the MVP. But check that the design can support this. Although don't worry too much - I'm not even sure if this issue would arise in the real world.)</font>
+- Merge nearby reads, even if those reads are not strictly consecutive. Use `readv` to scatter the single read into the requested vectors <font size="2">(and - optionally - cache all the data read from disk, or just cache the chunks the user requested, or cache nothing)</font>
+- Split large reads into multiple smaller reads. This is useful for reading from cloud storage buckets, or from HTTPS. <font size="2">(Maybe don't worry about this for now, given that this isn't relevant for reading local SSDs using io_uring. This may still be possible in a single vectored read operation, which reads into slices of the same underlying array. Or, if that's not possible, maybe spin up a separate io_uring context just for the individual reads that make up the single requested read, so it's clear when all the reads have finished.)</font>
 - Detect contiguous chunks destined for different buffers, and use `readv` to read these. <font size="2">(Although we should benchmark `readv` vs `read`)</font>.
-- Merging and splitting read operations means that there's no longer a one-to-one mapping between chunks that the _user_ requested, and chunks that LSIO will request from the storage subsystem. This raises some important design questions:
-    - How do we ensure that each of the user's chunks are processes in their own threads. (The transform function supplied by the user probably expects the chunks that the user requested)
-        - Some potential answers:
-            - Use tokio! This might be a classic use-case requiring tokio. But! We'll still have tasks which block for much longer than the 100 microseconds recommended by Tokio. So...
-            - Use Rayon! <--- **CURRENTLY MY PREFERRED IDEA!!**
-                - Hmm... Can we just use `ring.completion().par_iter()`??? Which I _think_ wouldn't use a blocking thread synchronization primitive (instead it would use work steeling). I could test this pretty easily (10 lines of Rust?!). 
-                - How to keep the submission queue topped up? Maybe a separate thread (not part of the worker thread pool, because we don't want to take CPU cores away from decompression). Set `IORING_SETUP_CQ_NODROP`. Then check for `-EBUSY` returned from `io_uring_submit()`, and wait before submitting, and warn the user that the CQ needs to be larger. When using `IORING_SETUP_SQPOLL`, also need to check `io_uring_has_overflow()` before submitting (and warn the user if overflow). See [my SO Q&A](https://stackoverflow.com/questions/77580828/how-to-guarantee-that-the-io-uring-completion-queue-never-overflows/77580829#77580829).
-                - [`ndarray` uses Rayon](https://docs.rs/ndarray/latest/ndarray/parallel/index.html).
-                - **I don't think the following idea will work...** can we make life as simple as possible: We start by doing `file_chunks.par_iter().for_each_init(init, op)`. Each worker thread will have its own entire io_uring: each thread will have a submission queue and a completion queue (initialised by the `init` closure). The `op` closure will call `join(a, b)`. Closure `a` submits a read op to the submission queue (or blocks if the submission queue is full). Closure `b` takes a single item from the completion queue, and processes it; or blocks if there's no data yet. No, no, this won't work: this will only submit one request at once, because this thread will block!
-                    - But how to persist io_urings in Rayon?
-                    - It may be as simple as using [`for_each_init`](https://docs.rs/rayon/latest/rayon/iter/trait.ParallelIterator.html#method.for_each_init) to init an io_uring for each thread. But [this github comment](https://github.com/rayon-rs/rayon/issues/718) from 2020 suggests that the init function is called many more times than the number of threads.
-                    - Failing that, use the [`thread_local` crate](https://docs.rs/thread_local/1.1.7/thread_local/), to create a separate io_uring local to each thread?
-                    - Or, perhaps we can create a Rayon Threadpool and somehow init an io_uring per thread. But I'm not sure how!
-            - Use a manually-coded thread pool. If a thread gets a read from its io_uring completion queue that requires splitting, then just loop within that thread to do each task sequentially. But that could result in some CPU cores being busy, and others not.
-            - Can io_uring communicate tasks to other threads? Or maybe worker threads can use the common channel to tell the main thread to put a new (non-IO) task into the queue that will be shared amongst worker threads.
-            - Or, using manually-coded thread pools, threads could also share a _second_ queue, for non-IO tasks. And, if there's no data ready on a thread's io_uring, then it checks that queue.
-            - When we want to merge multiple reads into a single memory location, then that's a bit harder, and requires us to join on all those tasks.
-    - Perhaps we need a new type for the _optimized_ byte ranges? We need to express:
-        - "_this single optimized read started life as multiple, nearby reads. After performing this single read, the memory buffer will need to be sliced, and those slices processed in parallel. And we may want to throw away some data. The IO backend should be encouraged to use `readv` if available, to directly read into multiple buffers. (POSIX can use `readv` to read sockets as well as files.)_"
-        - "_this single optimized read started life as n multiple, overlapping reads. The user is expecting n slices (views) of this memory buffer_"
-        - "_these multiple optimized reads started life as a single read request. Create one large memory buffer. And each sub-chunk should be read directly into a different slice of the memory buffer._"
-        - Maybe the answer is that the optimization step should be responsible for allocating the memory buffers, and it just submits a sequence of abstracted `readv` operations to the IO backend? If the backend can't natively perform `readv` then it's trivial for the backend to split one `readv` call into multiple `read`s. But! We should only allocate memory buffers when we're actually ready to read! Say we want to read 1,000,000 chunks. Using io_uring, we won't actually submit all 1,000,000 read requests at once: instead we'll keep the submission ring topped up with, say, 64 tasks. If the user wants all 1,000,000 chunks returned then we have no option but to allocate all 1,000,000 chunks. But if, instead, the user wants each chunk to be processed and then moved into a common final array, then we only have to allocate 64 buffers per thread.
-- Pass this optimized sequence to the IO backend (e.g. `IoUringLocal`).
+
+##### Implementation details (within LSIO)
+
+The plan needs to express:
+- "_this single optimized read started life as multiple, nearby reads. After performing this single read, the memory buffer will need to be sliced, and those slices processed in parallel. And we may want to throw away some data. The IO backend should be encouraged to use `readv` if available, to directly read into multiple buffers. (POSIX can use `readv` to read sockets as well as files.)_"
+- "_this single optimized read started life as n multiple, overlapping reads. The user is expecting n slices (views) of this memory buffer_"
+- "_these multiple optimized reads started life as a single read request. Create one large memory buffer. And each sub-chunk should be read directly into a different slice of the memory buffer._"
+
+Maybe the answer is that the optimization step should be responsible for allocating the memory buffers, and it just submits a sequence of abstracted `readv` operations to the IO backend? If the backend can't natively perform `readv` then it's trivial for the backend to split one `readv` call into multiple `read`s. But! We should only allocate memory buffers when we're actually ready to read! Say we want to read 1,000,000 chunks. Using io_uring, we won't actually submit all 1,000,000 read requests at once: instead we'll keep the submission ring topped up with, say, 64 tasks. If the user wants all 1,000,000 chunks returned then we have no option but to allocate all 1,000,000 chunks. But if, instead, the user wants each chunk to be processed and then moved into a common final array, then we only have to allocate 64 buffers per thread.
+
 
 #### Reading chunks
 
@@ -262,11 +260,7 @@ After optimising the plan, we submit those operations and process them:
 
 ##### User code
 
-```rust
-let data = reader.submit(operations).decompress_zstd().collect()
-```
-
-(Maybe, I could make a separate crate which wraps compression algorithms as iterator adaptors, for decompressing chunks like this. See the [streaming-compressor crate](https://github.com/jorgecarleitao/streaming-decompressor/tree/main), but not that it doesn't actually implement any codecs)
+(Maybe, I could make a separate crate which wraps compression algorithms as iterator adaptors, for decompressing chunks like this. See the [streaming-compressor crate](https://github.com/jorgecarleitao/streaming-decompressor/tree/main), but note that it doesn't actually implement any codecs)
 
 
 if we want to apply a function to each chunk, we could do something like this. This example
@@ -278,7 +272,8 @@ transformation.
 // We need one `Result` per chunk, because reading each chunk could fail.
 // Note that we take ownership of the returned vectors of bytes.
 let mut data: Vec<Result<Vec<u8>, lsio::Error>> = Vec::with_capacity(chunks.len());
-reader.submit(&plan)  // Returns a rayon::iter::ParallelIterator.
+reader.submit(&plan)  // Returns an Iterator.
+    .par_iter()
     .decompress_zstd()
     .map(|chunk| chunk * 2)
     .collect_into_vec(&mut data);
@@ -297,6 +292,11 @@ let results: Vec<Result<(), lsio::Error>> = reader
 
 `mem_move_to_final_buffers()` moves the data to its final location. The final location is specified in `Chunk.final_buffers`.
 
+##### Implementation details (within LSIO)
+
+Merging and splitting read operations means that there's no longer a one-to-one mapping between chunks that the _user_ requested, and chunks that LSIO will request from the storage subsystem. This raises some important design questions:
+    - How do we ensure that each of the user's chunks are processes in their own threads. (The transform function supplied by the user probably expects the chunks that the user requested) Use Rayon! We can use `ring.completion().par_iter()`??? Which I _think_ wouldn't use a blocking thread synchronization primitive (instead it would use work steeling). I will test this (10 lines of Rust?!). 
+    - How to keep the submission queue topped up? Maybe a separate thread (not part of the worker thread pool, because we don't want to take CPU cores away from decompression). Set `IORING_SETUP_CQ_NODROP`. Then check for `-EBUSY` returned from `io_uring_submit()`, and wait before submitting, and warn the user that the CQ needs to be larger. When using `IORING_SETUP_SQPOLL`, also need to check `io_uring_has_overflow()` before submitting (and warn the user if overflow). See [my SO Q&A](https://stackoverflow.com/questions/77580828/how-to-guarantee-that-the-io-uring-completion-queue-never-overflows/77580829#77580829).
 
 ### Internal design of LSIO
 
