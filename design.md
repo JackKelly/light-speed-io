@@ -251,12 +251,13 @@ The plan needs to express:
 - "_this single optimized read started life as n multiple, overlapping reads. The user is expecting n slices (views) of this memory buffer_"
 - "_these multiple optimized reads started life as a single read request. Create one large memory buffer. And each sub-chunk should be read directly into a different slice of the memory buffer._"
 
-Maybe the answer is that the optimization step should be responsible for allocating the memory buffers, and it just submits a sequence of abstracted `readv` operations to the IO backend? If the backend can't natively perform `readv` then it's trivial for the backend to split one `readv` call into multiple `read`s. But! We should only allocate memory buffers when we're actually ready to read! Say we want to read 1,000,000 chunks. Using io_uring, we won't actually submit all 1,000,000 read requests at once: instead we'll keep the submission ring topped up with, say, 64 tasks. If the user wants all 1,000,000 chunks returned then we have no option but to allocate all 1,000,000 chunks. But if, instead, the user wants each chunk to be processed and then moved into a common final array, then we only have to allocate 64 buffers per thread.
+Maybe the answer is that the optimization step should be responsible for allocating the memory buffers, and it just submits a sequence of abstracted `readv` operations to the IO backend? If the backend can't natively perform `readv` then it's trivial for the backend to split one `readv` call into multiple `read`s. But! We should only allocate memory buffers when we're actually ready to read! Say we want to read 1,000,000 chunks. Using io_uring, we won't actually submit all 1,000,000 read requests at once: instead we'll keep the submission ring topped up with, say, 64 tasks. If the user wants all 1,000,000 chunks returned then we have no option but to allocate (and keep) all 1,000,000 chunks. But if, instead, the user wants each chunk to be processed and then moved into a common final array, then we only have to keep 64 buffers around at any given time.
 
 
 #### Reading chunks
 
 After optimising the plan, we submit those operations and process them:
+
 
 ##### User code
 
@@ -286,11 +287,10 @@ let results: Vec<Result<(), lsio::Error>> = reader
     .read_chunks(&chunks)
     .decompress_zstd()
     .map(|chunk| chunk * 2)
-    .mem_move_to_final_buffers(&chunks);  // Pass in chunks Vector, so `mem_move_to_final_buffers` can interpret
-    // the user_data, which could be two u32s: index into the FileChunk, and index into the Chunk.
+    .mem_move_to_final_buffers();
 ```
 
-`mem_move_to_final_buffers()` moves the data to its final location. The final location is specified in `Chunk.final_buffers`.
+`mem_move_to_final_buffers()` moves the data to its final location. The final location is specified by the user in `Chunk.final_buffers`. The completion queue entry's user_data contains a raw pointer, created by `Box::into_raw()`. The raw pointer would point to an `OptimisedFileChunks` struct (which contains all the information the Rayon worker thread needs).
 
 ##### Implementation details (within LSIO)
 
@@ -311,7 +311,7 @@ Within LSIO, the pipeline for the IO ops will be something like this:
 - How to move ownership of buffers that LSIO allocates _through_ io_uring? I _think_ the approach should be:
     - Allocate filehandles for each read op in flight. (So io_uring can chain `open(fh)`, `read(fh)`, `close(fh)`).
     - Submit the first, say, 64 read ops to each thread's submission queue. (Each "read op" would actually be a chain of open, read, close).
-    - Allocate a buffer in the "submission thread": `let buffer = Box::new(Vec::<u8>with_capacity(size))`.
-    - Set the SQE's user_data to `Box::into_raw(buffer)` (see [docs for into_raw](https://doc.rust-lang.org/std/boxed/struct.Box.html#method.into_raw)). `into_raw()` _consumes_ the buffer (but doesn't de-allocated it), which is exactly what we want. We mustn't touch `buffer` until it re-emerges from the kernel. And we _do_ want the worker thread (that processes the CQE) to decide whether to drop the buffer (after moving data elsewhere) or keep the buffer (if we're passing the buffer back to the user)
+    - In the "submission thread": `let optimised_file_chunks = Box::new(optimised_file_chunks)`.
+    - Set the SQE's user_data to `Box::into_raw(optimised_file_chunks)` (see [docs for into_raw](https://doc.rust-lang.org/std/boxed/struct.Box.html#method.into_raw)). `into_raw()` _consumes_ the object (but doesn't de-allocated it), which is exactly what we want. We mustn't touch `buffer` until it re-emerges from the kernel. And we _do_ want Rayon's worker thread (that processes the CQE) to decide whether to drop the buffer (after moving data elsewhere) or keep the buffer (if we're passing the buffer back to the user)
     - Pass the SQE to io_uring
-    - Use `ring.collect().par_iter().for_each()` to process each CQE. Turn the user_data back into an _owned_ Box using `unsafe {buffer = Box::from_raw(cqe.user_data)}`. (see [docs for from_raw](https://doc.rust-lang.org/std/boxed/struct.Box.html#method.from_raw))
+    - Use `ring.collect().par_iter().for_each()` to process each CQE. Turn the user_data back into an _owned_ Box using `unsafe {optimised_file_chunks = Box::from_raw(cqe.user_data)}`. (see [docs for from_raw](https://doc.rust-lang.org/std/boxed/struct.Box.html#method.from_raw)).
