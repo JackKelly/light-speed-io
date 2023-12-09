@@ -296,11 +296,8 @@ let results: Vec<Result<(), lsio::Error>> = reader
 
 Merging and splitting read operations means that there's no longer a one-to-one mapping between chunks that the _user_ requested, and chunks that LSIO will request from the storage subsystem. This raises some important design questions:
     - How do we ensure that each of the user's chunks are processes in their own threads. (The transform function supplied by the user probably expects the chunks that the user requested) Use Rayon! We can use `ring.completion().par_iter()`??? Which I _think_ wouldn't use a blocking thread synchronization primitive (instead it would use work steeling). I will test this (10 lines of Rust?!). 
-    - How to keep the submission queue topped up? Maybe a separate thread (not part of the worker thread pool, because we don't want to take CPU cores away from decompression). Set `IORING_SETUP_CQ_NODROP`. Then check for `-EBUSY` returned from `io_uring_submit()`, and wait before submitting, and warn the user that the CQ needs to be larger. When using `IORING_SETUP_SQPOLL`, also need to check `io_uring_has_overflow()` before submitting (and warn the user if overflow). See [my SO Q&A](https://stackoverflow.com/questions/77580828/how-to-guarantee-that-the-io-uring-completion-queue-never-overflows/77580829#77580829).
+    - How to keep the submission queue topped up? Maybe a separate thread (not part of the worker thread pool, because we don't want to take CPU cores away from decompression). But, how to ask io_uring to apply backpressure? Set `IORING_SETUP_CQ_NODROP`. Then check for `-EBUSY` returned from `io_uring_submit()`, and wait before submitting, and warn the user that the CQ needs to be larger. When using `IORING_SETUP_SQPOLL`, also need to check `io_uring_has_overflow()` before submitting (and warn the user if overflow). See [my SO Q&A](https://stackoverflow.com/questions/77580828/how-to-guarantee-that-the-io-uring-completion-queue-never-overflows/77580829#77580829).
 
-### Internal design of LSIO
-
-TODO. Things to consider:
 
 Within LSIO, the pipeline for the IO ops will be something like this:
 
@@ -312,45 +309,9 @@ Within LSIO, the pipeline for the IO ops will be something like this:
         - in the MVP, let's get the file sizes in the main thread, using the easiest (blocking) method. In later versions, we can get the file sizes async. (Getting filesizes async might be useful when, for example, we need to read huge numbers of un-sharded Zarr chunks).
 - Spin up a "submission thread". Its job is to keep the submission queue full. And, probably, to allocate buffers for io_uring to read into (if the user hasn't supplied buffers).
 - How to move ownership of buffers that LSIO allocates _through_ io_uring? I _think_ the approach should be:
+    - Allocate filehandles for each read op in flight. (So io_uring can chain `open(fh)`, `read(fh)`, `close(fh)`).
+    - Submit the first, say, 64 read ops to each thread's submission queue. (Each "read op" would actually be a chain of open, read, close).
     - Allocate a buffer in the "submission thread": `let buffer = Box::new(Vec::<u8>with_capacity(size))`.
     - Set the SQE's user_data to `Box::into_raw(buffer)` (see [docs for into_raw](https://doc.rust-lang.org/std/boxed/struct.Box.html#method.into_raw)). `into_raw()` _consumes_ the buffer (but doesn't de-allocated it), which is exactly what we want. We mustn't touch `buffer` until it re-emerges from the kernel. And we _do_ want the worker thread (that processes the CQE) to decide whether to drop the buffer (after moving data elsewhere) or keep the buffer (if we're passing the buffer back to the user)
     - Pass the SQE to io_uring
     - Use `ring.collect().par_iter().for_each()` to process each CQE. Turn the user_data back into an _owned_ Box using `unsafe {buffer = Box::from_raw(cqe.user_data)}`. (see [docs for from_raw](https://doc.rust-lang.org/std/boxed/struct.Box.html#method.from_raw))
-- For `IoUringLocal`, the main thread spins up _n_ io_uring rings, and _n_ worker threads (where _n_ defaults to the number of logical CPU cores, or the number of requested read ops, which ever is smaller - there's no point spinning up 32 threads if we only have 2 read operations!). Each worker thread gets its own completion ring. The main thread is responsible for submitting operations to all _n_ submission rings. The worker threads all write to a single, shared channel, to say when they've completed a task, which tells the main thread to submit another task to that thread's submission queue. This design should be faster than the main thread creating single queue of tasks, which each worker thread reads from. Queues block. Blocking is bad!
-    - The main thread:
-        - Starts by splitting all the operations into _n_ lists. For example, if we start with 1,000,000 read operations, and have 10 CPU cores, then we end up with 100,000 read ops per CPU core.
-        - But we don't want to simply submit all 100,000 ops to each submission queue, in one go. That doesn't give us the opportunity to balance work across the worker threads. (Some read ops might take longer than others.) And, we can't use that many filehandles per process!
-        - Allocate filehandles for each read op in flight. (So io_uring can chain open(fh), read(fh), close(fh)).
-        - Submit the first, say, 64 read ops to each thread's submission queue. (Each "read op" would actually be a chain of open, read, close).
-        - Block on `channel.recv()`. When a message arrives, submit another task to that thread's submission ring.
-    - Each worker thread:
-        - Blocks waiting for data from its io_uring completion queue.
-        - When data arrives, it checks for errors, and performs the requested processing.
-        - The worker thread ends its ID to the channel, to signal that it has completed a task.
-    - BUT! In cases where the user has not requested any processing, then the worker threads are redundant??? Maybe we simply don't spin up any worker threads, in that case? Although, actually, we still need to check each completion queue entry for errors, I think? Maybe threads would be useful for that??? And, for the MVP, maybe we should always spin up threads, so we don't have to worry about a separate code path for the "no processing" case?
-
-
-Assuming we do have to keep track of how many entries... UPDATE, DON'T NEED TO KEEP TRACK OF HOW MANY ENTRIES ARE IN FLIGHT
-```rust
-use std::sync::mpsc::channel;
-
-let mut ring = IoUring::new();
-let (sender, receiver) = channel();
-
-// Start a thread which is responsible for keeping the submission queue
-// topped up with, say, 64 entries. It blocks, reading from a channel.
-// Threads send a message to the channel when they're done.
-
-// Assuming the transform function also copies to the final memory location:
-// If we want this to return a vector of arrays then use `map_with()`.
-ring.completion().par_iter().for_each_with(
-  sender,
-  |s, cqe| {
-    let mut vec = Vector::with_capacity();
-    decompress(&cqe, &mut vec);
-    s.send(1);
-  }
-)
-```
-
-TODO: Finish this design - perhaps without optimising FileChunks - and try using Rayon with `ring.completion().par_iter().for_each()`, and a separate thread for keeping the submission queue topped up.
