@@ -12,3 +12,18 @@ Under the hood, my hope is that light-speed-io will use [`io_uring`](https://ker
 My first use-case for light-speed-io is to help to speed up reading [Zarr](https://zarr.dev/). After that, I'm interested in helping to create fast readers for "native" geospatial file formats like GRIB2 and EUMETSAT native files. And, even further than that, I'm interested in efficient & fast _computation_ on [out-of-core](https://en.wikipedia.org/w/index.php?title=Out-of-core), chunked, labelled, multi-dimensional data.
 
 For more info, please [the draft design doc](https://github.com/JackKelly/light-speed-io/blob/main/design.md). Comments are very welcome!
+
+## Compilation
+
+LSIO is a mixed python/rust project which uses PyO3 and Maturin to bind Rust to Python.
+
+1. [Install `pyenv`](https://github.com/pyenv/pyenv-installer#installation--update--uninstallation) (not to be confused with `virtualenv`!)
+2. Set up a Python virtual environment, and activate that env.
+3. Use `pyenv` to install a Python interpreter, _with the shared library for Python_. See [the PyO3 docs](https://pyo3.rs/main/getting_started#virtualenvs):
+    - `env PYTHON_CONFIGURE_OPTS="--enable-shared" pyenv install 3.11`
+4. Use `pyenv-virtualenv` (which should have been installed automatically by the `pyenv` install script) to set up and configure a virtual env:
+    - `pyenv virtualenv 3.11 light-speed-io-3.11`
+    - `pyenv activate light-speed-io-3.11`
+5. `pip install maturin`
+6. Now we can use normal `cargo` commands (within this `pyenv`): `cargo test` etc.
+7. To generate a Python wheel: `maturin develop`
