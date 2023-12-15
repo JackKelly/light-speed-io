@@ -188,7 +188,8 @@ let mut cache = CacheOfRawChunks::new();
 ```
 
 (Note that caching won't be implemented for a while - if at all. For now, I'm just checking that the design could,
-in principal, support caching. For more info about caching, see [this GitHub issue](https://github.com/JackKelly/light-speed-io/issues/9.))
+in principal, support caching. For more discussion and design ideas about caching, 
+see [this GitHub issue](https://github.com/JackKelly/light-speed-io/issues/9). In short, I think I need to simplify caching!)
 
 Next, users create a set list of abstracted read operations: 
 
@@ -196,7 +197,8 @@ Next, users create a set list of abstracted read operations:
 let plan = chunks
     .iter()  // I'm not sure we can use Rayon to parallelise this, if each chunk requires a mutable borrow of `cache`.
              // That said, each FileChunk _should_ only access a single path. Which might provide a mechanism to slice up
-             // the cache, 
+             // the cache. That said, I also think I need to simplify the caching, and restrict the caching to a layer
+             // that sits between the user and the planner.
     .map( |filechunks| 
         OptimisedFileChunks::from(filechunks)
             .check_cache(&cache)
