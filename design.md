@@ -181,52 +181,32 @@ We explicitly have 2-steps: first, we optimise the IO plan. Then we read from di
 
 We make the optimisation modular by using iterators.
 
-First, users create a set list of abstracted read operations: 
+First, establish a cache for raw chunk data.
 
 ```rust
-// First, establish a cache for raw chunk data.
-
-/// Used as the key to the cache of raw chunks.
-struct PathAndRange {
-    path: PathBuf,
-    range: Range,
-}
-
-struct CacheOfRawChunks {
-    cache_of_raw_chunks: Map<Path, Map<Range, [u8]>>,
-}
-
 let mut cache = CacheOfRawChunks::new();
+```
 
-struct OptimisedChunk {
-    byte_range: Range, 
+(Note that caching won't be implemented for a while - if at all. For now, I'm just checking that the design could,
+in principal, support caching. For more info about caching, see [this GitHub issue](https://github.com/JackKelly/light-speed-io/issues/9.))
 
-    buffers: Optional<Vec<&mut [u8]>>,
+Next, users create a set list of abstracted read operations: 
 
-    // Index of the original chunks for which this optimised chunk is a superset.
-    // For example, if the user originally requested two chunks: ..100, 200..300,
-    // and we merged these two chunks into a single read of ..300,
-    // then idx_of_original_chunks would be [0, 1].
-    idx_of_original_chunks: Vec<usize>,
-
-    // Keys into the cache, for any cache hits which at least partially satisfy this read.
-    // This is useful so we don't have to completely search the cache a second time.
-    cache_keys: Vec<PathAndRange>,
-}
-
-struct OptimisedFileChunks {
-    original_filechunks: FileChunks,
-    optimised_chunks: Vec<OptChunk>,
-}
-
+```rust
 let plan = chunks
-    .par_iter()  // Use Rayon to optimise the plan in parallel
+    .iter()  // I'm not sure we can use Rayon to parallelise this, if each chunk requires a mutable borrow of `cache`.
+             // That said, each FileChunk _should_ only access a single path. Which might provide a mechanism to slice up
+             // the cache, 
     .map( |filechunks| 
-        filechunks
+        OptimisedFileChunks::from(filechunks)
             .check_cache(&cache)
             .deduplicate()
             .merge_nearby_reads(merge_threshold_in_megabytes)
             .detect_contiguous_reads()
+
+            // In the ideal case, we'll read directly from IO into the cache's memory buffer. And then we'll
+            // share immutable slice(s) of that memory buffer with the user.
+            .plan_cache(&mut cache)
     )
 ```
 
@@ -253,6 +233,38 @@ The plan needs to express:
 
 Maybe the answer is that the optimization step should be responsible for allocating the memory buffers, and it just submits a sequence of abstracted `readv` operations to the IO backend? If the backend can't natively perform `readv` then it's trivial for the backend to split one `readv` call into multiple `read`s. But! We should only allocate memory buffers when we're actually ready to read! Say we want to read 1,000,000 chunks. Using io_uring, we won't actually submit all 1,000,000 read requests at once: instead we'll keep the submission ring topped up with, say, 64 tasks. If the user wants all 1,000,000 chunks returned then we have no option but to allocate all 1,000,000 chunks. But if, instead, the user wants each chunk to be processed and then moved into a common final array, then we only have to allocate 64 buffers per thread.
 
+```rust
+/// Used as the key to the cache of raw chunks.
+struct PathAndRange {
+    path: PathBuf,
+    range: Range,
+}
+
+struct CacheOfRawChunks {
+    cache_of_raw_chunks: Map<Path, Map<Range, [u8]>>,
+}
+
+struct OptimisedChunk {
+    byte_range: Range, 
+
+    buffers: Optional<Vec<&mut [u8]>>,
+
+    // Index of the original chunks for which this optimised chunk is a superset.
+    // For example, if the user originally requested two chunks: ..100, 200..300,
+    // and we merged these two chunks into a single read of ..300,
+    // then idx_of_original_chunks would be [0, 1].
+    idx_of_original_chunks: Vec<usize>,
+
+    // Keys into the cache, for any cache hits which at least partially satisfy this read.
+    // This is useful so we don't have to search through the cache a second time.
+    cache_keys: Vec<PathAndRange>,
+}
+
+struct OptimisedFileChunks {
+    original: FileChunks,
+    optimised_chunks: Vec<OptimisedChunk>,
+}
+```
 
 #### Reading chunks
 
@@ -283,11 +295,11 @@ Or we could move data to its final resting place:
 
 ```rust
 let results: Vec<Result<(), lsio::Error>> = reader
-    .read_chunks(&chunks)
+    .submit(&plan)
     .decompress_zstd()
     .map(|chunk| chunk * 2)
-    .mem_move_to_final_buffers(&chunks);  // Pass in chunks Vector, so `mem_move_to_final_buffers` can interpret
-    // the user_data, which could be two u32s: index into the FileChunk, and index into the Chunk.
+    .mem_move_to_final_buffers(&plan);  // Pass in `plan`, so `mem_move_to_final_buffers` can interpret
+    // the user_data, which could be two bitpacked u32s: index into the FileChunk, and index into the Chunk.
 ```
 
 `mem_move_to_final_buffers()` moves the data to its final location. The final location is specified in `Chunk.final_buffers`.
