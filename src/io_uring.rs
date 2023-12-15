@@ -1,9 +1,14 @@
 use io_uring::squeue::PushError;
-use io_uring::{opcode, types, IoUring};
-use libc;
+use io_uring::{cqueue, opcode, types, IoUring};
+use rayon::prelude::*;
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::AsRawFd;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{mpsc, Arc};
+use std::time::Duration;
 use std::{fs, io};
+
+//
 
 fn io_uring() -> io::Result<()> {
     let mut ring = IoUring::builder().build(8)?;
@@ -19,7 +24,9 @@ fn io_uring() -> io::Result<()> {
 
     ring.submit_and_wait(1)?;
 
-    let cqe = ring.completion().next().expect("completion queue is empty");
+    let cq_par_iter = CompletionQueueWrapperParIter(ring.completion());
+    let cq: Vec<cqueue::Entry> = cq_par_iter.collect();
+    let cqe = cq[0];
 
     assert_eq!(cqe.user_data(), 0x42);
     assert!(cqe.result() >= 0, "read error: {}", cqe.result());
