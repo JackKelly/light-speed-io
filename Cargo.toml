@@ -22,6 +22,7 @@ readme = "README.md"
 crate-type = ["cdylib", "lib"]
 
 [dependencies]
+anyhow = "1.0.75"
 io-uring = "0.6"
 libc = "0.2"  # Just used for libc::O_DIRECT in src/io_uring.rs
 rayon = "1.8.0"
