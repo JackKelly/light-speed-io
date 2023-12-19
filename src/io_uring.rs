@@ -1,12 +1,10 @@
-use anyhow::Result;
-use io_uring::squeue::PushError;
 use io_uring::{opcode, types, IoUring};
-use std::fs;
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::AsRawFd;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
+use std::{fs, thread};
 
 struct OperationDescriptor {
     buf: Vec<u8>,
@@ -20,13 +18,28 @@ struct OperationDescriptor {
     fd: fs::File,
 }
 
-fn submit_and_process(tasks: &[PathBuf]) {
-    // TODO: Return type should be -> Vec<Result<Vec<u8>>>
+/// Note that the order of the returned vector is unlikely to be the same order as the requested data.
+fn submit_and_process(tasks: &[PathBuf]) -> Vec<OperationDescriptor> {
     const CQ_RING_SIZE: u32 = 16;
     let mut ring = IoUring::new(CQ_RING_SIZE).unwrap();
     let n_tasks_in_flight = Arc::new(AtomicU32::new(0));
 
-    // Send tasks to threadpool:
+    // Start a thread which is responsible for storing results in a Vector
+    let n_tasks = tasks.len();
+    let (tx, rx) = mpsc::sync_channel(0);
+    let store_thread = thread::spawn(move || {
+        let mut results = Vec::with_capacity(n_tasks);
+        for _ in 0..n_tasks {
+            let op_descriptor: OperationDescriptor =
+                rx.recv().expect("Unable to receive from channel");
+            // TODO: Initialise `results` and use task_i as the index into `results`.
+            //       Or, don't do that! And, instead, sort the returned vector. Or, don't, and let the user do that!
+            results.push(op_descriptor);
+        }
+        results
+    });
+
+    // Keep io_uring's submission queue topped up, and process chunks:
     let mut task_i = 0;
     rayon::scope(|s| {
         while task_i < tasks.len() {
@@ -88,10 +101,14 @@ fn submit_and_process(tasks: &[PathBuf]) {
                     unsafe { Box::from_raw(cqe.user_data() as *mut OperationDescriptor) };
                 op_descriptor.cqe = Some(cqe);
                 let n_tasks_in_flight_for_thread = n_tasks_in_flight.clone();
+                let tx_for_thread = tx.clone();
 
                 // Spawn task to Rayon's ThreadPool:
                 s.spawn(move |_| {
-                    do_something(op_descriptor);
+                    do_something(&op_descriptor);
+                    tx_for_thread
+                        .send(*op_descriptor)
+                        .expect("Unable to send on channel");
                     n_tasks_in_flight_for_thread.fetch_sub(1, Ordering::SeqCst);
                 });
             }
@@ -99,11 +116,15 @@ fn submit_and_process(tasks: &[PathBuf]) {
     });
     // TODO: Figure out how to return vectors (or errors)!
     assert!(n_tasks_in_flight.load(Ordering::SeqCst) == 0);
+    store_thread
+        .join()
+        .expect("The receiver thread has panicked")
 }
 
-fn do_something(op_descriptor: Box<OperationDescriptor>) {
+fn do_something(op_descriptor: &OperationDescriptor) {
     println!("Reading {:?}", op_descriptor.path);
-    let cqe = op_descriptor.cqe.unwrap();
+
+    let cqe = op_descriptor.cqe.as_ref().unwrap();
 
     // Handle return value from read():
     if cqe.result() < 0 {
@@ -114,12 +135,11 @@ fn do_something(op_descriptor: Box<OperationDescriptor>) {
             cqe.result(),
             err
         );
-        return;
+    } else {
+        let buf = &op_descriptor.buf;
+        println!("{:?}", std::str::from_utf8(buf).unwrap());
     }
     // TODO: Handle when the number of bytes read is less than the number of bytes requested
-
-    let buf = op_descriptor.buf;
-    println!("{:?}", std::str::from_utf8(&buf).unwrap());
 }
 
 #[cfg(test)]
@@ -131,6 +151,7 @@ mod tests {
     #[test]
     fn it_works() {
         let tasks = [PathBuf::from_str("/home/jack/dev/rust/light-speed-io/README.md").unwrap()];
-        submit_and_process(&tasks);
+        let op_descriptors = submit_and_process(&tasks);
+        println!("n_descriptors={}", op_descriptors.len());
     }
 }
