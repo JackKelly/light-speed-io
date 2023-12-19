@@ -114,12 +114,12 @@ fn do_something(op_descriptor: Box<OperationDescriptor>) {
             cqe.result(),
             err
         );
-        // TODO: return;
+        return;
     }
     // TODO: Handle when the number of bytes read is less than the number of bytes requested
 
     let buf = op_descriptor.buf;
-    println!("{:?}", buf);
+    println!("{:?}", std::str::from_utf8(&buf).unwrap());
 }
 
 #[cfg(test)]
