@@ -24,7 +24,8 @@ fn submit_and_process(tasks: &[PathBuf]) -> Vec<OperationDescriptor> {
     let mut ring = IoUring::new(CQ_RING_SIZE).unwrap();
     let n_tasks_in_flight = Arc::new(AtomicU32::new(0));
 
-    // Start a thread which is responsible for storing results in a Vector
+    // Start a thread which is responsible for storing results in a Vector.
+    // TODO: Consider using crossbeam::ArrayQueue to store the finished OpDescriptors.
     let n_tasks = tasks.len();
     let (tx, rx) = mpsc::sync_channel(64);
     let store_thread = thread::spawn(move || {
