@@ -13,19 +13,23 @@ struct OperationDescriptor {
     task_i: usize,
     path: PathBuf,
     cqe: Option<io_uring::cqueue::Entry>,
+
+    // Keeping the file descriptor in this struct is just a quick hack to ensure that
+    // we keep the file descriptor open until io_uring has finished with this task.
+    // TODO: Remove the file descriptor from this struct once we let io_uring open files!
+    fd: fs::File,
 }
 
 fn submit_and_process(tasks: &[PathBuf]) {
     // TODO: Return type should be -> Vec<Result<Vec<u8>>>
     const CQ_RING_SIZE: u32 = 16;
-    let mut ring = IoUring::builder().build(CQ_RING_SIZE).unwrap();
+    let mut ring = IoUring::new(CQ_RING_SIZE).unwrap();
     let n_tasks_in_flight = Arc::new(AtomicU32::new(0));
 
     // Send tasks to threadpool:
     let mut task_i = 0;
     rayon::scope(|s| {
         while task_i < tasks.len() {
-            // || n_tasks_in_flight.load(Ordering::SeqCst) > 0
             // Keep io_uring submission queue topped up. But don't overload io_uring!
             while task_i < tasks.len() && n_tasks_in_flight.load(Ordering::SeqCst) < CQ_RING_SIZE {
                 let task = &tasks[task_i];
@@ -34,7 +38,7 @@ fn submit_and_process(tasks: &[PathBuf]) {
                 // TODO: Open file using io_uring. See issue #1
                 let fd = fs::OpenOptions::new()
                     .read(true)
-                    // .custom_flags(libc::O_DIRECT)
+                    .custom_flags(libc::O_DIRECT)
                     .open(task)
                     .unwrap();
 
@@ -51,16 +55,24 @@ fn submit_and_process(tasks: &[PathBuf]) {
                     path: task.clone(),
                     task_i,
                     cqe: None,
+                    fd,
                 });
 
-                submit_read(
-                    &mut ring,
-                    &fd,
+                // Note that the developer needs to ensure
+                // that the entry pushed into submission queue is valid (e.g. fd, buffer).
+                let read_e = opcode::Read::new(
+                    types::Fd(op_descriptor.fd.as_raw_fd()),
                     op_descriptor.buf.as_mut_ptr(),
                     op_descriptor.buf.len() as _,
-                    Box::into_raw(op_descriptor) as u64,
                 )
-                .expect("submission queue full"); // TODO: Handle PushError:
+                .build()
+                .user_data(Box::into_raw(op_descriptor) as u64);
+
+                unsafe {
+                    ring.submission()
+                        .push(&read_e)
+                        .expect("submission queue full")
+                }
 
                 // Increment counters
                 task_i += 1;
@@ -96,29 +108,18 @@ fn do_something(op_descriptor: Box<OperationDescriptor>) {
     // Handle return value from read():
     if cqe.result() < 0 {
         // An error has occurred!
-        println!("Error reading file!");
-        // return;
+        let err = nix::Error::from_i32(-cqe.result());
+        println!(
+            "Error reading file! Return value = {}. Error = {}",
+            cqe.result(),
+            err
+        );
+        // TODO: return;
     }
     // TODO: Handle when the number of bytes read is less than the number of bytes requested
 
     let buf = op_descriptor.buf;
     println!("{:?}", buf);
-}
-
-/// Note that the developer needs to ensure
-/// that the entry pushed into submission queue is valid (e.g. fd, buffer).
-fn submit_read(
-    ring: &mut IoUring,
-    fd: &fs::File,
-    buf: *mut u8,
-    len: u32,
-    user_data: u64,
-) -> Result<(), PushError> {
-    let read_e = opcode::Read::new(types::Fd(fd.as_raw_fd()), buf, len)
-        .build()
-        .user_data(user_data);
-
-    unsafe { ring.submission().push(&read_e) }
 }
 
 #[cfg(test)]

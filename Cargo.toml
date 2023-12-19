@@ -25,7 +25,8 @@ crate-type = ["cdylib", "lib"]
 anyhow = "1.0.75"
 io-uring = "0.6"
 libc = "0.2"  # Just used for libc::O_DIRECT in src/io_uring.rs
+nix = "0.27.1"
 rayon = "1.8.0"
 
-[dependencies.pyo3]
-version = "0.20.0"
+# [dependencies.pyo3]  # TODO: Re-enable!
+# version = "0.20.0"
