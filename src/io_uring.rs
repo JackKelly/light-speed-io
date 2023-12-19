@@ -26,7 +26,7 @@ fn submit_and_process(tasks: &[PathBuf]) -> Vec<OperationDescriptor> {
 
     // Start a thread which is responsible for storing results in a Vector
     let n_tasks = tasks.len();
-    let (tx, rx) = mpsc::sync_channel(0);
+    let (tx, rx) = mpsc::sync_channel(64);
     let store_thread = thread::spawn(move || {
         let mut results = Vec::with_capacity(n_tasks);
         for _ in 0..n_tasks {
