@@ -14,7 +14,7 @@ fn submit_and_process(tasks: &[PathBuf]) -> Vec<Result<Vec<u8>>> {
     let mut ring = IoUring::builder().build(CQ_RING_SIZE).unwrap();
     let mut results: Vec<Result<Vec<u8>>> = Vec::with_capacity(tasks.len());
     let n_tasks_in_flight = Arc::new(AtomicU32::new(0));
-    
+
     // Send tasks to threadpool:
     let mut task_i = 0;
     rayon::scope(|s| {
@@ -59,15 +59,21 @@ fn submit_and_process(tasks: &[PathBuf]) -> Vec<Result<Vec<u8>>> {
                     )));
                     n_tasks_in_flight.fetch_sub(1, Ordering::SeqCst);
                 } else {
-                    let result = mem::replace(&mut results[cqe.user_data() as usize], Ok(vec![0; 0]));
-                    s.spawn(|_| {
+                    let buf = results[cqe.user_data() as usize].as_ref().unwrap();
+                    let buf_ptr = buf.as_ptr() as usize;
+                    let buf_len = buf.len();
+                    let buf_cap = buf.capacity();
+                    // let result = mem::replace(&mut results[cqe.user_data() as usize], Ok(vec![0; 0]));
+                    let n_tasks_in_flight_for_thread = n_tasks_in_flight.clone();
+                    s.spawn(move |_| {
                         // TODO: Handle when the number of bytes read is less than the number of bytes requested
                         // TODO: process(cqe);
-                        do_something(result); // Temporary name!
-                                           // let result = &results[cqe.user_data() as usize];
+                        unsafe {
+                            let buf_for_thread = Vec::<u8>::from_raw_parts(buf_ptr as *mut u8, buf_len, buf_cap);
+                            do_something(buf_for_thread); // Temporary name!
+                        }
 
                         // Move n_tasks_in_flight_for_thread into this thread:
-                        let n_tasks_in_flight_for_thread = n_tasks_in_flight.clone();
                         n_tasks_in_flight_for_thread.fetch_sub(1, Ordering::SeqCst);
                     });
                 }
@@ -77,7 +83,8 @@ fn submit_and_process(tasks: &[PathBuf]) -> Vec<Result<Vec<u8>>> {
     results
 }
 
-fn do_something(_: Result<Vec<u8>>) {}
+fn do_something(_ :Vec<u8>) {
+}
 
 /// Note that the developer needs to ensure
 /// that the entry pushed into submission queue is valid (e.g. fd, buffer).
