@@ -4,7 +4,7 @@
 
 ## Update (20th Dec 2023)
 
-Please note that some of the design below is now out-of-date. In particular, I'm no longer planning to use iterators to specify the data processing pipeline.
+Please note that some of the design below is now out-of-date. In particular, I'm no longer planning to use iterators to specify the data processing pipeline. I will update this design doc.
 
 ## Planned features
 
