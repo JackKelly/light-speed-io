@@ -25,7 +25,7 @@ fn submit_and_process(tasks: &[PathBuf]) -> Vec<OperationDescriptor> {
     let n_tasks_in_flight = Arc::new(AtomicU32::new(0));
 
     // Start a thread which is responsible for storing results in a Vector.
-    // TODO: Consider using crossbeam::ArrayQueue to store the finished OpDescriptors.
+    // TODO: Consider using crossbeam::ArrayQueue to store the finished OpDescriptors. See issue #17.
     let n_tasks = tasks.len();
     let (tx, rx) = mpsc::sync_channel(64);
     let store_thread = thread::spawn(move || {
@@ -34,7 +34,10 @@ fn submit_and_process(tasks: &[PathBuf]) -> Vec<OperationDescriptor> {
             let op_descriptor: OperationDescriptor =
                 rx.recv().expect("Unable to receive from channel");
             // TODO: Initialise `results` and use task_i as the index into `results`.
-            //       Or, don't do that! And, instead, sort the returned vector. Or, don't, and let the user do that!
+            //       Or, don't do that! And, instead, sort the returned vector.
+            //       Or, leave as-is, and let the user sort the vector if they want!
+            //       Or, don't return _any_ buffers?!
+            //       See issue #17.
             results.push(op_descriptor);
         }
         results
