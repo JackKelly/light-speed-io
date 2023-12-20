@@ -2,6 +2,10 @@
 
 `light-speed-io` (or "LSIO", for short) will be a Rust library crate for loading and processing many chunks of files, as fast as the storage system will allow.
 
+## Update (20th Dec 2023)
+
+Please note that some of the design below is now out-of-date. In particular, I'm no longer planning to use iterators to specify the data processing pipeline.
+
 ## Planned features
 
 - [ ] Provide a simple API (using Rust's iterators) for reading many chunks of files (and/or many files) with single API call. Users will be able to ask LSIO: "_Please get me these million file chunks, and apply this function to each chunk, and then move the resulting data to these array locations._".
