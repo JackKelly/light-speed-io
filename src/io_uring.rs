@@ -125,6 +125,8 @@ fn submit_and_process(tasks: &[PathBuf]) -> Vec<OperationDescriptor> {
         .expect("The receiver thread has panicked")
 }
 
+/// Just a "place holder"!
+/// TODO: Allow the user to supply a processing function.
 fn do_something(op_descriptor: &OperationDescriptor) {
     println!("Reading {:?}", op_descriptor.path);
 
