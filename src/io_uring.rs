@@ -18,30 +18,11 @@ struct OperationDescriptor {
     fd: fs::File,
 }
 
-/// Note that the order of the returned vector is unlikely to be the same order as the requested data.
-fn submit_and_process(tasks: &[PathBuf]) -> Vec<OperationDescriptor> {
+// TODO: Refactor this function! Extract code into separate functions.
+fn submit_and_process(tasks: &[PathBuf], transform: fn(anyhow::Result<OperationDescriptor>)) {
     const CQ_RING_SIZE: u32 = 16;
     let mut ring = IoUring::new(CQ_RING_SIZE).unwrap();
     let n_tasks_in_flight = Arc::new(AtomicU32::new(0));
-
-    // Start a thread which is responsible for storing results in a Vector.
-    // TODO: Consider using crossbeam::ArrayQueue to store the finished OpDescriptors. See issue #17.
-    let n_tasks = tasks.len();
-    let (tx, rx) = mpsc::sync_channel(64);
-    let store_thread = thread::spawn(move || {
-        let mut results = Vec::with_capacity(n_tasks);
-        for _ in 0..n_tasks {
-            let op_descriptor: OperationDescriptor =
-                rx.recv().expect("Unable to receive from channel");
-            // TODO: Initialise `results` and use task_i as the index into `results`.
-            //       Or, don't do that! And, instead, sort the returned vector.
-            //       Or, leave as-is, and let the user sort the vector if they want!
-            //       Or, don't return _any_ buffers?!
-            //       See issue #17.
-            results.push(op_descriptor);
-        }
-        results
-    });
 
     // Keep io_uring's submission queue topped up, and process chunks:
     let mut task_i = 0;
@@ -105,47 +86,30 @@ fn submit_and_process(tasks: &[PathBuf]) -> Vec<OperationDescriptor> {
                     unsafe { Box::from_raw(cqe.user_data() as *mut OperationDescriptor) };
                 op_descriptor.cqe = Some(cqe);
                 let n_tasks_in_flight_for_thread = n_tasks_in_flight.clone();
-                let tx_for_thread = tx.clone();
 
                 // Spawn task to Rayon's ThreadPool:
                 s.spawn(move |_| {
-                    do_something(&op_descriptor);
-                    tx_for_thread
-                        .send(*op_descriptor)
-                        .expect("Unable to send on channel");
+                    let op_descriptor = handle_error(*op_descriptor);
+                    transform(op_descriptor);
                     n_tasks_in_flight_for_thread.fetch_sub(1, Ordering::SeqCst);
                 });
             }
         }
     });
-    // TODO: Figure out how to return vectors (or errors)!
     assert!(n_tasks_in_flight.load(Ordering::SeqCst) == 0);
-    store_thread
-        .join()
-        .expect("The receiver thread has panicked")
 }
 
-/// Just a "place holder"!
-/// TODO: Allow the user to supply a processing function.
-fn do_something(op_descriptor: &OperationDescriptor) {
-    println!("Reading {:?}", op_descriptor.path);
-
+fn handle_error(op_descriptor: OperationDescriptor) -> anyhow::Result<OperationDescriptor> {
     let cqe = op_descriptor.cqe.as_ref().unwrap();
 
     // Handle return value from read():
     if cqe.result() < 0 {
         // An error has occurred!
         let err = nix::Error::from_i32(-cqe.result());
-        println!(
-            "Error reading file! Return value = {}. Error = {}",
-            cqe.result(),
-            err
-        );
-    } else {
-        let buf = &op_descriptor.buf;
-        println!("{:?}", std::str::from_utf8(buf).unwrap());
+        return Err(err.into());
     }
     // TODO: Handle when the number of bytes read is less than the number of bytes requested
+    Ok(op_descriptor)
 }
 
 #[cfg(test)]
@@ -157,7 +121,47 @@ mod tests {
     #[test]
     fn it_works() {
         let tasks = [PathBuf::from_str("/home/jack/dev/rust/light-speed-io/README.md").unwrap()];
-        let op_descriptors = submit_and_process(&tasks);
-        println!("n_descriptors={}", op_descriptors.len());
+
+        // Start a thread which is responsible for storing results in a Vector.
+        // TODO: Consider using crossbeam::ArrayQueue to store the finished OpDescriptors. See issue #17.
+        // let n_tasks = tasks.len();
+        // let (tx, rx) = mpsc::sync_channel(64);
+        // let store_thread = thread::spawn(move || {
+        //     let mut results = Vec::with_capacity(n_tasks);
+        //     for _ in 0..n_tasks {
+        //         let op_descriptor: OperationDescriptor =
+        //             rx.recv().expect("Unable to receive from channel");
+        //         // TODO: Initialise `results` and use task_i as the index into `results`.
+        //         //       Or, don't do that! And, instead, sort the returned vector.
+        //         //       Or, leave as-is, and let the user sort the vector if they want!
+        //         //       Or, don't return _any_ buffers?!
+        //         //       See issue #17.
+        //         results.push(op_descriptor);
+        //     }
+        //     results
+        // });
+
+        // TODO: Figure out how to share `transform` between threads if `transform`
+        // is a closure. We want `transform` to be a closure so it can capture surrounding state.
+        // In this example, we want to clone `tx` for each thread. Elsewhere, we might want
+        // to share access to a single numpy array (to write each chunk into the array).
+        // This conversation might provide the answer:
+        // https://users.rust-lang.org/t/how-to-send-function-closure-to-another-thread/43549
+        // Then we can re-enable the commented out code in the body of `it_works()`.
+        // See Issue #19.
+        fn transform(op_descriptor: anyhow::Result<OperationDescriptor>) {
+            let op_descriptor = op_descriptor.unwrap();
+            let buf = &op_descriptor.buf;
+            println!("{:?}", std::str::from_utf8(buf).unwrap());
+            // tx.clone().send(op_descriptor).expect("Unable to send on channel");
+        }
+
+        submit_and_process(&tasks, transform);
+
+        // let results = store_thread
+        //     .join()
+        //     .expect("The receiver thread has panicked");
+
+        // println!("results.len()={}", results.len());
     }
 }
