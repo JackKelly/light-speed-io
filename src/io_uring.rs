@@ -1,15 +1,18 @@
 use io_uring::{opcode, types, IoUring};
+use std::fs;
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::AsRawFd;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{mpsc, Arc};
-use std::{fs, thread};
+use std::sync::Arc;
 
 struct OperationDescriptor {
     buf: Vec<u8>,
     task_i: usize,
     path: PathBuf,
+
+    // TODO: We probably shouldn't store the CQE because that's specific to io_uring.
+    // And we probably want OperationDescriptor to be generic for all IO backends.
     cqe: Option<io_uring::cqueue::Entry>,
 
     // Keeping the file descriptor in this struct is just a quick hack to ensure that
