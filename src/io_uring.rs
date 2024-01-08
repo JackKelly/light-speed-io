@@ -40,10 +40,15 @@ fn submit_and_process(tasks: &[PathBuf], transform: fn(anyhow::Result<OperationD
                     .open(task)
                     .unwrap();
 
-                // Save information (so the processing thread can access this information).
-                // `into_raw()` consumes the object (but doesn't de-allocated it), which is exactly
-                // what we want. We mustn't touch buffer until it re-emerges from the kernel.
-                // And we do want Rayon's worker thread (that processes the CQE) to decide whether
+                // Save information about this task in an OperationDescriptor on the heap,
+                // so the processing thread can access this information later.
+                // Later, we'll get a raw pointer to this OperationDescriptor, and pass this raw pointer
+                // through to the worker thread, via io_uring's `user_data` (which is what `user_data`
+                // is mostly intended for, according to the `io_uring` docs). We get a raw pointer by calling
+                // `into_raw()`, which consumes the OperationDescriptor but doesn't de-allocated it, which is exactly
+                // what we want. We want ownership of the OperationDescriptor to "tunnel through" io_uring.
+                // Rust will guarantee that we can't touch the buffer until it re-emerges from io_uring.
+                // And we want Rayon's worker thread (that processes the CQE) to decide whether
                 // to drop the buffer (after moving data elsewhere) or keep the buffer
                 // (if we're passing the buffer back to the user).
                 let mut op_descriptor = Box::new(OperationDescriptor {
