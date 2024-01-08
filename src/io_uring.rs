@@ -30,7 +30,7 @@ fn submit_and_process(tasks: &[PathBuf], transform: fn(anyhow::Result<OperationD
             // Keep io_uring submission queue topped up. But don't overload io_uring!
             while task_i < n_tasks && n_tasks_in_flight_in_io_uring < CQ_RING_SIZE {
                 let task = &tasks[task_i];
-                println!("task_i={}, path={:?}", task_i, task);
+                println!("Submitting task_i={}, path={:?}", task_i, task);
                 submit_task(task, task_i, &mut ring);
 
                 // Increment counters
@@ -39,6 +39,8 @@ fn submit_and_process(tasks: &[PathBuf], transform: fn(anyhow::Result<OperationD
             }
 
             ring.submit_and_wait(1).unwrap(); // TODO: Handle error!
+
+            println!("After ring.submit_and_wait");
 
             // Spawn tasks to the Rayon ThreadPool to process data:
             for cqe in ring.completion() {
@@ -127,7 +129,7 @@ mod tests {
     fn it_works() {
         let tasks = [
             PathBuf::from_str("/home/jack/dev/rust/light-speed-io/README.md").unwrap(),
-            // PathBuf::from_str("/home/jack/dev/rust/light-speed-io/README.md").unwrap(),
+            PathBuf::from_str("/home/jack/dev/rust/light-speed-io/design.md").unwrap(),
         ];
 
         // Start a thread which is responsible for storing results in a Vector.
