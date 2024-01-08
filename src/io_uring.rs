@@ -1,4 +1,5 @@
-use io_uring::{opcode, types, IoUring};
+use io_uring::{cqueue, opcode, types, IoUring};
+use rayon::Scope;
 use std::fs;
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::AsRawFd;
@@ -42,23 +43,7 @@ fn submit_and_process(tasks: &[PathBuf], transform: fn(anyhow::Result<OperationD
             // Spawn tasks to the Rayon ThreadPool to process data:
             for cqe in ring.completion() {
                 n_tasks_in_flight_in_io_uring -= 1;
-
-                // Prepare data for thread:
-                let op_descriptor =
-                    unsafe { Box::from_raw(cqe.user_data() as *mut OperationDescriptor) };
-                let op_descriptor = if cqe.result() < 0 {
-                    // An error has occurred!
-                    let err = nix::Error::from_i32(-cqe.result());
-                    Err(err.into())
-                    // TODO: Handle when the number of bytes read is less than the number of bytes requested
-                } else {
-                    Ok(*op_descriptor)
-                };
-
-                // Spawn task to Rayon's ThreadPool:
-                s.spawn(move |_| {
-                    transform(op_descriptor);
-                });
+                spawn_processing_task(&cqe, transform, s);
             }
         }
     });
@@ -110,6 +95,28 @@ fn submit_task(task: &PathBuf, task_i: usize, ring: &mut IoUring) {
     }
 }
 
+fn spawn_processing_task(
+    cqe: &cqueue::Entry,
+    transform: fn(anyhow::Result<OperationDescriptor>),
+    s: &Scope,
+) {
+    // Prepare data for thread:
+    let op_descriptor = unsafe { Box::from_raw(cqe.user_data() as *mut OperationDescriptor) };
+    let op_descriptor = if cqe.result() < 0 {
+        // An error has occurred!
+        let err = nix::Error::from_i32(-cqe.result());
+        Err(err.into())
+        // TODO: Handle when the number of bytes read is less than the number of bytes requested
+    } else {
+        Ok(*op_descriptor)
+    };
+
+    // Spawn task to Rayon's ThreadPool:
+    s.spawn(move |_| {
+        transform(op_descriptor);
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use std::str::FromStr;
@@ -118,7 +125,10 @@ mod tests {
 
     #[test]
     fn it_works() {
-        let tasks = [PathBuf::from_str("/home/jack/dev/rust/light-speed-io/README.md").unwrap()];
+        let tasks = [
+            PathBuf::from_str("/home/jack/dev/rust/light-speed-io/README.md").unwrap(),
+            // PathBuf::from_str("/home/jack/dev/rust/light-speed-io/README.md").unwrap(),
+        ];
 
         // Start a thread which is responsible for storing results in a Vector.
         // TODO: Consider using crossbeam::ArrayQueue to store the finished OpDescriptors. See issue #17.
