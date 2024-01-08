@@ -11,10 +11,6 @@ struct OperationDescriptor {
     task_i: usize,
     path: PathBuf,
 
-    // TODO: We probably shouldn't store the CQE because that's specific to io_uring.
-    // And we probably want OperationDescriptor to be generic for all IO backends.
-    cqe: Option<io_uring::cqueue::Entry>,
-
     // Keeping the file descriptor in this struct is just a quick hack to ensure that
     // we keep the file descriptor open until io_uring has finished with this task.
     // TODO: Remove the file descriptor from this struct once we let io_uring open files!
@@ -50,14 +46,21 @@ fn submit_and_process(tasks: &[PathBuf], transform: fn(anyhow::Result<OperationD
             // Spawn tasks to the Rayon ThreadPool to process data:
             for cqe in ring.completion() {
                 // Prepare data for thread:
-                let mut op_descriptor =
+                let op_descriptor =
                     unsafe { Box::from_raw(cqe.user_data() as *mut OperationDescriptor) };
-                op_descriptor.cqe = Some(cqe);
+                let op_descriptor = if cqe.result() < 0 {
+                    // An error has occurred!
+                    let err = nix::Error::from_i32(-cqe.result());
+                    Err(err.into())
+                    // TODO: Handle when the number of bytes read is less than the number of bytes requested
+                } else {
+                    Ok(*op_descriptor)
+                };
+
                 let n_tasks_in_flight_for_thread = n_tasks_in_flight_in_io_uring.clone();
 
                 // Spawn task to Rayon's ThreadPool:
                 s.spawn(move |_| {
-                    let op_descriptor = handle_error(*op_descriptor);
                     transform(op_descriptor);
                     n_tasks_in_flight_for_thread.fetch_sub(1, Ordering::SeqCst);
                 });
@@ -92,7 +95,6 @@ fn submit_task(task: &PathBuf, task_i: usize, ring: &mut IoUring) {
         buf: vec![0u8; 1024],
         path: task.clone(),
         task_i,
-        cqe: None,
         fd,
     });
 
@@ -111,19 +113,6 @@ fn submit_task(task: &PathBuf, task_i: usize, ring: &mut IoUring) {
             .push(&read_e)
             .expect("submission queue full")
     }
-}
-
-fn handle_error(op_descriptor: OperationDescriptor) -> anyhow::Result<OperationDescriptor> {
-    let cqe = op_descriptor.cqe.as_ref().unwrap();
-
-    // Handle return value from read():
-    if cqe.result() < 0 {
-        // An error has occurred!
-        let err = nix::Error::from_i32(-cqe.result());
-        return Err(err.into());
-    }
-    // TODO: Handle when the number of bytes read is less than the number of bytes requested
-    Ok(op_descriptor)
 }
 
 #[cfg(test)]
