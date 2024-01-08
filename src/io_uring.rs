@@ -25,64 +25,24 @@ struct OperationDescriptor {
 fn submit_and_process(tasks: &[PathBuf], transform: fn(anyhow::Result<OperationDescriptor>)) {
     const CQ_RING_SIZE: u32 = 16;
     let mut ring = IoUring::new(CQ_RING_SIZE).unwrap();
-    let n_tasks_in_flight = Arc::new(AtomicU32::new(0));
+    let n_tasks_in_flight_in_io_uring = Arc::new(AtomicU32::new(0));
+    let n_tasks = tasks.len();
 
     // Keep io_uring's submission queue topped up, and process chunks:
     let mut task_i = 0;
     rayon::scope(|s| {
-        while task_i < tasks.len() {
+        while task_i < n_tasks {
             // Keep io_uring submission queue topped up. But don't overload io_uring!
-            while task_i < tasks.len() && n_tasks_in_flight.load(Ordering::SeqCst) < CQ_RING_SIZE {
+            while task_i < n_tasks
+                && n_tasks_in_flight_in_io_uring.load(Ordering::SeqCst) < CQ_RING_SIZE
+            {
                 let task = &tasks[task_i];
                 println!("task_i={}, path={:?}", task_i, task);
-
-                // TODO: Open file using io_uring. See issue #1
-                let fd = fs::OpenOptions::new()
-                    .read(true)
-                    .custom_flags(libc::O_DIRECT)
-                    .open(task)
-                    .unwrap();
-
-                // Save information about this task in an OperationDescriptor on the heap,
-                // so the processing thread can access this information later.
-                // Later, we'll get a raw pointer to this OperationDescriptor, and pass this raw pointer
-                // through to the worker thread, via io_uring's `user_data` (which is what `user_data`
-                // is mostly intended for, according to the `io_uring` docs). We get a raw pointer by calling
-                // `into_raw()`, which consumes the OperationDescriptor but doesn't de-allocated it, which is exactly
-                // what we want. We want ownership of the OperationDescriptor to "tunnel through" io_uring.
-                // Rust will guarantee that we can't touch the buffer until it re-emerges from io_uring.
-                // And we want Rayon's worker thread (that processes the CQE) to decide whether
-                // to drop the buffer (after moving data elsewhere) or keep the buffer
-                // (if we're passing the buffer back to the user).
-                let mut op_descriptor = Box::new(OperationDescriptor {
-                    // TODO: Allocate the correct sized buffer for the task.
-                    //       Or don't allocate at all, if the user has already allocated.
-                    buf: vec![0u8; 1024],
-                    path: task.clone(),
-                    task_i,
-                    cqe: None,
-                    fd,
-                });
-
-                // Note that the developer needs to ensure
-                // that the entry pushed into submission queue is valid (e.g. fd, buffer).
-                let read_e = opcode::Read::new(
-                    types::Fd(op_descriptor.fd.as_raw_fd()),
-                    op_descriptor.buf.as_mut_ptr(),
-                    op_descriptor.buf.len() as _,
-                )
-                .build()
-                .user_data(Box::into_raw(op_descriptor) as u64);
-
-                unsafe {
-                    ring.submission()
-                        .push(&read_e)
-                        .expect("submission queue full")
-                }
+                submit_task(task, task_i, &mut ring);
 
                 // Increment counters
                 task_i += 1;
-                n_tasks_in_flight.fetch_add(1, Ordering::SeqCst);
+                n_tasks_in_flight_in_io_uring.fetch_add(1, Ordering::SeqCst);
             }
 
             ring.submit_and_wait(1).unwrap(); // TODO: Handle error!
@@ -93,7 +53,7 @@ fn submit_and_process(tasks: &[PathBuf], transform: fn(anyhow::Result<OperationD
                 let mut op_descriptor =
                     unsafe { Box::from_raw(cqe.user_data() as *mut OperationDescriptor) };
                 op_descriptor.cqe = Some(cqe);
-                let n_tasks_in_flight_for_thread = n_tasks_in_flight.clone();
+                let n_tasks_in_flight_for_thread = n_tasks_in_flight_in_io_uring.clone();
 
                 // Spawn task to Rayon's ThreadPool:
                 s.spawn(move |_| {
@@ -104,7 +64,53 @@ fn submit_and_process(tasks: &[PathBuf], transform: fn(anyhow::Result<OperationD
             }
         }
     });
-    assert!(n_tasks_in_flight.load(Ordering::SeqCst) == 0);
+    assert!(n_tasks_in_flight_in_io_uring.load(Ordering::SeqCst) == 0);
+}
+
+fn submit_task(task: &PathBuf, task_i: usize, ring: &mut IoUring) {
+    // TODO: Open file using io_uring. See issue #1
+    let fd = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECT)
+        .open(task)
+        .unwrap();
+
+    // Save information about this task in an OperationDescriptor on the heap,
+    // so the processing thread can access this information later.
+    // Later, we'll get a raw pointer to this OperationDescriptor, and pass this raw pointer
+    // through to the worker thread, via io_uring's `user_data` (which is what `user_data`
+    // is mostly intended for, according to the `io_uring` docs). We get a raw pointer by calling
+    // `into_raw()`, which consumes the OperationDescriptor but doesn't de-allocated it, which is exactly
+    // what we want. We want ownership of the OperationDescriptor to "tunnel through" io_uring.
+    // Rust will guarantee that we can't touch the buffer until it re-emerges from io_uring.
+    // And we want Rayon's worker thread (that processes the CQE) to decide whether
+    // to drop the buffer (after moving data elsewhere) or keep the buffer
+    // (if we're passing the buffer back to the user).
+    let mut op_descriptor = Box::new(OperationDescriptor {
+        // TODO: Allocate the correct sized buffer for the task.
+        //       Or don't allocate at all, if the user has already allocated.
+        buf: vec![0u8; 1024],
+        path: task.clone(),
+        task_i,
+        cqe: None,
+        fd,
+    });
+
+    // Note that the developer needs to ensure
+    // that the entry pushed into submission queue is valid (e.g. fd, buffer).
+    let read_e = opcode::Read::new(
+        types::Fd(op_descriptor.fd.as_raw_fd()),
+        op_descriptor.buf.as_mut_ptr(),
+        op_descriptor.buf.len() as _,
+    )
+    .build()
+    .user_data(Box::into_raw(op_descriptor) as u64);
+
+    unsafe {
+        ring.submission()
+            .push(&read_e)
+            .expect("submission queue full")
+    }
 }
 
 fn handle_error(op_descriptor: OperationDescriptor) -> anyhow::Result<OperationDescriptor> {

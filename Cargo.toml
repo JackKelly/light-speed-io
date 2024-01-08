@@ -1,6 +1,6 @@
 [package]
 name = "light-speed-io"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2021"
 license = "MIT"
 homepage = "https://github.com/JackKelly/light-speed-io"
@@ -22,11 +22,11 @@ readme = "README.md"
 crate-type = ["cdylib", "lib"]
 
 [dependencies]
-anyhow = "1.0.75"
+anyhow = "1.0"
 io-uring = "0.6"
 libc = "0.2"  # Just used for libc::O_DIRECT in src/io_uring.rs
-nix = "0.27.1"
-rayon = "1.8.0"
+nix = "0.27"
+rayon = "1.8"
 
 # [dependencies.pyo3]  # TODO: Re-enable!
 # version = "0.20.0"
