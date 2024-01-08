@@ -3,8 +3,6 @@ use std::fs;
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::AsRawFd;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Arc;
 
 struct OperationDescriptor {
     buf: Vec<u8>,
@@ -21,7 +19,7 @@ struct OperationDescriptor {
 fn submit_and_process(tasks: &[PathBuf], transform: fn(anyhow::Result<OperationDescriptor>)) {
     const CQ_RING_SIZE: u32 = 16;
     let mut ring = IoUring::new(CQ_RING_SIZE).unwrap();
-    let n_tasks_in_flight_in_io_uring = Arc::new(AtomicU32::new(0));
+    let mut n_tasks_in_flight_in_io_uring: u32 = 0;
     let n_tasks = tasks.len();
 
     // Keep io_uring's submission queue topped up, and process chunks:
@@ -29,22 +27,22 @@ fn submit_and_process(tasks: &[PathBuf], transform: fn(anyhow::Result<OperationD
     rayon::scope(|s| {
         while task_i < n_tasks {
             // Keep io_uring submission queue topped up. But don't overload io_uring!
-            while task_i < n_tasks
-                && n_tasks_in_flight_in_io_uring.load(Ordering::SeqCst) < CQ_RING_SIZE
-            {
+            while task_i < n_tasks && n_tasks_in_flight_in_io_uring < CQ_RING_SIZE {
                 let task = &tasks[task_i];
                 println!("task_i={}, path={:?}", task_i, task);
                 submit_task(task, task_i, &mut ring);
 
                 // Increment counters
                 task_i += 1;
-                n_tasks_in_flight_in_io_uring.fetch_add(1, Ordering::SeqCst);
+                n_tasks_in_flight_in_io_uring += 1;
             }
 
             ring.submit_and_wait(1).unwrap(); // TODO: Handle error!
 
             // Spawn tasks to the Rayon ThreadPool to process data:
             for cqe in ring.completion() {
+                n_tasks_in_flight_in_io_uring -= 1;
+
                 // Prepare data for thread:
                 let op_descriptor =
                     unsafe { Box::from_raw(cqe.user_data() as *mut OperationDescriptor) };
@@ -57,17 +55,14 @@ fn submit_and_process(tasks: &[PathBuf], transform: fn(anyhow::Result<OperationD
                     Ok(*op_descriptor)
                 };
 
-                let n_tasks_in_flight_for_thread = n_tasks_in_flight_in_io_uring.clone();
-
                 // Spawn task to Rayon's ThreadPool:
                 s.spawn(move |_| {
                     transform(op_descriptor);
-                    n_tasks_in_flight_for_thread.fetch_sub(1, Ordering::SeqCst);
                 });
             }
         }
     });
-    assert!(n_tasks_in_flight_in_io_uring.load(Ordering::SeqCst) == 0);
+    assert!(n_tasks_in_flight_in_io_uring == 0);
 }
 
 fn submit_task(task: &PathBuf, task_i: usize, ring: &mut IoUring) {
