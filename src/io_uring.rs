@@ -1,10 +1,13 @@
+use crossbeam::queue;
 use io_uring::{cqueue, opcode, types, IoUring};
 use rayon::Scope;
 use std::fs;
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::AsRawFd;
 use std::path::PathBuf;
+use std::sync::Arc;
 
+#[derive(Debug)]
 struct OperationDescriptor {
     buf: Vec<u8>,
     task_i: usize,
@@ -16,11 +19,16 @@ struct OperationDescriptor {
     fd: fs::File,
 }
 
-fn submit_and_process(tasks: &[PathBuf], transform: fn(anyhow::Result<OperationDescriptor>)) {
+fn submit_and_process<F>(tasks: &[PathBuf], transform: F)
+where
+    F: Fn(anyhow::Result<OperationDescriptor>) + Send + Sync + Copy,
+{
     const CQ_RING_SIZE: u32 = 16;
     let mut ring = IoUring::new(CQ_RING_SIZE).unwrap();
     let mut n_tasks_in_flight_in_io_uring: u32 = 0;
     let n_tasks = tasks.len();
+
+    //let transform = Arc::new(transform);
 
     // Keep io_uring's submission queue topped up, and process chunks:
     let mut task_i = 0;
@@ -30,7 +38,7 @@ fn submit_and_process(tasks: &[PathBuf], transform: fn(anyhow::Result<OperationD
             while task_i < n_tasks && n_tasks_in_flight_in_io_uring < CQ_RING_SIZE {
                 let task = &tasks[task_i];
                 println!("Submitting task_i={}, path={:?}", task_i, task);
-                submit_task(task, task_i, &mut ring);
+                submit_task_to_io_uring(task, task_i, &mut ring);
 
                 // Increment counters
                 task_i += 1;
@@ -51,7 +59,7 @@ fn submit_and_process(tasks: &[PathBuf], transform: fn(anyhow::Result<OperationD
     assert!(n_tasks_in_flight_in_io_uring == 0);
 }
 
-fn submit_task(task: &PathBuf, task_i: usize, ring: &mut IoUring) {
+fn submit_task_to_io_uring(task: &PathBuf, task_i: usize, ring: &mut IoUring) {
     // TODO: Open file using io_uring. See issue #1
     let fd = fs::OpenOptions::new()
         .read(true)
@@ -96,11 +104,10 @@ fn submit_task(task: &PathBuf, task_i: usize, ring: &mut IoUring) {
     }
 }
 
-fn spawn_processing_task(
-    cqe: &cqueue::Entry,
-    transform: fn(anyhow::Result<OperationDescriptor>),
-    s: &Scope,
-) {
+fn spawn_processing_task<'scope, F>(cqe: &cqueue::Entry, transform: F, s: &Scope<'scope>)
+where
+    F: Fn(anyhow::Result<OperationDescriptor>) + Send + Sync + 'scope,
+{
     // Prepare data for thread:
     let op_descriptor = unsafe { Box::from_raw(cqe.user_data() as *mut OperationDescriptor) };
     let op_descriptor = if cqe.result() < 0 {
@@ -131,46 +138,25 @@ mod tests {
             PathBuf::from_str("/home/jack/dev/rust/light-speed-io/design.md").unwrap(),
         ];
 
-        // Start a thread which is responsible for storing results in a Vector.
-        // TODO: Consider using crossbeam::ArrayQueue to store the finished OpDescriptors. See issue #17.
-        // let n_tasks = tasks.len();
-        // let (tx, rx) = mpsc::sync_channel(64);
-        // let store_thread = thread::spawn(move || {
-        //     let mut results = Vec::with_capacity(n_tasks);
-        //     for _ in 0..n_tasks {
-        //         let op_descriptor: OperationDescriptor =
-        //             rx.recv().expect("Unable to receive from channel");
-        //         // TODO: Initialise `results` and use task_i as the index into `results`.
-        //         //       Or, don't do that! And, instead, sort the returned vector.
-        //         //       Or, leave as-is, and let the user sort the vector if they want!
-        //         //       Or, don't return _any_ buffers?!
-        //         //       See issue #17.
-        //         results.push(op_descriptor);
-        //     }
-        //     results
-        // });
+        // Use an crossbeam::ArrayQueue to store the finished OperationDescriptors.
+        let n_tasks = tasks.len();
+        let results_queue = queue::ArrayQueue::new(n_tasks);
 
-        // TODO: Figure out how to share `transform` between threads if `transform`
-        // is a closure. We want `transform` to be a closure so it can capture surrounding state.
-        // In this example, we want to clone `tx` for each thread. Elsewhere, we might want
-        // to share access to a single numpy array (to write each chunk into the array).
-        // This conversation might provide the answer:
-        // https://users.rust-lang.org/t/how-to-send-function-closure-to-another-thread/43549
-        // Then we can re-enable the commented out code in the body of `it_works()`.
+        // We want `transform` to be a closure so it can capture surrounding state (`results_queue`).
+        // Elsewhere, we might want to share access to a single numpy array (to write each chunk into the array).
         // See Issue #19.
-        fn transform(op_descriptor: anyhow::Result<OperationDescriptor>) {
-            let op_descriptor = op_descriptor.unwrap();
-            let buf = &op_descriptor.buf;
-            println!("{:?}", std::str::from_utf8(buf).unwrap());
-            // tx.clone().send(op_descriptor).expect("Unable to send on channel");
-        }
+        let transform = |op_descriptor: anyhow::Result<OperationDescriptor>| {
+            results_queue.push(op_descriptor).unwrap();
+        };
 
         submit_and_process(&tasks, transform);
 
-        // let results = store_thread
-        //     .join()
-        //     .expect("The receiver thread has panicked");
-
-        // println!("results.len()={}", results.len());
+        // Get results back out of the ArrayQueue:
+        println!("Final loop: ******************");
+        for op_descriptor in results_queue {
+            let op_descriptor = op_descriptor.unwrap();
+            let buf = &op_descriptor.buf;
+            println!("{:?}", std::str::from_utf8(buf).unwrap());
+        }
     }
 }
