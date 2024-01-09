@@ -16,7 +16,6 @@ struct OperationDescriptor {
     fd: fs::File,
 }
 
-// TODO: Refactor this function! Extract code into separate functions.
 fn submit_and_process(tasks: &[PathBuf], transform: fn(anyhow::Result<OperationDescriptor>)) {
     const CQ_RING_SIZE: u32 = 16;
     let mut ring = IoUring::new(CQ_RING_SIZE).unwrap();
