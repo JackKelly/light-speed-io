@@ -19,6 +19,8 @@ struct OperationDescriptor {
     fd: fs::File,
 }
 
+/// The `transform` function must handle the case when the number of
+/// bytes read is less than the number of bytes requested.
 fn submit_and_process<F>(tasks: &[PathBuf], transform: F)
 where
     F: Fn(anyhow::Result<OperationDescriptor>) + Send + Sync + Copy,
@@ -32,7 +34,7 @@ where
 
     // Keep io_uring's submission queue topped up, and process chunks:
     let mut task_i = 0;
-    rayon::scope(|s| {
+    rayon::scope(|scope| {
         while task_i < n_tasks {
             // Keep io_uring submission queue topped up. But don't overload io_uring!
             while task_i < n_tasks && n_tasks_in_flight_in_io_uring < CQ_RING_SIZE {
@@ -52,7 +54,7 @@ where
             // Spawn tasks to the Rayon ThreadPool to process data:
             for cqe in ring.completion() {
                 n_tasks_in_flight_in_io_uring -= 1;
-                spawn_processing_task(&cqe, transform, s);
+                spawn_processing_task(&cqe, transform, scope);
             }
         }
     });
@@ -104,23 +106,21 @@ fn submit_task_to_io_uring(task: &PathBuf, task_i: usize, ring: &mut IoUring) {
     }
 }
 
-fn spawn_processing_task<'scope, F>(cqe: &cqueue::Entry, transform: F, s: &Scope<'scope>)
+fn spawn_processing_task<'scope, F>(cqe: &cqueue::Entry, transform: F, scope: &Scope<'scope>)
 where
     F: Fn(anyhow::Result<OperationDescriptor>) + Send + Sync + 'scope,
 {
-    // Prepare data for thread:
+    // Turn `op_descriptor` into a `Result<OperationDescriptor>` depending on `cqe.result()`:
     let op_descriptor = unsafe { Box::from_raw(cqe.user_data() as *mut OperationDescriptor) };
     let op_descriptor = if cqe.result() < 0 {
-        // An error has occurred!
         let err = nix::Error::from_i32(-cqe.result());
         Err(err.into())
-        // TODO: Handle when the number of bytes read is less than the number of bytes requested
     } else {
         Ok(*op_descriptor)
     };
 
     // Spawn task to Rayon's ThreadPool:
-    s.spawn(move |_| {
+    scope.spawn(move |_| {
         transform(op_descriptor);
     });
 }
@@ -138,13 +138,13 @@ mod tests {
             PathBuf::from_str("/home/jack/dev/rust/light-speed-io/design.md").unwrap(),
         ];
 
-        // Use an crossbeam::ArrayQueue to store the finished OperationDescriptors.
+        // Use an crossbeam::ArrayQueue to store the finished `Result<OperationDescriptor>`s.
         let n_tasks = tasks.len();
         let results_queue = queue::ArrayQueue::new(n_tasks);
 
         // We want `transform` to be a closure so it can capture surrounding state (`results_queue`).
-        // Elsewhere, we might want to share access to a single numpy array (to write each chunk into the array).
-        // See Issue #19.
+        // Elsewhere, we might want to share access to a single numpy array
+        // (to write each chunk into the array). See Issue #19.
         let transform = |op_descriptor: anyhow::Result<OperationDescriptor>| {
             results_queue.push(op_descriptor).unwrap();
         };
@@ -152,7 +152,7 @@ mod tests {
         submit_and_process(&tasks, transform);
 
         // Get results back out of the ArrayQueue:
-        println!("Final loop: ******************");
+        println!("**************** Final loop ******************");
         for op_descriptor in results_queue {
             let op_descriptor = op_descriptor.unwrap();
             let buf = &op_descriptor.buf;
