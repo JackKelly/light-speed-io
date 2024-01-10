@@ -4,7 +4,9 @@
 
 Why aim for 1 million chunks per second? See [this spreadsheet](https://docs.google.com/spreadsheets/d/1DSNeU--dDlNSFyOrHhejXvTl9tEWvUAJYl-YavUdkmo/edit#gid=0) an ML training use-case that comfortably requires hundreds of thousands of chunks per second.
 
-But, wait, isn't it inefficient to load tiny chunks? [Dask recommends chunk sizes between 100 MB and 1 GB](https://blog.dask.org/2021/11/02/choosing-dask-chunk-sizes)! Local SSDs are turning the tables: modern SSDs can sustain over 1 million input/output operations per second. And LSIO's data processing should be very fast (one reason that Dask recommends large chunk sizes is that Dask's scheduler takes on the order of 1 ms per task. So 1 million tasks would take Dask 1,000 seconds _just_ to schedule!). And there may be [ways to get high performance from cloud storage buckets](https://github.com/JackKelly/light-speed-io/issues/10), too.
+But, wait, isn't it inefficient to load tiny chunks? [Dask recommends chunk sizes between 100 MB and 1 GB](https://blog.dask.org/2021/11/02/choosing-dask-chunk-sizes)! Modern SSDs are turning the tables: modern SSDs can sustain over 1 million input/output operations per second. And cloud storage looks like it is speeding up (for example, see the recent announcement of [AWS Express Zone One](https://aws.amazon.com/blogs/aws/new-amazon-s3-express-one-zone-high-performance-storage-class/); and there may be [ways to get high performance from existing cloud storage buckets](https://github.com/JackKelly/light-speed-io/issues/10), too). One reason that Dask recommends large chunk sizes is that Dask's scheduler takes on the order of 1 ms to plan each task. LSIO's data processing should be faster (see below).
+
+(See [this Google Doc](https://docs.google.com/document/d/1_T0ay9wXozgqq334E2w1SROdlAM7y6JSgL1rmXJnIO0/edit) for a longer discussion of LSIO.)
 
 ## Planned features
 
@@ -40,6 +42,9 @@ Allow for very fast access to arbitrary selections of:
 * Multi-dimensional [Zarr](https://zarr.dev/) arrays. Jack is mostly focused on [_sharded_ Zarr arrays](https://zarr.dev/zeps/accepted/ZEP0002.html). But LSIO could also be helpful for non-sharded Zarr arrays.
     * Jack is particularly focused on speeding up the data pipeline for training machine learning models on multi-dimensional datasets, where we want to select hundreds of random crops of data per second. This is described below in the [Priorities](#priorities) section. The ambition is to enable us to read on the order of 1 million Zarr chunks per second (from a fast, local SSD).
 * Other file formats used for multi-dimensional arrays, such as NetCDF, GRIB, and EUMETSAT's native file format. (LSIO could help to speed up [kerchunk](https://fsspec.github.io/kerchunk/))
+* Vector database which indexes into crops of n-dimensional data. For example: implement "retrieval assisted generation" (RAG) for solar forecasting: give each chunk of satellite data a vector, and then give the ML model the 4 most similar examples from the entire history. This will have to be very fast to work at training time. 
+* Interactive visualization of neuroscientific datasets 
+
 
 ## Priorities
 
