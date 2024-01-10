@@ -134,7 +134,7 @@ let io_operations = vec![
         chunks: vec![
             Chunk{
                 byte_range: ...,
-                buffers: None,
+                buffers: Auto,
             },
         ],
     },
@@ -146,15 +146,15 @@ let io_operations = vec![
         chunks: vec![
             Chunk{
                 byte_range: ..1000,     // Read the first 1,000 bytes
-                buffers: Some(vec![&mut buf0]),
+                buffers: Manual(vec![&mut buf0]),
             },
             Chunk{
                 byte_range: -500..-200, // Read 300 bytes, until the 200th byte from the end
-                buffers: Some(vec![&mut buf1]),
+                buffers: Manual(vec![&mut buf1]),
             },
             Chunk{
                 byte_range: -100..,             // Read the last 100 bytes. For example, shared Zarrs
-                buffers: Some(vec![&mut buf2]), // place the shard index at the end of each file.
+                buffers: Manual(vec![&mut buf2]), // place the shard index at the end of each file.
             },
         ],
     },
@@ -183,9 +183,9 @@ pub struct Chunk{
 
     // Memory buffers for storing the raw data, straight after the data arrives from IO.
     //
-    // If buffers is None, then LSIO will take responsibility for allocating the buffers.
+    // If buffers is Auto, then LSIO will take responsibility for allocating the buffers.
     //
-    // If the user wants to supply buffers, then use `Some(Vec<&mut [u8]>)`.
+    // If the user wants to supply buffers, then use `Manual(Vec<&mut [u8]>)`.
     // For example, this would allow us to bypass the CPU when copying multiple
     // uncompressed chunks from a sharded Zarr directly into the final array.
     // The buffers could point to different slices of the final array.
@@ -199,7 +199,7 @@ pub struct Chunk{
     // cache will have to _copy_ the contents of these memory buffers. LSIO can't use user-supplied
     // buffers as its cache, because LSIO can't guarantee that the user-supplied buffers will be immutable
     // and live long enough.
-    pub buffers: Option<Vec<&mut [u8]>>,
+    pub buffers: AutoOrManual<Vec<&mut [u8]>>,
 };
 ```
 
