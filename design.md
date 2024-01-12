@@ -83,6 +83,8 @@ Ha! :smiley:. This project is in the earliest planning stages! It'll be _months_
 
 ### Public Rust API
 
+**UPDATE 2024-01-12**: This API will change very soon! See [this comment on issue #22](https://github.com/JackKelly/light-speed-io/issues/22#issuecomment-1889441036).
+
 #### Initialize a `Reader` struct
 
 Using a persistent object will allow us to cache (in memory) values such as file sizes. And provides an opportunity to pre-allocate (and maybe re-use) memory buffers.
