@@ -164,8 +164,9 @@ see [this GitHub issue](https://github.com/JackKelly/light-speed-io/issues/9))
 
 Users create a set list of abstracted read operations: 
 
+TODO: Update this with the new structs and API!
 ```rust
-let plan: Vec<Optimised_IO_Operation> = io_operations
+let io_plan: Vec<Optimised_IO_Operation> = io_operations
     .par_iter()
     .map( |io_operations_for_file| 
         io_operations_for_file.merge_nearby_byte_ranges(merge_threshold_in_megabytes)
@@ -197,7 +198,7 @@ The plan needs to express:
 - "_these multiple optimized reads started life as a single read request. Create one large memory buffer. And each sub-chunk should be read directly into a different slice of the memory buffer._"
 
 ```rust
-// TODO! Update this!
+// TODO! Update this to the new structs and API!
 struct Optimised_IO_Operation {
     io_type: IO_Type,
     path: PathBuf,
@@ -225,9 +226,6 @@ struct Optimised_IO_Operation {
     number_of_outstanding_operations: Arc<AtomicUInt>,
 };
 ```
-#### TODO: Decide when to allocate buffers?
-
-See [issue #22](https://github.com/JackKelly/light-speed-io/issues/22).
 
 #### TODO: Submit IO operations to reader
 
@@ -239,6 +237,7 @@ Using a persistent object will allow us to cache (in memory) values such as file
 
 ```rust
 let io = IoUringLocal::new();
+let read_results: HashMap<PathBuf, Vec<Result<u8>>> = io.read(io_plan).group_by_path();
 ```
 
 ##### Under the hood (in LSIO)
@@ -248,32 +247,120 @@ use anyhow::Error;
 
 struct ReadResult {
     path: PathBuf,
-    chunk_indeX: usize,
+    chunk_index: usize,
     buffer: Result<[u8]>,
 };
 
+struct ReadResults ( ArrayQueue<ReadResult> );
+
+impl ReadResults {
+    pub fn group_by_path() -> HashMap<PathBuf, Vec<Result<u8>>>;
+}
+
 pub trait Reader {
     // ****** read methods where LSIO creates the IO buffers: ******
-    pub fn read(chunks: FileChunks) -> ArrayQueue<ReadResult>;
-    pub fn read_and_map(chunks: FileChunks, map_func: F) -> ArrayQueue<ReadResult>;
+
+    /// LSIO automatically creates buffers.
+    /// Use-case: Reading uncompressed Zarr files, when we don't know the filesizes.
+    /// 
+    /// First, LSIO discovers the filessizes for byte_ranges of the
+    /// form -10..-5 or 100.. or .. (see get_filesizes_in_bytes, below).
+    /// 
+    /// Then LSIO creates buffers just before io_uring needs those buffers:
+    /// 
+    /// e.g. if the SQ size is 64, then first create 64 buffers, and submit
+    /// those to io_uring. Then create n more buffers after n CQEs.
+    /// 
+    /// LSIO cannot re-use buffers because ownership of all buffers
+    /// will be transferred to the caller.
+    /// 
+    /// Why not just allocate all the buffers before submitting any reads to io_uring? 
+    /// Because we can be allocating, say, the 64th to 128th buffers in parallel whilst 
+    /// io_uring loads data into buffers 0 to 63. However, note that memory allocators 
+    /// become a lot less efficient when allocating and deallocating across multiple threads:
+    /// see [this comment](https://users.rust-lang.org/t/string-and-memory-allocation/43704/13)
+    /// (which says that 1,000,000 allocation and deallocation pairs will
+    /// take about 0.1 seconds) and 
+    /// [these benchmarks](https://github.com/mjansson/rpmalloc-benchmark/blob/master/BENCHMARKS.md). 
+    /// But note that the graphs in the
+    /// benchmarks are "per CPU second" not "per second" so, IIUC, multiple threads will
+    /// take less walltime, even if the "CPU seconds" increases a bit. My hunch is that
+    /// it'll still be faster to allocate in parallel with io_uring and chunk processing 
+    /// because we can overlap the IO with heap allocation, and we're still doing all the heap
+    /// allocation on a single thread. But, if I have time, it'd be good to some some 
+    /// benchmarking to compare doing all the allocation ahead-of-time (in a single thread) 
+    /// versus overlapping the heap allocation with the IO.
+    pub fn read(chunks: FileChunks) -> ReadResults;
+
+    /// LSIO creates buffers for raw IO _and_ can re-use those raw IO buffers. 
+    /// The user-supplied `map` function must not have side-effects. 
+    /// `map` allocates and returns a buffer. 
+    /// Use-case: Reading compressed Zarr chunks. 
+    /// You could argue that `read_and_map(chunks, |chunk| chunk)` 
+    /// performs the same function as `read(chunks)`. Except that 
+    /// `read_and_map(chunks, |chunk| chunk)` will unnecessarily 
+    /// spin up a Rayon threadpool (only to do no work!).
+    pub fn read_and_map(chunks: FileChunks, map_func: F) -> ReadResults;
+
+    /// The `buffers` supplied in the `chunks` argument _aren't_ for the raw IO buffers. 
+    /// Instead they're for the output of the `map` function. LSIO will automatically 
+    /// create buffers for the raw IO (just in time, before actually submitting to io_uring), 
+    /// and LSIO can re-use a buffer after memmove has finished. Use-case: Reading uncompressed 
+    /// zarr chunks, normalising, and writing the normalised data into a numpy array. Or Reading
+    /// compressed zarr chunks, where we know the size of the uncompressed data ahead-of-time 
+    /// (which I think will be true most of the time, without requiring any additional Zarr 
+    /// metadata, because we know the resulting array shape of each chunk). This method doesn't 
+    /// return any buffers. It only returns errors.
     pub fn read_and_map_and_memmove(chunks: FileChunksWithBuffers, map_func: F) -> Vec<Error>;
+    
+    /// reads in arbitrary order, but then calls the map function in order 
+    /// (for Vincent's use-case of processing data in a streaming fashion)?
+    /// Or, uses an io_uring chain to _read_ in order, too.
+    /// Maybe don't worry about this for now? It should be fairly easy to add later if needed.
+    pub fn read_and_map_in_order(TODO);
 
     /// Use-case: Load compressed Zarrs, and decompress directly into a
     /// user-specified buffer (e.g. directly into a part of the numpy array).
+    /// The `buffers` specify the buffers for the *output* of transform,
+    /// not the raw IO buffers. LSIO will automatically allocate the raw IO buffers.
     pub fn read_and_transform(chunks: FileChunksWithBuffers, transform) -> Vec<Error>;
 
     // ****** read methods where the user supplies the IO buffers: ******
-    pub fn read_into_buffers(chunks: FileChunksWithBuffers) -> ArrayQueue<ReadResult>;
-    pub fn read_unchecked_into_buffers(chunks: FileChunksWithBuffers) -> ArrayQueue<ReadResult>;
+
+    /// The user supplies the buffers. LSIO cannot re-use buffers. LSIO will get 
+    /// the filesizes, to sanity check that there's enough data on disk to satisfy 
+    /// the buffers. LSIO returns ownership of the buffers. 
+    /// Use-case: Reading uncompressed zarr chunks directly into the relevant 
+    /// regions of the final numpy array.
+    pub fn read_into_buffers(chunks: FileChunksWithBuffers) -> ReadResults;
+
+    /// Same as `read_into_buffers` except LSIO won't find out the filesizes. 
+    /// Instead LSIO will always read the length of the buffers.
+    pub fn read_unchecked_into_buffers(chunks: FileChunksWithBuffers) -> ReadResults;
 }
 
 pub trait Writer {
+    /// Use-case: Writing uncompressed Zarr chunks to disk.
     pub fn write(chunks: FileChunksWithBuffers) -> Vec<Error>;
+
+    /// Use-case: Compressing Zarr chunks, and writing those compressed chunks to disk.
     pub fn map_and_write(chunks: FileChunksWithBuffers, map_func) -> Vec<Error>;
 }
 
 pub trait GetFilesize {
+    /// Spin up separate thread which owns its own io_uring instance for getting file sizes 
+    /// (this isn't strictly necessary: we _could_ re-use the main io_uring for getting 
+    /// filesizes. But it'll probably be easier to implement, and might be faster, if we use a separate io_uring for filesizes). This thread will keep the SQ topped up. When CQEs appear, the thread will put them into the channel. It might be sensible to apply some backpressure. Note that, if we're using io_uring, then the returned filesizes won't necessarily be in the order in which they were submitted. When the main thread receives a `(PathBuf, u32)` from the channel, it'll look up the `PathBuf` in the `chunks` (to find which byte_ranges to read for this path), add this path and filesize to its cache of filesizes. (Question: Would we then add these read ops into a queue, and then, when io_uring completes an op, we'll pull an item off the queue, and allocate a buffer if necessary, and submit to io_uring?)
     pub fn get_filesizes_in_bytes(filenames: Vec<PathBuf>) -> std::sync::mpsc::Receiver<Result<(PathBuf, u32)>>;
+}
+
+/// Use-case: rechunking / moving data from, say, GRIB to Zarr
+pub trait ReadThenWrite {
+    /// Copying data (unmodified). This can all be done by a single io_uring chain.
+    pub fn read_then_write(TODO);
+
+    /// Copying data, with a processing step (e.g. decompressing LZ4 and recompressing as ZSTD).
+    pub fn read_map_write(TODO);
 }
 
 /// Linux io_uring for locally-attached disks.
@@ -290,15 +377,9 @@ impl IoUringLocal {
     
 }
 
-impl Reader for IoUringLocal {
-    // Implement io_uring-specific stuff...
-}
-
-impl Writer for IoUringLocal {
-    // Implement io_uring-specific stuff...
-}
-
-impl GetFilesize for IoUringLocal {
-    // Implement io_uring-specific stuff...
-}
+// Implement io_uring-specific stuff...
+impl Reader for IoUringLocal { }
+impl Writer for IoUringLocal { }
+impl GetFilesize for IoUringLocal { }
+impl ReadThenWrite for IoUringLocal { }
 ```
