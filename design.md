@@ -79,15 +79,11 @@ The aim will be to keep the GPU constantly fed with data, so the GPU is constant
 
 Ha! :smiley:. This project is in the earliest planning stages! It'll be _months_ before it does anything vaguely useful! And, for now at least, this project is just Jack hacking away his spare time whilst learning Rust! **So please don't depend on LSIO yet!**
 
-## Design
+## Design of public Rust API and main internals
 
-### Public Rust API
+### Specify which chunks to read
 
-**UPDATE 2024-01-12**: This API will change very soon! See [this comment on issue #22](https://github.com/JackKelly/light-speed-io/issues/22#issuecomment-1889441036).
-
-#### Specify which chunks to read
-
-##### User code
+#### User code
 
 In this example, we read the entirety of `/foo/bar`. And we read three chunks from `/foo/baz`:
 
@@ -122,7 +118,7 @@ io_operations.insert(
 );
 ```
 
-##### Under the hood (in LSIO)
+#### Under the hood (in LSIO)
 
 ```rust
 pub struct Chunk{
@@ -158,7 +154,7 @@ type FileChunks = HashMap<PathBuf, Vec<Chunk>>;
 type FileChunksWithBuffers = HashMap<PathBuf, Vec<ChunkWithBuffers>>;
 ```
 
-#### Optimising the IO plan
+### Optimising the IO plan
 
 TODO: Update this for the new API and structs!!
 
@@ -195,7 +191,7 @@ Optimisations that LSIO _may_ implement include:
 - Deduplicate overlapping read requests. For example, if the user requests two chunks `[..1000, ..100]` then only actually read `..1000`, and return - as the second chunk - an immutable slice of the last 100 bytes. <font size="1">(Maybe don't implement this in the MVP. But check that the design can support this. Although don't worry too much - I'm not even sure if this issue would arise in the real world.)</font>
 - Detect contiguous chunks destined for different buffers, and use `readv` to read these. <font size="2">(Although we should benchmark `readv` vs `read`)</font>.
 
-##### Implementation details (within LSIO)
+#### Implementation details (within LSIO)
 
 The plan needs to express:
 - "_this single optimized read started life as multiple, nearby reads. After performing this single read, throw away the buffers allocated just for filling the "gaps". All the user's requested buffers are now ready. So spawn processing tasks, one per user-requested buffer. The IO backend should be encouraged to use `readv` if available, to directly read into multiple buffers. (POSIX can use `readv` to read sockets as well as files.)_"
@@ -232,20 +228,20 @@ struct Optimised_IO_Operation {
 };
 ```
 
-#### TODO: Submit IO operations to reader
+### Submit IO operations to reader
 
-##### Initialize a `Reader` struct
+#### Initialize a `Reader` struct
 
 Using a persistent object will allow us to cache (in memory) values such as file sizes. And provides an opportunity to pre-allocate (and maybe re-use) memory buffers.
 
-##### User code
+#### User code
 
 ```rust
 let io = IoUringLocal::new();
 let read_results: HashMap<PathBuf, Vec<Result<u8>>> = io.read(io_plan).group_by_path();
 ```
 
-##### Under the hood (in LSIO)
+#### Under the hood (in LSIO)
 
 ```rust
 use anyhow::Error;
