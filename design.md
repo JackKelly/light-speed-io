@@ -156,7 +156,7 @@ type FileChunksWithBuffers = HashMap<PathBuf, Vec<ChunkWithBuffers>>;
 
 ### Optimising the IO plan
 
-TODO: Update this for the new API and structs!!
+TODO: Update this for the new API and structs!! Maybe change `type FileChunks...` and `type FileChunksWithBuffers...` to `struct FileChunks(HashMap...)` (and similar for the second one) so I can implement optimisation methods on these structs?
 
 LSIO optimizes the sequence of `byte_ranges` before sending those operations to the IO subsystem.
 
