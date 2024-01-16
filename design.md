@@ -91,10 +91,10 @@ In this example, we read the entirety of `/foo/bar`. And we read three chunks fr
 let io_operations = HashMap::new();
 
 // Read entirety of /foo/bar, and ask LSIO to allocate the memory buffer:
-io_operations.insert("/foo/bar", vec![Chunk{byte_range: ... }]);
+io_operations.insert("/foo/bar", vec![ByteRange{byte_range: ... }]);
 
 // Read 3 chunks from /foo/baz:
-// (In practice, you can't mix-and-match `Chunk` with `ChunkWithBuffers` in the same HashMap.)
+// (In practice, you can't mix-and-match `ByteRange` with `ByteRangeWithBuffers` in the same HashMap.)
 let mut buf0 = vec![0; 1000];
 let mut buf1 = vec![0;  300];
 let mut buf2 = vec![0;  100];
@@ -102,15 +102,15 @@ let mut buf2 = vec![0;  100];
 io_operations.insert(
     "/foo/baz", 
     vec![
-            ChunkWithBuffers{
+            ByteRangeWithBuffers{
                 byte_range: ..1000,     // Read the first 1,000 bytes
                 buffers: vec![&mut buf0],
             },
-            ChunkWithBuffers{
+            ByteRangeWithBuffers{
                 byte_range: -500..-200, // Read 300 bytes, until the 200th byte from the end
                 buffers: vec![&mut buf1],
             },
-            ChunkWithBuffers{
+            ByteRangeWithBuffers{
                 byte_range: -100..,             // Read the last 100 bytes. For example, shared Zarrs
                 buffers: vec![&mut buf2], // place the shard index at the end of each file.
             },
@@ -121,15 +121,15 @@ io_operations.insert(
 #### Under the hood (in LSIO)
 
 ```rust
-pub struct Chunk{
+pub struct ByteRange{
     pub byte_range: Range<i64>,
-    // Instead of using this `struct Chunk` in a `Vec<Chunk>`,
+    // Instead of using this `struct ByteRange` in a `Vec<ByteRange>`,
     // we could use `Vec<Range<i64>>`
-    // but that feels inconsistent with `ChunkWithBuffers`
+    // but that feels inconsistent with `ByteRangeWithBuffers`
     // and we may want to implement methods which optimise the byte_ranges
 };
 
-pub struct ChunkWithBuffers{
+pub struct ByteRangeWithBuffers{
     pub byte_range: Range<i64>,
 
     // Memory buffers for storing the raw data, straight after the data arrives from IO.
@@ -150,13 +150,19 @@ pub struct ChunkWithBuffers{
     pub buffers: Vec<&mut [u8]>,
 };
 
-type FileChunks = HashMap<PathBuf, Vec<Chunk>>;
-type FileChunksWithBuffers = HashMap<PathBuf, Vec<ChunkWithBuffers>>;
+type FileByteRanges = HashMap<PathBuf, Vec<ByteRange>>;
+type FileByteRangesWithBuffers = HashMap<PathBuf, Vec<ByteRangeWithBuffers>>;
 ```
 
 ### Optimising the IO plan
 
-TODO: Update this for the new API and structs!! Maybe change `type FileChunks...` and `type FileChunksWithBuffers...` to `struct FileChunks(HashMap...)` (and similar for the second one) so I can implement optimisation methods on these structs?
+TODO: Update this for the new API and structs!! 
+* Delete the two type aliases above.
+* Define `struct ByteRanges(Vec<ByteRange>)` and `struct ByteRangesWithBuffers(Vec<ByteRangeWithBuffers>)`. 
+* Define a `trait ByteRangeOptimiser` with methods like `merge_byte_ranges` and `split_large_byte_ranges` (with no default implementations).
+* Define custom implementations of `ByteRangeOptimiser` for `ByteRanges` and `ByteRangesWithBuffers`.
+* `Reader` methods would take a `HashMap<PathBuf, Vec<OptimisedByteRange>` or `HashMap<PathBuf, Vec<OptimisedByteRangeWithBuffers>>`. 
+* Users need to call a `ByteRangeOptimiser` method on the `ByteRanges` or `ByteRangesWithBuffers` before passing to the `Reader` methods. (This makes it easy for users to customise, including using different thresholds). If the user wants no optimisation, then implement `OptimisedByteRanges from ByteRanges` and `OptimisedByteRangesWithBuffers from ByteRangesWithBuffers`.
 
 LSIO optimizes the sequence of `byte_ranges` before sending those operations to the IO subsystem.
 
@@ -167,7 +173,7 @@ Users create a set list of abstracted read operations:
 
 TODO: Update this with the new structs and API!
 ```rust
-let io_plan: Vec<Optimised_IO_Operation> = io_operations
+let io_plan: Vec<OptimisedByteRange> = io_operations
     .par_iter()
     .map( |io_operations_for_file| 
         io_operations_for_file.merge_nearby_byte_ranges(merge_threshold_in_megabytes)
@@ -195,35 +201,49 @@ Optimisations that LSIO _may_ implement include:
 
 The plan needs to express:
 - "_this single optimized read started life as multiple, nearby reads. After performing this single read, throw away the buffers allocated just for filling the "gaps". All the user's requested buffers are now ready. So spawn processing tasks, one per user-requested buffer. The IO backend should be encouraged to use `readv` if available, to directly read into multiple buffers. (POSIX can use `readv` to read sockets as well as files.)_"
-- "_this single optimized read started life as n multiple, overlapping reads. The user is expecting n slices (views) of this memory buffer_"
-- "_these multiple optimized reads started life as a single read request. Create one large memory buffer. And each sub-chunk should be read directly into a different slice of the memory buffer._"
+- "_these multiple optimized reads started life as a single read request. Create one large memory buffer. And each sub-chunk should be read directly into a different slice of the memory buffer. The complete buffer is only ready when all reads have completed._"
+- (don't worry about this for now)"_this single optimized read started life as n multiple, overlapping reads. The user is expecting n slices (views) of this memory buffer_"
+
 
 ```rust
 // TODO! Update this to the new structs and API!
-struct Optimised_IO_Operation {
-    io_type: IO_Type,
-    path: PathBuf,
-    optimised_chunk: Chunk,
+struct OptimisedByteRange {
+    optimised_byte_range: Range<i64>,
 
-    // These are the buffers requested by the user.
+    // These are the byte_ranges requested by the user.
     //
     // MERGING EXAMPLE:
     // For example, if the user originally requested two byte ranges: ..100, 200..300,
-    // and we merged these into a single read by also reading 100..200 to a "dummy" buffer
-    // then `original_buffers` would just contain the buffers originally requested by the user.
-    // When this IO operation completes, LSIO will spawn one processing task per user requested buffer.
+    // and LSIO merged these into a single read by also reading 100..200 to a "dummy" buffer
+    // then `original_byte_ranges` would just contain ..100 and 200..300.
+    // Before submission to io_uring, LSIO will create three buffers.
+    // io_uring would use readv to read this merged byte_range into the three buffers.
+    // When this IO operation completes, LSIO will spawn one processing task per
+    // user-requested byte range, and will throw away the middle "dummy" buffer.
     //
     // SPLITTING EXAMPLE:
-    // If this Optimised_IO_Operation is one of multiple Optimised_IO_Operations formed by splitting
-    // a large IO_Operation, then `original_buffers` will contain just a single entry: the
-    // (large) original buffer.
-    original_buffers: Vec<&[u8]>,
+    // If this OptimisedByteRange is one of multiple OptimisedByteRanges formed by splitting
+    // a large IO_Operation, then `original_byte_ranges` will contain just a single entry: the
+    // (large) original byte range.
+    original_byte_ranges: Vec<Range<i64>>,
 
-    // When first splitting into multiple Optimised_IO_Operations,
-    // create an AtomicUInt with the number of splits.
-    // Then, when one of these Optimised_IO_Operations completes,
-    // reduce this number by one. If the number is zero then
-    // the `original_buffers` are all ready. This is only really relevant when splitting.
+    // MERGING EXAMPLE: 
+    // number_of_outstanding_operations would be set to 1 before submission to io_uring.
+    //
+    // SPLITTING EXAMPLE:
+    // When LSIO splits a large operation into multiple OptimisedByteRanges,
+    // LSIO will create an AtomicUInt with the number of splits.
+    // Then, when one of these OptimisedByteRanges completes,
+    // reduce this number by one. If, after subtracting one, the number is zero then
+    // the `original_byte_ranges` are all ready. This is only really relevant when splitting.
+    number_of_outstanding_operations: Arc<AtomicUInt>,
+};
+
+struct OptimisedByteRangeWithBuffers {
+    optimised_byte_range: Range<i64>,
+
+    original_byte_ranges_with_buffers: Vec<ByteRangeWithBuffers>,
+
     number_of_outstanding_operations: Arc<AtomicUInt>,
 };
 ```
@@ -293,7 +313,7 @@ pub trait Reader {
     /// allocation on a single thread. But, if I have time, it'd be good to some some 
     /// benchmarking to compare doing all the allocation ahead-of-time (in a single thread) 
     /// versus overlapping the heap allocation with the IO.
-    pub fn read(chunks: FileChunks) -> ReadResults;
+    pub fn read(chunks: FileByteRanges) -> ReadResults;
 
     /// LSIO creates buffers for raw IO _and_ can re-use those raw IO buffers. 
     /// The user-supplied `map` function must not have side-effects. 
@@ -303,7 +323,7 @@ pub trait Reader {
     /// performs the same function as `read(chunks)`. Except that 
     /// `read_and_map(chunks, |chunk| chunk)` will unnecessarily 
     /// spin up a Rayon threadpool (only to do no work!).
-    pub fn read_and_map(chunks: FileChunks, map_func: F) -> ReadResults;
+    pub fn read_and_map(chunks: FileByteRanges, map_func: F) -> ReadResults;
 
     /// The `buffers` supplied in the `chunks` argument _aren't_ for the raw IO buffers. 
     /// Instead they're for the output of the `map` function. LSIO will automatically 
@@ -314,7 +334,7 @@ pub trait Reader {
     /// (which I think will be true most of the time, without requiring any additional Zarr 
     /// metadata, because we know the resulting array shape of each chunk). This method doesn't 
     /// return any buffers. It only returns errors.
-    pub fn read_and_map_and_memmove(chunks: FileChunksWithBuffers, map_func: F) -> Vec<Error>;
+    pub fn read_and_map_and_memmove(chunks: FileByteRangesWithBuffers, map_func: F) -> Vec<Error>;
     
     /// reads in arbitrary order, but then calls the map function in order 
     /// (for Vincent's use-case of processing data in a streaming fashion)?
@@ -326,7 +346,7 @@ pub trait Reader {
     /// user-specified buffer (e.g. directly into a part of the numpy array).
     /// The `buffers` specify the buffers for the *output* of transform,
     /// not the raw IO buffers. LSIO will automatically allocate the raw IO buffers.
-    pub fn read_and_transform(chunks: FileChunksWithBuffers, transform) -> Vec<Error>;
+    pub fn read_and_transform(chunks: FileByteRangesWithBuffers, transform) -> Vec<Error>;
 
     // ****** read methods where the user supplies the IO buffers: ******
 
@@ -335,19 +355,19 @@ pub trait Reader {
     /// the buffers. LSIO returns ownership of the buffers. 
     /// Use-case: Reading uncompressed zarr chunks directly into the relevant 
     /// regions of the final numpy array.
-    pub fn read_into_buffers(chunks: FileChunksWithBuffers) -> ReadResults;
+    pub fn read_into_buffers(chunks: FileByteRangesWithBuffers) -> ReadResults;
 
     /// Same as `read_into_buffers` except LSIO won't find out the filesizes. 
     /// Instead LSIO will always read the length of the buffers.
-    pub fn read_unchecked_into_buffers(chunks: FileChunksWithBuffers) -> ReadResults;
+    pub fn read_unchecked_into_buffers(chunks: FileByteRangesWithBuffers) -> ReadResults;
 }
 
 pub trait Writer {
     /// Use-case: Writing uncompressed Zarr chunks to disk.
-    pub fn write(chunks: FileChunksWithBuffers) -> Vec<Error>;
+    pub fn write(chunks: FileByteRangesWithBuffers) -> Vec<Error>;
 
     /// Use-case: Compressing Zarr chunks, and writing those compressed chunks to disk.
-    pub fn map_and_write(chunks: FileChunksWithBuffers, map_func) -> Vec<Error>;
+    pub fn map_and_write(chunks: FileByteRangesWithBuffers, map_func) -> Vec<Error>;
 }
 
 pub trait GetFilesize {
