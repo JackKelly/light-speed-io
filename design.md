@@ -127,6 +127,10 @@ io_operations.insert(
 ```rust
 pub struct Chunk{
     pub byte_range: Range<i64>,
+    // Instead of using this `struct Chunk` in a `Vec<Chunk>`,
+    // we could use `Vec<Range<i64>>`
+    // but that feels inconsistent with `ChunkWithBuffers`
+    // and we may want to implement methods which optimise the byte_ranges
 };
 
 pub struct ChunkWithBuffers{
@@ -152,10 +156,11 @@ pub struct ChunkWithBuffers{
 
 type FileChunks = HashMap<PathBuf, Vec<Chunk>>;
 type FileChunksWithBuffers = HashMap<PathBuf, Vec<ChunkWithBuffers>>;
-
 ```
 
 #### Optimising the IO plan
+
+TODO: Update this for the new API and structs!!
 
 LSIO optimizes the sequence of `byte_ranges` before sending those operations to the IO subsystem.
 
@@ -251,6 +256,8 @@ struct ReadResult {
     buffer: Result<[u8]>,
 };
 
+// We use a crossbeam::ArrayQueue, so each Rayon worker can concurrently submit
+// completed ReadResults into a single data structure.
 struct ReadResults ( ArrayQueue<ReadResult> );
 
 impl ReadResults {
@@ -350,7 +357,16 @@ pub trait Writer {
 pub trait GetFilesize {
     /// Spin up separate thread which owns its own io_uring instance for getting file sizes 
     /// (this isn't strictly necessary: we _could_ re-use the main io_uring for getting 
-    /// filesizes. But it'll probably be easier to implement, and might be faster, if we use a separate io_uring for filesizes). This thread will keep the SQ topped up. When CQEs appear, the thread will put them into the channel. It might be sensible to apply some backpressure. Note that, if we're using io_uring, then the returned filesizes won't necessarily be in the order in which they were submitted. When the main thread receives a `(PathBuf, u32)` from the channel, it'll look up the `PathBuf` in the `chunks` (to find which byte_ranges to read for this path), add this path and filesize to its cache of filesizes. (Question: Would we then add these read ops into a queue, and then, when io_uring completes an op, we'll pull an item off the queue, and allocate a buffer if necessary, and submit to io_uring?)
+    /// filesizes. But it'll probably be easier to implement, and might be faster, if we use 
+    /// a separate io_uring for filesizes). This thread will keep the SQ topped up. When CQEs 
+    /// appear, the thread will put them into the channel. It might be sensible to apply some
+    /// backpressure. Note that, if we're using io_uring, then the returned filesizes won't 
+    /// necessarily be in the order in which they were submitted. When the main thread receives 
+    /// a `(PathBuf, u32)` from the channel, it'll look up the `PathBuf` in the `chunks` (to 
+    /// find which byte_ranges to read for this path), add this path and filesize to its cache 
+    /// of filesizes. (Question: Would we then add these read ops into a queue, and then, when 
+    /// io_uring completes an op, we'll pull an item off the queue, and allocate a buffer if 
+    /// necessary, and submit to io_uring?)
     pub fn get_filesizes_in_bytes(filenames: Vec<PathBuf>) -> std::sync::mpsc::Receiver<Result<(PathBuf, u32)>>;
 }
 
