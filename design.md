@@ -85,37 +85,6 @@ Ha! :smiley:. This project is in the earliest planning stages! It'll be _months_
 
 **UPDATE 2024-01-12**: This API will change very soon! See [this comment on issue #22](https://github.com/JackKelly/light-speed-io/issues/22#issuecomment-1889441036).
 
-#### Initialize a `Reader` struct
-
-Using a persistent object will allow us to cache (in memory) values such as file sizes. And provides an opportunity to pre-allocate (and maybe re-use) memory buffers.
-
-##### User code
-
-```rust
-let reader = IoUringLocal::new();
-```
-
-##### Under the hood (in LSIO)
-
-```rust
-pub trait Reader {
-    pub fn new() -> Self { Self }
-}
-
-/// Linux io_uring for locally-attached disks.
-pub struct IoUringLocal {
-    /// Map from the full file name to the file size in bytes.
-    /// We need to know the length of each file if we want to read the file
-    /// in its entirety, or if we want to seek to a position relative to the
-    /// end of the file.
-    cache_of_file_sizes_in_bytes: Map<PathBuf, u64>,
-}
-
-impl Reader for IoUringLocal {
-    // Implement io_uring-specific stuff...
-}
-```
-
 #### Specify which chunks to read
 
 ##### User code
@@ -123,71 +92,48 @@ impl Reader for IoUringLocal {
 In this example, we read the entirety of `/foo/bar`. And we read three chunks from `/foo/baz`:
 
 ```rust
+let io_operations = HashMap::new();
+
+// Read entirety of /foo/bar, and ask LSIO to allocate the memory buffer:
+io_operations.insert("/foo/bar", vec![Chunk{byte_range: ... }]);
+
+// Read 3 chunks from /foo/baz:
+// (In practice, you can't mix-and-match `Chunk` with `ChunkWithBuffers` in the same HashMap.)
 let mut buf0 = vec![0; 1000];
 let mut buf1 = vec![0;  300];
 let mut buf2 = vec![0;  100];
 
-let io_operations = vec![
-
-    // Read entirety of /foo/bar, and ask LSIO to allocate the memory buffer:
-    IO_Operations_For_File{
-        io_type: Read,
-        path: "/foo/bar", 
-        chunks: vec![
-            Chunk{
-                byte_range: ...,
-                buffers: Auto,
-            },
-        ],
-    },
-
-    // Read 3 chunks from /foo/baz:
-    IO_Operations_For_File{
-        io_type: Read,
-        path: "/foo/baz", 
-        chunks: vec![
-            Chunk{
+io_operations.insert(
+    "/foo/baz", 
+    vec![
+            ChunkWithBuffers{
                 byte_range: ..1000,     // Read the first 1,000 bytes
-                buffers: Manual(vec![&mut buf0]),
+                buffers: vec![&mut buf0],
             },
-            Chunk{
+            ChunkWithBuffers{
                 byte_range: -500..-200, // Read 300 bytes, until the 200th byte from the end
-                buffers: Manual(vec![&mut buf1]),
+                buffers: vec![&mut buf1],
             },
-            Chunk{
+            ChunkWithBuffers{
                 byte_range: -100..,             // Read the last 100 bytes. For example, shared Zarrs
-                buffers: Manual(vec![&mut buf2]), // place the shard index at the end of each file.
+                buffers: vec![&mut buf2], // place the shard index at the end of each file.
             },
-        ],
-    },
-];
+        ]
+);
 ```
-
-It is highly recommended that the user only submits _one_ `IO_Operations_For_File` object per `path`. 
-This is because LSIO optimises each `IO_Operations_For_File` object independently of other `IO_Operations_For_File`s.
 
 ##### Under the hood (in LSIO)
 
 ```rust
-pub struct IO_Operations_For_File {
-    pub io_type: IO_Type,
-    pub path: PathBuf,
-    pub chunks: Vec<Chunk>,
-};
-
-pub enum IO_Type {
-    Read,
-    Write,
-};
-
 pub struct Chunk{
+    pub byte_range: Range<i64>,
+};
+
+pub struct ChunkWithBuffers{
     pub byte_range: Range<i64>,
 
     // Memory buffers for storing the raw data, straight after the data arrives from IO.
     //
-    // If buffers is Auto, then LSIO will take responsibility for allocating the buffers.
-    //
-    // If the user wants to supply buffers, then use `Manual(Vec<&mut [u8]>)`.
     // For example, this would allow us to bypass the CPU when copying multiple
     // uncompressed chunks from a sharded Zarr directly into the final array.
     // The buffers could point to different slices of the final array.
@@ -201,8 +147,12 @@ pub struct Chunk{
     // cache will have to _copy_ the contents of these memory buffers. LSIO can't use user-supplied
     // buffers as its cache, because LSIO can't guarantee that the user-supplied buffers will be immutable
     // and live long enough.
-    pub buffers: AutoOrManual<Vec<&mut [u8]>>,
+    pub buffers: Vec<&mut [u8]>,
 };
+
+type FileChunks = HashMap<PathBuf, Vec<Chunk>>;
+type FileChunksWithBuffers = HashMap<PathBuf, Vec<ChunkWithBuffers>>;
+
 ```
 
 #### Optimising the IO plan
@@ -247,6 +197,7 @@ The plan needs to express:
 - "_these multiple optimized reads started life as a single read request. Create one large memory buffer. And each sub-chunk should be read directly into a different slice of the memory buffer._"
 
 ```rust
+// TODO! Update this!
 struct Optimised_IO_Operation {
     io_type: IO_Type,
     path: PathBuf,
@@ -274,6 +225,80 @@ struct Optimised_IO_Operation {
     number_of_outstanding_operations: Arc<AtomicUInt>,
 };
 ```
-##### TODO: Decide when to allocate buffers?
+#### TODO: Decide when to allocate buffers?
 
 See [issue #22](https://github.com/JackKelly/light-speed-io/issues/22).
+
+#### TODO: Submit IO operations to reader
+
+##### Initialize a `Reader` struct
+
+Using a persistent object will allow us to cache (in memory) values such as file sizes. And provides an opportunity to pre-allocate (and maybe re-use) memory buffers.
+
+##### User code
+
+```rust
+let io = IoUringLocal::new();
+```
+
+##### Under the hood (in LSIO)
+
+```rust
+use anyhow::Error;
+
+struct ReadResult {
+    path: PathBuf,
+    chunk_indeX: usize,
+    buffer: Result<[u8]>,
+};
+
+pub trait Reader {
+    // ****** read methods where LSIO creates the IO buffers: ******
+    pub fn read(chunks: FileChunks) -> ArrayQueue<ReadResult>;
+    pub fn read_and_map(chunks: FileChunks, map_func: F) -> ArrayQueue<ReadResult>;
+    pub fn read_and_map_and_memmove(chunks: FileChunksWithBuffers, map_func: F) -> Vec<Error>;
+
+    /// Use-case: Load compressed Zarrs, and decompress directly into a
+    /// user-specified buffer (e.g. directly into a part of the numpy array).
+    pub fn read_and_transform(chunks: FileChunksWithBuffers, transform) -> Vec<Error>;
+
+    // ****** read methods where the user supplies the IO buffers: ******
+    pub fn read_into_buffers(chunks: FileChunksWithBuffers) -> ArrayQueue<ReadResult>;
+    pub fn read_unchecked_into_buffers(chunks: FileChunksWithBuffers) -> ArrayQueue<ReadResult>;
+}
+
+pub trait Writer {
+    pub fn write(chunks: FileChunksWithBuffers) -> Vec<Error>;
+    pub fn map_and_write(chunks: FileChunksWithBuffers, map_func) -> Vec<Error>;
+}
+
+pub trait GetFilesize {
+    pub fn get_filesizes_in_bytes(filenames: Vec<PathBuf>) -> std::sync::mpsc::Receiver<Result<(PathBuf, u32)>>;
+}
+
+/// Linux io_uring for locally-attached disks.
+pub struct IoUringLocal {
+    /// Map from the full file name to the file size in bytes.
+    /// We need to know the length of each file if we want to read the file
+    /// in its entirety, or if we want to seek to a position relative to the
+    /// end of the file.
+    cache_of_file_sizes_in_bytes: Map<PathBuf, u64>,
+}
+
+impl IoUringLocal {
+    pub fn new() -> Self { Self }
+    
+}
+
+impl Reader for IoUringLocal {
+    // Implement io_uring-specific stuff...
+}
+
+impl Writer for IoUringLocal {
+    // Implement io_uring-specific stuff...
+}
+
+impl GetFilesize for IoUringLocal {
+    // Implement io_uring-specific stuff...
+}
+```
