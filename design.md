@@ -423,6 +423,16 @@ pub trait ReadThenWrite {
     pub fn read_map_write(TODO) -> TODO;
 }
 
+// TODO: This isn't finished (by any means!) See issue #24.
+enum ReadThenWriteMapping {
+    Scatter(
+        PathBuf, ByteRange, map_input_func, // Input
+        Vec<(PathBuf, ByteRange)>, // Output
+    ),
+    Gather(),
+    OneToOne(),
+}
+
 /// Linux io_uring for locally-attached disks.
 pub struct IoUringLocal {
     /// Map from the full file name to the file size in bytes.
