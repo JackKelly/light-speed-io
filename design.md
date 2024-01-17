@@ -27,23 +27,24 @@ But, wait, isn't it inefficient to load tiny chunks? [Dask recommends chunk size
   - Where appropriate, align chunks in RAM (and pad the ends of chunks) so the CPU & compiler can easily use [SIMD instructions](https://en.wikipedia.org/wiki/Single_instruction,_multiple_data), and minimize the number of cache lines that must be read. (Using SIMD may provide a large speedup "just" for memory copies, even if the `transform` function doesn't use SIMD).
 - [ ] The user will be able to supply a `transform` function that LSIO will apply to each chunk (in parallel). (Like the the "map" step in [MapReduce](https://en.wikipedia.org/wiki/MapReduce), except that LSIO allows "side effects" like copying the data to a final array). For each chunk, the user could request, for example, that the chunk be decompressed, followed by some numerical transformation, followed by moving the transformed data to a large array which is the concatenation of all the chunks. As much of this as possible should happen whilst the chunk is in the CPU cache (without time-consuming round-trips to RAM).
 - [ ] LSIO will implement multiple IO backends. Each backend will exploit the performance features of a particular operating system and storage system. The ambition is to support:
-    - These operating system APIs:
-        - [ ] Linux [io_uring](https://en.wikipedia.org/wiki/Io_uring) (for local storage and network storage).
-        - [ ] Windows [I/O Ring](https://windows-internals.com/i-o-rings-when-one-i-o-operation-is-not-enough/).
-        - [ ] MacOS X [kqueue](https://en.wikipedia.org/wiki/Kqueue). (Although Jack doesn't currently own any Mac hardware!)
-    - These storage systems:
-        - [ ] Local disks. (With different optimizations for SSDs and HDDs).
-        - [ ] Cloud storage buckets.
-        - [ ] HTTP.
+  - These operating system APIs:
+    - [ ] Linux [io_uring](https://en.wikipedia.org/wiki/Io_uring) (for local storage and network storage).
+    - [ ] Windows [I/O Ring](https://windows-internals.com/i-o-rings-when-one-i-o-operation-is-not-enough/).
+    - [ ] MacOS X [kqueue](https://en.wikipedia.org/wiki/Kqueue). (Although Jack doesn't currently own any Mac hardware!)
+  - These storage systems:
+    - [ ] Local disks. (With different optimizations for SSDs and HDDs).
+    - [ ] Cloud storage buckets.
+    - [ ] HTTP.
 
 ## Use cases
 
 Allow for very fast access to arbitrary selections of:
-* Multi-dimensional [Zarr](https://zarr.dev/) arrays. Jack is mostly focused on [_sharded_ Zarr arrays](https://zarr.dev/zeps/accepted/ZEP0002.html). But LSIO could also be helpful for non-sharded Zarr arrays.
-    * Jack is particularly focused on speeding up the data pipeline for training machine learning models on multi-dimensional datasets, where we want to select hundreds of random crops of data per second. This is described below in the [Priorities](#priorities) section. The ambition is to enable us to read on the order of 1 million Zarr chunks per second (from a fast, local SSD).
-* Other file formats used for multi-dimensional arrays, such as NetCDF, GRIB, and EUMETSAT's native file format. (LSIO could help to speed up [kerchunk](https://fsspec.github.io/kerchunk/))
-* Vector database which indexes into crops of n-dimensional data. For example: implement "retrieval assisted generation" (RAG) for solar forecasting: give each chunk of satellite data a vector, and then give the ML model the 4 most similar examples from the entire history. This will have to be very fast to work at training time. 
-* Interactive visualization of neuroscientific datasets 
+
+- Multi-dimensional [Zarr](https://zarr.dev/) arrays. Jack is mostly focused on [_sharded_ Zarr arrays](https://zarr.dev/zeps/accepted/ZEP0002.html). But LSIO could also be helpful for non-sharded Zarr arrays.
+  - Jack is particularly focused on speeding up the data pipeline for training machine learning models on multi-dimensional datasets, where we want to select hundreds of random crops of data per second. This is described below in the [Priorities](#priorities) section. The ambition is to enable us to read on the order of 1 million Zarr chunks per second (from a fast, local SSD).
+- Other file formats used for multi-dimensional arrays, such as NetCDF, GRIB, and EUMETSAT's native file format. (LSIO could help to speed up [kerchunk](https://fsspec.github.io/kerchunk/))
+- Vector database which indexes into crops of n-dimensional data. For example: implement "retrieval assisted generation" (RAG) for solar forecasting: give each chunk of satellite data a vector, and then give the ML model the 4 most similar examples from the entire history. This will have to be very fast to work at training time.
+- Interactive visualization of neuroscientific datasets.
 
 
 ## Priorities
@@ -64,16 +65,16 @@ On the other hand, if LSIO does _not_ provide a speed-up, then - to be frank - L
 
 The aim will be to keep the GPU constantly fed with data, so the GPU is constantly at (or near) 100% utilisation. This often requires data to be read from disk at several GBytes per second.
 
-* Train an ML model on a fast GPU, sampling directly from a single sharded Zarr dataset with tiny (~ 4 kB) chunks sizes. Load 1 million chunks per second from a single SSD.
-* Stretch goals:
-    * Also normalise the data in LSIO.
-    * Train from _multiple_ Zarr datasets at the same time. For example, when training ML models to forecast solar power generation, we might want at least three datasets: satellite imagery, numerical weather predictions, and solar PV power. These datasets might use different geospatial projections, and different temporal resolutions. It'd be great to be able to randomly sample ML training examples, such that we take rectangular crops from the satellite data and NWP data, centered on the same geospatial location.
+- Train an ML model on a fast GPU, sampling directly from a single sharded Zarr dataset with tiny (~ 4 kB) chunks sizes. Load 1 million chunks per second from a single SSD.
+- Stretch goals:
+  - Also normalise the data in LSIO.
+  - Train from _multiple_ Zarr datasets at the same time. For example, when training ML models to forecast solar power generation, we might want at least three datasets: satellite imagery, numerical weather predictions, and solar PV power. These datasets might use different geospatial projections, and different temporal resolutions. It'd be great to be able to randomly sample ML training examples, such that we take rectangular crops from the satellite data and NWP data, centered on the same geospatial location.
 
 ### Data processing
 
-* Compute the mean of a 1 TB dataset in under 3 minutes on a single laptop. (A fast PCIe 4 SSD should sustain 7 GB/sec. Reading 1 TB at 7 GB/s takes about two and a half minutes).
-* Convert a 1 TB GRIB dataset to Zarr in under 10 minutes, on a single machine.
-* Rechunk a 1 TB Zarr dataset in under 10 minutes, on a single machine.
+- Compute the mean of a 1 TB dataset in under 3 minutes on a single laptop. (A fast PCIe 4 SSD should sustain 7 GB/sec. Reading 1 TB at 7 GB/s takes about two and a half minutes).
+- Convert a 1 TB GRIB dataset to Zarr in under 10 minutes, on a single machine.
+- Rechunk a 1 TB Zarr dataset in under 10 minutes, on a single machine.
 
 ## Timeline
 
@@ -156,22 +157,24 @@ type FileByteRangesWithBuffers = HashMap<PathBuf, Vec<ByteRangeWithBuffers>>;
 
 ### Optimising the IO plan
 
-TODO: Update this for the new API and structs!! 
-* Delete the two type aliases above.
-* Define `struct ByteRanges(Vec<ByteRange>)` and `struct ByteRangesWithBuffers(Vec<ByteRangeWithBuffers>)`. 
-* Define a `trait ByteRangeOptimiser` with methods like `merge_byte_ranges` and `split_large_byte_ranges` (with no default implementations).
-* Define custom implementations of `ByteRangeOptimiser` for `ByteRanges` and `ByteRangesWithBuffers`.
-* `Reader` methods would take a `HashMap<PathBuf, Vec<OptimisedByteRange>` or `HashMap<PathBuf, Vec<OptimisedByteRangeWithBuffers>>`. 
-* Users need to call a `ByteRangeOptimiser` method on the `ByteRanges` or `ByteRangesWithBuffers` before passing to the `Reader` methods. (This makes it easy for users to customise, including using different thresholds). If the user wants no optimisation, then implement `OptimisedByteRanges from ByteRanges` and `OptimisedByteRangesWithBuffers from ByteRangesWithBuffers`.
+TODO: Update this for the new API and structs!!
+
+- Delete the two type aliases above.
+- Define `struct ByteRanges(Vec<ByteRange>)` and `struct ByteRangesWithBuffers(Vec<ByteRangeWithBuffers>)`.
+- Define a `trait ByteRangeOptimiser` with methods like `merge_byte_ranges` and `split_large_byte_ranges` (with no default implementations).
+- Define custom implementations of `ByteRangeOptimiser` for `ByteRanges` and `ByteRangesWithBuffers`.
+- `Reader` methods would take a `HashMap<PathBuf, Vec<OptimisedByteRange>` or `HashMap<PathBuf, Vec<OptimisedByteRangeWithBuffers>>`.
+- Users need to call a `ByteRangeOptimiser` method on the `ByteRanges` or `ByteRangesWithBuffers` before passing to the `Reader` methods. (This makes it easy for users to customise, including using different thresholds). If the user wants no optimisation, then implement `OptimisedByteRanges from ByteRanges` and `OptimisedByteRangesWithBuffers from ByteRangesWithBuffers`.
 
 LSIO optimizes the sequence of `byte_ranges` before sending those operations to the IO subsystem.
 
-(Caching may be implemented in LSIO, but not for a while. For more discussion and design ideas about caching, 
+(Caching may be implemented in LSIO, but not for a while. For more discussion and design ideas about caching,
 see [this GitHub issue](https://github.com/JackKelly/light-speed-io/issues/9))
 
-Users create a set list of abstracted read operations: 
+Users create a set list of abstracted read operations:
 
 TODO: Update this with the new structs and API!
+
 ```rust
 let io_plan: Vec<OptimisedByteRange> = io_operations
     .par_iter()
@@ -200,10 +203,10 @@ Optimisations that LSIO _may_ implement include:
 #### Implementation details (within LSIO)
 
 The plan needs to express:
+
 - "_this single optimized read started life as multiple, nearby reads. After performing this single read, throw away the buffers allocated just for filling the "gaps". All the user's requested buffers are now ready. So spawn processing tasks, one per user-requested buffer. The IO backend should be encouraged to use `readv` if available, to directly read into multiple buffers. (POSIX can use `readv` to read sockets as well as files.)_"
 - "_these multiple optimized reads started life as a single read request. Create one large memory buffer. And each sub-chunk should be read directly into a different slice of the memory buffer. The complete buffer is only ready when all reads have completed._"
 - (don't worry about this for now)"_this single optimized read started life as n multiple, overlapping reads. The user is expecting n slices (views) of this memory buffer_"
-
 
 ```rust
 // TODO! Update this to the new structs and API!
