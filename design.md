@@ -2,7 +2,9 @@
 
 `light-speed-io` (or "LSIO", for short) will be a Rust library crate for loading and processing many chunks of files, as fast as the storage system will allow. **The aim is to to allow users to load and process on the order of 1 million 4 kB chunks per second from a single local SSD**.
 
-**UPDATE (2024-01-23): THE DESIGN IS LIKELY TO CHANGE A LOT! SPECIFICALLY, MY PLAN IS TO SIMPLIFY LSIO SO THAT IT IS ONLY RESPONSIBLE FOR I/O (NOT FOR PROCESSING CHUNKS). USERS WILL STILL BE ABLE TO INTERLEAVE I/O WITH PROCESSING BECAUSE LSIO WILL RETURN A Rust `Stream` (AKA `AsyncIterator`) OF CHUNKS (see [this GitHub comment](https://github.com/JackKelly/light-speed-io/issues/25#issuecomment-1900536618)). AFTER BUILDING AN MVP OF LSIO, I PLAN TO BUILD A SECOND CRATE WHICH MAKES IT EASY TO APPLY AN ARBITRARY PROCESSING FUNCTION TO A STREAM, IN PARALLEL ACROSS CPU CORES. (See [this comment](https://github.com/JackKelly/light-speed-io/issues/26#issuecomment-1902182033))**
+**UPDATE (2024-01-23): ACTUALLY, MAYBE LSIO SHOULD BE AN EXTENSION TO `object_store`: EITHER A PR TO `object_store`, OR AN EXTENSION CRATE. SEE [Issue #27](https://github.com/JackKelly/light-speed-io/issues/27)**
+
+**UPDATE (2024-01-22): THE DESIGN IS LIKELY TO CHANGE A LOT! SPECIFICALLY, MY PLAN IS TO SIMPLIFY LSIO SO THAT IT IS ONLY RESPONSIBLE FOR I/O (NOT FOR PROCESSING CHUNKS). USERS WILL STILL BE ABLE TO INTERLEAVE I/O WITH PROCESSING BECAUSE LSIO WILL RETURN A Rust `Stream` (AKA `AsyncIterator`) OF CHUNKS (see [this GitHub comment](https://github.com/JackKelly/light-speed-io/issues/25#issuecomment-1900536618)). AFTER BUILDING AN MVP OF LSIO, I PLAN TO BUILD A SECOND CRATE WHICH MAKES IT EASY TO APPLY AN ARBITRARY PROCESSING FUNCTION TO A STREAM, IN PARALLEL ACROSS CPU CORES. (See [this comment](https://github.com/JackKelly/light-speed-io/issues/26#issuecomment-1902182033))**
 
 Why aim for 1 million chunks per second? See [this spreadsheet](https://docs.google.com/spreadsheets/d/1DSNeU--dDlNSFyOrHhejXvTl9tEWvUAJYl-YavUdkmo/edit#gid=0) an ML training use-case that comfortably requires hundreds of thousands of chunks per second.
 
