@@ -1,1 +1,1 @@
-mod io_uring;
+mod io_uring_local;
