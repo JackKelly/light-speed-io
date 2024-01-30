@@ -1,5 +1,11 @@
+use bytes::Bytes;
+use delegate::delegate;
+use object_store::{
+    local::LocalFileSystem, path::Path, GetOptions, GetResult, GetResultPayload, ListResult,
+    MultipartId, ObjectMeta, ObjectStore, PutMode, PutOptions, PutResult, Result,
+};
 use std::sync::Arc;
-use object_store::local::LocalFileSystem;
+use tokio::io::AsyncWrite;
 use url::Url;
 
 #[derive(Debug)]
@@ -40,3 +46,16 @@ impl IoUringLocal {
     }
 }
 
+impl ObjectStore for IoUringLocal {
+    delegate! {
+        to self.local_file_system {
+            async fn put_opts(&self, location: &Path, bytes: Bytes, opts: PutOptions) ->
+                Result<PutResult>;
+            async fn put_multipart(&self, location: &Path) ->
+                Result<(MultipartId, Box<dyn AsyncWrite + Unpin + Send>)>;
+            async fn abort_multipart(&self, location: &Path, multipart_id: &MultipartId) -> Result<()>;
+            async fn get_opts(&self, location: &Path, options: GetOptions) -> Result<GetResult>;
+
+        }
+    }
+}
