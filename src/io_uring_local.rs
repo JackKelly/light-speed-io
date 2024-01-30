@@ -1,19 +1,11 @@
 use bytes::Bytes;
-use delegate::delegate;
-use object_store::{
-    local::LocalFileSystem, path::Path, GetOptions, GetResult, GetResultPayload, ListResult,
-    MultipartId, ObjectMeta, ObjectStore, PutMode, PutOptions, PutResult, Result,
-};
+use object_store::{path::Path, Result};
 use std::sync::Arc;
-use tokio::io::AsyncWrite;
 use url::Url;
 
 #[derive(Debug)]
 pub struct IoUringLocal {
     config: Arc<Config>,
-
-    // Used so we can delegate method calls to LocalFileSystem.
-    local_file_system: LocalFileSystem,
 }
 
 // We can't re-use `object_store::local::Config` because it's private.
@@ -41,21 +33,16 @@ impl IoUringLocal {
             config: Arc::new(Config {
                 root: Url::parse("file:///").unwrap(),
             }),
-            local_file_system: LocalFileSystem::new(),
         }
     }
 }
 
-impl ObjectStore for IoUringLocal {
-    delegate! {
-        to self.local_file_system {
-            async fn put_opts(&self, location: &Path, bytes: Bytes, opts: PutOptions) ->
-                Result<PutResult>;
-            async fn put_multipart(&self, location: &Path) ->
-                Result<(MultipartId, Box<dyn AsyncWrite + Unpin + Send>)>;
-            async fn abort_multipart(&self, location: &Path, multipart_id: &MultipartId) -> Result<()>;
-            async fn get_opts(&self, location: &Path, options: GetOptions) -> Result<GetResult>;
-
-        }
-    }
+// This block will eventually become `impl ObjectStore for IoUringLocal` but,
+// for now, I'm just implementing one method at a time (whilst being careful to
+// use the exact same function signatures as `ObjectStore`).
+impl IoUringLocal {
+    // TODO: `IoUringLocal` shouldn't implement `get` because `ObjectStore::get` has a default impl.
+    // Instead, `IoUringLocal` should impl `get_opts` which returns a `Result<GetResult>`.
+    // But I'm keeping things simple for now!
+    pub async fn get(&mut self, location: &Path) -> Result<Bytes> {}
 }
