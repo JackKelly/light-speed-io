@@ -56,9 +56,12 @@ impl IoUringLocal {
     //       Instead, `IoUringLocal` should impl `get_opts` which returns a `Result<GetResult>`.
     //       But I'm keeping things simple for now!
     // TODO: `ObjectStore::get` returns a pinned `Box`, not a pinned `Arc`!
-    pub fn get(&mut self, location: &Path) -> Pin<Arc<dyn Future<Output = Arc<Result<Bytes>>>>> {
-        let location = location.clone();
-        let operation = Operation::Get { location };
+    //       If we _have_ to replace `Arc` with `Box` then maybe we could share a raw pointer
+    //       with the io_uring thread, and return the Box. But then rustc can't
+    //       guarantee that our Future will still exist. So, at the very least,
+    //       we'd have to use some unsafe code to check if the pointer is null.
+    pub fn get(&mut self, location: &Path) -> Pin<Arc<dyn Future<Output = Result<Bytes>>>> {
+        let operation = Operation::Get { location: location.clone() };
         let op_future = Arc::pin(OperationFuture::new(operation));
         self.worker_thread
             .sender
