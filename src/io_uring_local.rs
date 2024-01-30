@@ -1,7 +1,5 @@
 use bytes::Bytes;
 use object_store::{path::Path, Result};
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 use url::Url;
 
@@ -55,7 +53,7 @@ impl IoUringLocal {
     // TODO: `IoUringLocal` shouldn't implement `get` because `ObjectStore::get` has a default impl.
     //       Instead, `IoUringLocal` should impl `get_opts` which returns a `Result<GetResult>`.
     //       But I'm keeping things simple for now!
-    pub async fn get(&mut self, location: &Path) -> Result<Bytes> {
+    pub async fn get(&self, location: &Path) -> Result<Bytes> {
         let operation = Operation::Get {
             location: location.clone(),
         };
