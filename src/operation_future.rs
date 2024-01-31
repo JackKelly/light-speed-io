@@ -5,95 +5,82 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
-use bytes::Bytes;
-use object_store::{path::Path, Result};
-
-// One enum variant per `ObjectStore` method.
-#[derive(Debug)]
-pub(crate) enum Operation {
-    Get { location: Path },
-}
-
-pub(crate) enum PreparedEntry {
-    Get{
-        operation: Operation,
-        entry: Entry,
-        buffer: &[u8],
-    },
-}
-
-impl Operation {
-    pub(crate) fn prepare_io_uring_entry(&self) -> PreparedEntry {
-        match self {
-            Get => {
-                todo!();
-            }
-        }
-    }
-}
+use crate::operation::{self, OperationOutput};
 
 #[derive(Debug)]
 pub(crate) struct OperationFuture {
-    pub(crate) shared_state: Arc<SharedState>,
+    shared_state: Arc<SharedStateForOpFuture>,
+}
+
+impl OperationFuture {
+    pub(crate) fn new(operation: operation::Operation) -> Self {
+        Self {
+            shared_state: Arc::new(SharedStateForOpFuture::new(operation)),
+        }
+    }
+
+    pub(crate) fn get_shared_state(&self) -> Arc<SharedStateForOpFuture> {
+        self.shared_state
+    }
+}
+
+impl Future for OperationFuture {
+    type Output = OperationOutput;
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.shared_state.poll(cx)
+    }
 }
 
 /// Shared state between the future and the waiting thread. Adapted from:
 /// https://rust-lang.github.io/async-book/02_execution/03_wakeups.html#applied-build-a-timer
 #[derive(Debug)]
-pub(crate) struct SharedState {
-    result_and_waker: Mutex<ResultAndWaker>,
-    operation: Operation,
+pub(crate) struct SharedStateForOpFuture {
+    waker_and_output: Mutex<WakerAndOutput>,
+    operation: operation::Operation,
 }
 
-#[derive(Debug)]
-struct ResultAndWaker {
-    result: Option<Result<Bytes>>,
-    waker: Option<Waker>,
-}
+impl SharedStateForOpFuture {
+    fn new(operation: operation::Operation) -> Self {
+        Self {
+            waker_and_output: Mutex::new(WakerAndOutput::new()),
+            operation,
+        }
+    }
 
-/// Adapted from:
-/// https://rust-lang.github.io/async-book/02_execution/03_wakeups.html#applied-build-a-timer
-impl Future for OperationFuture {
-    type Output = Result<Bytes>;
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut result_and_waker = self.shared_state.result_and_waker.lock().unwrap();
-        if result_and_waker.result.is_some() {
-            Poll::Ready(result_and_waker.result.take().unwrap())
+    pub(crate) fn set_output_and_wake(&mut self, output: OperationOutput) {
+        let mut waker_and_output = self.waker_and_output.lock().unwrap();
+        waker_and_output.output = Some(output);
+        if let Some(waker) = waker_and_output.waker.take() {
+            waker.wake()
+        }
+    }
+
+    pub fn get_operation(self) -> operation::Operation {
+        self.operation
+    }
+
+    fn poll(&self, cx: &mut Context<'_>) -> Poll<OperationOutput> {
+        let mut waker_and_output = self.waker_and_output.lock().unwrap();
+        if waker_and_output.output.is_some() {
+            Poll::Ready(waker_and_output.output.take().unwrap())
         } else {
-            result_and_waker.waker = Some(cx.waker().clone());
+            waker_and_output.waker = Some(cx.waker().clone());
             Poll::Pending
         }
     }
 }
 
-/// Adapted from:
-/// https://rust-lang.github.io/async-book/02_execution/03_wakeups.html#applied-build-a-timer
-impl OperationFuture {
-    pub fn new(operation: Operation) -> Self {
-        let result_and_waker = ResultAndWaker {
-            result: None,
-            waker: None,
-        };
-
-        let shared_state = Arc::new(SharedState {
-            result_and_waker: Mutex::new(result_and_waker),
-            operation,
-        });
-
-        Self { shared_state }
-    }
+#[derive(Debug)]
+struct WakerAndOutput {
+    output: Option<OperationOutput>,
+    waker: Option<Waker>,
 }
 
-impl SharedState {
-    pub fn set_result_and_wake(&mut self, result: Result<Bytes>) {
-        let mut result_and_waker = self.result_and_waker.lock().unwrap();
-        result_and_waker.result = Some(result);
-        if let Some(waker) = result_and_waker.waker.take() {
-            waker.wake()
+impl WakerAndOutput {
+    fn new() -> Self {
+        Self {
+            output: None,
+            waker: None,
         }
-    }
-
-    pub fn get_operation(self) -> Operation {
-        self.operation
     }
 }
