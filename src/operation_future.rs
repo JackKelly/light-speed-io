@@ -14,6 +14,24 @@ pub(crate) enum Operation {
     Get { location: Path },
 }
 
+pub(crate) enum PreparedEntry {
+    Get{
+        operation: Operation,
+        entry: Entry,
+        buffer: &[u8],
+    },
+}
+
+impl Operation {
+    pub(crate) fn prepare_io_uring_entry(&self) -> PreparedEntry {
+        match self {
+            Get => {
+                todo!();
+            }
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct OperationFuture {
     pub(crate) shared_state: Arc<SharedState>,

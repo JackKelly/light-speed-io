@@ -1,9 +1,11 @@
 use bytes::Bytes;
 use object_store::{path::Path, Result};
+use std::sync::mpsc::channel;
 use std::sync::Arc;
+use std::thread;
 use url::Url;
 
-use crate::io_uring_thread::WorkerThread;
+use crate::io_uring_thread::{WorkerThread, worker_thread_func};
 use crate::operation_future::{Operation, OperationFuture};
 
 #[derive(Debug)]
@@ -33,14 +35,16 @@ impl Default for IoUringLocal {
 impl IoUringLocal {
     /// Create new filesystem storage with no prefix
     pub fn new() -> Self {
-        // TODO: Set up thread and Sender!
+        let (tx, rx) = channel();
+        let thread_handle = thread::spawn(move || worker_thread_func(rx));
+
         Self {
             config: Arc::new(Config {
                 root: Url::parse("file:///").unwrap(),
             }),
             worker_thread: WorkerThread {
-                handle: todo!(),
-                sender: todo!(),
+                handle: thread_handle,
+                sender: tx,
             },
         }
     }
