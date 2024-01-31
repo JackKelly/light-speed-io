@@ -1,6 +1,4 @@
-use bytes::Bytes;
 use object_store::path::Path;
-use object_store::Result;
 
 /// The `Operation` enum is used to communicate the user's instructions
 /// to the backend. The intention is that there will be
@@ -11,13 +9,4 @@ use object_store::Result;
 #[derive(Debug)]
 pub(crate) enum Operation {
     Get { location: Path },
-}
-
-#[derive(Debug)]
-pub(crate) enum OperationOutput {
-    Get { buffer: Result<Bytes> },
-}
-
-impl OperationOutput {
-    fn get_output(&self)
 }

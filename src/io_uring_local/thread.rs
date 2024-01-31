@@ -10,7 +10,7 @@ use std::{
 use crate::operation::Operation;
 use crate::operation_future::SharedStateForOpFuture;
 
-pub(crate) fn worker_thread_func(rx: Receiver<Arc<SharedStateForOpFuture>>) {
+pub(crate) fn worker_thread_func<Output>(rx: Receiver<Arc<SharedStateForOpFuture<Output>>>) {
     const CQ_RING_SIZE: u32 = 16; // TODO: This should be user-configurable.
     let mut ring = IoUring::new(CQ_RING_SIZE).unwrap();
     let mut n_tasks_in_flight_in_io_uring: u32 = 0;
