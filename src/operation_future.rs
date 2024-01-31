@@ -6,32 +6,27 @@ use std::{
 };
 
 use crate::operation;
+use crate::output::Output;
 
 /// A Future for file operations (where an "operation" is get, put, etc.)
 #[derive(Debug)]
-pub(crate) struct OperationFuture<Output> {
-    shared_state: Arc<SharedStateForOpFuture<Output>>,
+pub(crate) struct OperationFuture {
+    shared_state: Arc<SharedStateForOpFuture>,
 }
 
-impl<Output> OperationFuture<Output>
-where
-    Output: Send + Sync,
-{
+impl OperationFuture {
     pub(crate) fn new(operation: operation::Operation) -> Self {
         Self {
             shared_state: Arc::new(SharedStateForOpFuture::new(operation)),
         }
     }
 
-    pub(crate) fn get_shared_state(&self) -> Arc<SharedStateForOpFuture<Output>> {
+    pub(crate) fn get_shared_state(&self) -> Arc<SharedStateForOpFuture> {
         self.shared_state
     }
 }
 
-impl<Output> Future for OperationFuture<Output>
-where
-    Output: Send + Sync,
-{
+impl Future for OperationFuture {
     type Output = Output;
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         self.shared_state.poll(cx)
@@ -41,18 +36,15 @@ where
 /// Shared state between the future and the waiting thread. Adapted from:
 /// https://rust-lang.github.io/async-book/02_execution/03_wakeups.html#applied-build-a-timer
 #[derive(Debug)]
-pub(crate) struct SharedStateForOpFuture<Output> {
-    waker_and_output: Mutex<WakerAndOutput<Output>>,
+pub(crate) struct SharedStateForOpFuture {
+    waker_and_output: Mutex<WakerAndOutput>,
     operation: operation::Operation,
 }
 
-impl<Output> SharedStateForOpFuture<Output>
-where
-    Output: Send + Sync,
-{
+impl SharedStateForOpFuture {
     fn new(operation: operation::Operation) -> Self {
         Self {
-            waker_and_output: Mutex::new(WakerAndOutput::<Output>::new()),
+            waker_and_output: Mutex::new(WakerAndOutput::new()),
             operation,
         }
     }
@@ -81,15 +73,12 @@ where
 }
 
 #[derive(Debug)]
-struct WakerAndOutput<Output> {
+struct WakerAndOutput {
     output: Option<Output>,
     waker: Option<Waker>,
 }
 
-impl<Output> WakerAndOutput<Output>
-where
-    Output: Send + Sync,
-{
+impl WakerAndOutput {
     fn new() -> Self {
         Self {
             output: None,

@@ -7,10 +7,10 @@ use std::{
     thread::JoinHandle,
 };
 
-use crate::operation::Operation;
+use crate::{io_uring_local::prep_operation_for_io_uring::prepare_io_uring_entry, operation::Operation};
 use crate::operation_future::SharedStateForOpFuture;
 
-pub(crate) fn worker_thread_func<Output>(rx: Receiver<Arc<SharedStateForOpFuture<Output>>>) {
+pub(crate) fn worker_thread_func(rx: Receiver<Arc<SharedStateForOpFuture>>) {
     const CQ_RING_SIZE: u32 = 16; // TODO: This should be user-configurable.
     let mut ring = IoUring::new(CQ_RING_SIZE).unwrap();
     let mut n_tasks_in_flight_in_io_uring: u32 = 0;
@@ -18,16 +18,15 @@ pub(crate) fn worker_thread_func<Output>(rx: Receiver<Arc<SharedStateForOpFuture
     'outer: loop {
         // Keep io_uring's submission queue topped up:
         'inner: while n_tasks_in_flight_in_io_uring < CQ_RING_SIZE {
-            let shared_state = rx.try_recv();
-            if let Err(e) = shared_state {
-                match e {
-                    TryRecvError::Disconnected => break 'outer,
-                    TryRecvError::Empty => break 'inner,
-                }
-            }
+            let shared_state = match rx.try_recv() {
+                Ok(s) => s,
+                Err(TryRecvError::Empty) => break 'inner,
+                Err(TryRecvError::Disconnected) => break 'outer,
+            };
+
 
             // Convert `Operation` to a `PreparedEntry`.
-            let op = shared_state.get_operation();
+            let prepared_entry = prepare_io_uring_entry(shared_state);
             println!("Submitting op={:?}", op);
             submit_to_io_uring(entry, &mut ring);
 
