@@ -6,7 +6,7 @@ use object_store::path::Path;
 /// This is necessary so we can have a queue of (potentially millions of) operations.
 /// `Operation` is independent of the IO backend.
 /// This same enum will be used to communicate with all IO backends.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) enum Operation {
     Get { location: Path },
 }

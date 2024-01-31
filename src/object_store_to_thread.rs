@@ -6,7 +6,7 @@ use url::Url;
 
 use crate::operation::Operation;
 use crate::operation_future::OperationFuture;
-use crate::operation_future::SharedStateForOpFuture;
+use crate::operation_future::SharedState;
 use crate::output::Output;
 
 /// `ObjectStoreToThread` is a bridge between `ObjectStore`'s API and the backend thread
@@ -27,11 +27,11 @@ struct Config {
 #[derive(Debug)]
 struct WorkerThread {
     handle: thread::JoinHandle<()>,
-    sender: mpsc::Sender<Arc<SharedStateForOpFuture>>, // Channel to send ops to the worker thread
+    sender: mpsc::Sender<SharedState>, // Channel to send ops to the worker thread
 }
 
 impl WorkerThread {
-    pub fn new(worker_thread_func: fn(mpsc::Receiver<Arc<SharedStateForOpFuture>>)) -> Self {
+    pub fn new(worker_thread_func: fn(mpsc::Receiver<SharedState>)) -> Self {
         let (sender, rx) = mpsc::channel();
         let handle = thread::spawn(move || worker_thread_func(rx));
         Self { handle, sender }
@@ -58,7 +58,7 @@ impl Default for ObjectStoreToThread {
 
 impl ObjectStoreToThread {
     /// Create new filesystem storage with no prefix
-    pub fn new(func_for_get_thread: fn(mpsc::Receiver<Arc<SharedStateForOpFuture>>)) -> Self {
+    pub fn new(func_for_get_thread: fn(mpsc::Receiver<SharedState>)) -> Self {
         Self {
             config: Arc::new(Config {
                 root: Url::parse("file:///").unwrap(),
@@ -82,9 +82,8 @@ impl ObjectStoreToThread {
         let op_future = OperationFuture::new(operation);
         self.worker_thread.clone_and_send_shared_state(&op_future);
         match op_future.await {
-            Output::Get(out) => out,
+            Output::Get{buffer} => buffer,
             out => panic!("Expected a `Output::Get`! Got {:?}", out),
-
         }
     }
 }

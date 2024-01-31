@@ -8,81 +8,75 @@ use std::{
 use crate::operation;
 use crate::output::Output;
 
+pub(crate) type SharedState = Arc<Mutex<InnerState>>;
+
 /// A Future for file operations (where an "operation" is get, put, etc.)
 #[derive(Debug)]
 pub(crate) struct OperationFuture {
-    shared_state: Arc<SharedStateForOpFuture>,
+    shared_state: SharedState,
 }
 
 impl OperationFuture {
     pub(crate) fn new(operation: operation::Operation) -> Self {
         Self {
-            shared_state: Arc::new(SharedStateForOpFuture::new(operation)),
+            shared_state: Arc::new(Mutex::new(InnerState::new(operation))),
         }
     }
 
-    pub(crate) fn get_shared_state(&self) -> Arc<SharedStateForOpFuture> {
-        self.shared_state
+    pub(crate) fn get_shared_state(&self) -> &SharedState {
+        &self.shared_state
     }
 }
 
 impl Future for OperationFuture {
     type Output = Output;
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.shared_state.poll(cx)
+        self.shared_state.lock().unwrap().poll(cx)
     }
 }
 
 /// Shared state between the future and the waiting thread. Adapted from:
 /// https://rust-lang.github.io/async-book/02_execution/03_wakeups.html#applied-build-a-timer
 #[derive(Debug)]
-pub(crate) struct SharedStateForOpFuture {
-    waker_and_output: Mutex<WakerAndOutput>,
+pub(crate) struct InnerState {
+    ready: bool,
     operation: operation::Operation,
+    waker: Option<Waker>,
+    output: Option<Output>,
 }
 
-impl SharedStateForOpFuture {
+impl InnerState {
     fn new(operation: operation::Operation) -> Self {
         Self {
-            waker_and_output: Mutex::new(WakerAndOutput::new()),
+            ready: false,
             operation,
+            waker: None,
+            output: None,
         }
     }
 
-    pub(crate) fn set_output_and_wake(&mut self, output: Output) {
-        let mut waker_and_output = self.waker_and_output.lock().unwrap();
-        waker_and_output.output = Some(output);
-        if let Some(waker) = waker_and_output.waker.take() {
+    pub(crate) fn set_output(&mut self, output: Output) {
+        self.output = Some(output);
+    }
+
+    pub(crate) fn wake(&mut self) {
+        if let Some(waker) = self.waker.take() {
             waker.wake()
         }
     }
 
-    pub fn get_operation(self) -> operation::Operation {
-        self.operation
+    pub fn get_operation(&self) -> operation::Operation {
+        // TODO: Instead of cloning (which might be expensive), maybe the
+        // `operation` shouldn't be behind a Mutex. Then we could share a reference.
+        self.operation.clone()
     }
 
-    fn poll(&self, cx: &mut Context<'_>) -> Poll<Output> {
-        let mut waker_and_output = self.waker_and_output.lock().unwrap();
-        if waker_and_output.output.is_some() {
-            Poll::Ready(waker_and_output.output.take().unwrap())
+    fn poll(&mut self, cx: &mut Context<'_>) -> Poll<Output> {
+        if self.ready {
+            Poll::Ready(self.output.take().unwrap())
         } else {
-            waker_and_output.waker = Some(cx.waker().clone());
+            self.waker = Some(cx.waker().clone());
             Poll::Pending
-        }
-    }
-}
-
-#[derive(Debug)]
-struct WakerAndOutput {
-    output: Option<Output>,
-    waker: Option<Waker>,
-}
-
-impl WakerAndOutput {
-    fn new() -> Self {
-        Self {
-            output: None,
-            waker: None,
         }
     }
 }
