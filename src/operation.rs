@@ -1,14 +1,14 @@
-use std::sync::Arc;
-
 use bytes::Bytes;
 use object_store::path::Path;
 use object_store::Result;
 
 pub(crate) struct OperationWithCallback {
+    // This is a `Option` so we can `take` when we call it.
     operation: Option<Operation>,
 
     // The callback function will be called when the operation completes.
     // The callback function can be an empty closure.
+    // This is an `Option` so we can `take` it.
     callback: Option<Box<dyn FnOnce(Operation) + Send + Sync>>,
 }
 
@@ -43,6 +43,8 @@ impl OperationWithCallback {
 pub(crate) enum Operation {
     Get {
         location: Path,
+        // This is an option for two reasons: 1) `buffer` will start life
+        // _without_ an actual buffer! 2) So we can `take` the buffer.
         buffer: Option<Result<Bytes>>,
     },
 }
