@@ -1,10 +1,12 @@
 use io_uring::IoUring;
 use std::sync::mpsc::{Receiver, RecvError, TryRecvError};
 
-use crate::io_uring_local::prep_operation_for_io_uring::prepare_io_uring_entry;
-use crate::operation_future::SharedState;
+use crate::{
+    io_uring_local::prep_operation_for_io_uring::prepare_io_uring_entry,
+    operation::OperationWithCallback,
+};
 
-pub(crate) fn worker_thread_func(rx: Receiver<SharedState>) {
+pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
     const CQ_RING_SIZE: u32 = 16; // TODO: Enable the user to configure this.
     let mut ring = IoUring::new(CQ_RING_SIZE).unwrap();
     let mut n_tasks_in_flight_in_io_uring: u32 = 0;
@@ -13,7 +15,7 @@ pub(crate) fn worker_thread_func(rx: Receiver<SharedState>) {
         // Keep io_uring's submission queue topped up:
         // TODO: Extract this inner loop into a separate function!
         'inner: loop {
-            let shared_state = match n_tasks_in_flight_in_io_uring {
+            let op_with_callback = match n_tasks_in_flight_in_io_uring {
                 0 => match rx.recv() {
                     // There are no tasks in flight in io_uring, so all that's
                     // left to do is to wait for more tasks.
@@ -29,8 +31,7 @@ pub(crate) fn worker_thread_func(rx: Receiver<SharedState>) {
             };
 
             // Convert `Operation` to a `PreparedEntry`.
-            let entry_with_op = prepare_io_uring_entry(&shared_state);
-            println!("Submitting PreparedEntry={:?}", entry_with_op);
+            let entry_with_op = prepare_io_uring_entry(op_with_callback);
             let sq_entry = entry_with_op.sq_entry.user_data(todo!()); // TODO: Add user data!
             unsafe {
                 ring.submission()
@@ -49,7 +50,7 @@ pub(crate) fn worker_thread_func(rx: Receiver<SharedState>) {
         // Spawn tasks to the Rayon ThreadPool to process data:
         for cqe in ring.completion() {
             n_tasks_in_flight_in_io_uring -= 1;
-            todo!(); // TODO: Get the associated Future and `set_result_and_wake()`
+            todo!(); // TODO: Get the associated `OperationWithCallback` and call `execute_callback()`!
         }
     }
 }
