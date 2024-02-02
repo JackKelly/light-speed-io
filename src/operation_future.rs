@@ -5,78 +5,73 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
-use crate::operation;
-use crate::output::Output;
+use crate::operation::{OpType, OperationWithOutput};
 
-pub(crate) type SharedState = Arc<Mutex<InnerState>>;
-
-/// A Future for file operations (where an "operation" is get, put, etc.)
+/// A Future for file operations (where an "operation" is `get`, `put`, etc.)
+/// `O` is the output type, and is set in `OperationWithOutput::new`.
 #[derive(Debug)]
-pub(crate) struct OperationFuture {
-    shared_state: SharedState,
+pub(crate) struct OperationFuture<O> {
+    shared_state: Arc<Mutex<InnerState<O>>>,
 }
 
-impl OperationFuture {
-    pub(crate) fn new(operation: operation::Operation) -> Self {
-        Self {
-            shared_state: Arc::new(Mutex::new(InnerState::new(operation))),
-        }
-    }
+impl<O> OperationFuture<O> {
+    pub(crate) fn new<F>(op_type: OpType) -> (Self, OperationWithOutput<F, O>)
+    where
+        F: FnOnce(&OpType, O),
+    {
+        let shared_state = Arc::new(Mutex::new(InnerState::new()));
 
-    pub(crate) fn get_shared_state(&self) -> &SharedState {
-        &self.shared_state
+        // When the operation completes, we want to call `wake()` to wake the async executor.
+        let shared_state_for_callback = shared_state.clone();
+        let callback = move |_: &OpType, output: O| {
+            // Take ownership of shared_state_for_callback:
+            let shared_state_for_callback = shared_state_for_callback;
+            let mut shared_state_unlocked = shared_state_for_callback.lock().unwrap();
+            shared_state_unlocked.set_output_and_wake(output);
+        };
+
+        (
+            Self { shared_state },
+            OperationWithOutput::new(op_type, callback),
+        )
     }
 }
 
-impl Future for OperationFuture {
-    type Output = Output;
+impl<O> Future for OperationFuture<O> {
+    type Output = O;
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.shared_state.lock().unwrap().poll(cx)
+        let mut shared_state = self.shared_state.lock().unwrap();
+        if shared_state.ready {
+            Poll::Ready(shared_state.output.take().unwrap())
+        } else {
+            shared_state.waker = Some(cx.waker().clone());
+            Poll::Pending
+        }
     }
 }
 
 /// Shared state between the future and the waiting thread. Adapted from:
 /// https://rust-lang.github.io/async-book/02_execution/03_wakeups.html#applied-build-a-timer
 #[derive(Debug)]
-pub(crate) struct InnerState {
+pub(crate) struct InnerState<O> {
     ready: bool,
-    operation: operation::Operation,
     waker: Option<Waker>,
-    output: Option<Output>,
+    output: Option<O>,
 }
 
-impl InnerState {
-    fn new(operation: operation::Operation) -> Self {
+impl<O> InnerState<O> {
+    fn new() -> Self {
         Self {
             ready: false,
-            operation,
             waker: None,
             output: None,
         }
     }
 
-    pub(crate) fn set_output(&mut self, output: Output) {
+    pub(crate) fn set_output_and_wake(&mut self, output: O) {
         self.output = Some(output);
-    }
-
-    pub(crate) fn wake(&mut self) {
         if let Some(waker) = self.waker.take() {
             waker.wake()
-        }
-    }
-
-    pub fn get_operation(&self) -> operation::Operation {
-        // TODO: Instead of cloning (which might be expensive), maybe the
-        // `operation` shouldn't be behind a Mutex. Then we could share a reference.
-        self.operation.clone()
-    }
-
-    fn poll(&mut self, cx: &mut Context<'_>) -> Poll<Output> {
-        if self.ready {
-            Poll::Ready(self.output.take().unwrap())
-        } else {
-            self.waker = Some(cx.waker().clone());
-            Poll::Pending
         }
     }
 }

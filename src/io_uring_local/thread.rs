@@ -29,9 +29,9 @@ pub(crate) fn worker_thread_func(rx: Receiver<SharedState>) {
             };
 
             // Convert `Operation` to a `PreparedEntry`.
-            let prepared_entry = prepare_io_uring_entry(&shared_state);
-            println!("Submitting PreparedEntry={:?}", prepared_entry);
-            let sq_entry = prepared_entry.sq_entry.user_data(todo!()); // TODO: Add user data!
+            let entry_with_op = prepare_io_uring_entry(&shared_state);
+            println!("Submitting PreparedEntry={:?}", entry_with_op);
+            let sq_entry = entry_with_op.sq_entry.user_data(todo!()); // TODO: Add user data!
             unsafe {
                 ring.submission()
                     .push(&sq_entry)
