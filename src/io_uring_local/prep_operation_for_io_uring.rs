@@ -2,14 +2,7 @@ use io_uring::squeue;
 
 use crate::operation::{Operation, OperationWithCallback};
 
-pub(crate) struct SQEntryWithOperation {
-    op_with_callback: OperationWithCallback,
-    pub(crate) sq_entry: squeue::Entry,
-}
-
-pub(crate) fn prepare_io_uring_entry(
-    op_with_callback: OperationWithCallback,
-) -> SQEntryWithOperation {
+pub(crate) fn prepare_io_uring_entry(op_with_callback: OperationWithCallback) -> squeue::Entry {
     match op_with_callback.get_operation() {
         Some(op) => match op {
             Operation::Get { location, .. } => {
