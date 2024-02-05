@@ -75,33 +75,7 @@ impl Operation {
                 ref location,
                 ref mut buffer,
                 ref mut fd,
-            } => {
-                // Get filesize: TODO: Use io_uring to get filesize; see issue #41.
-                let location = object_store_path_to_std_path(location);
-                let filesize_bytes = stat(location).unwrap().st_size;
-
-                // Allocate vector:
-                *buffer = Some(Ok(Vec::with_capacity(filesize_bytes as _)));
-
-                // Create squeue::Entry
-                // TODO: Open file using io_uring. See issue #1
-                *fd = Some(
-                    fs::OpenOptions::new()
-                        .read(true)
-                        .custom_flags(libc::O_DIRECT)
-                        .open(location)
-                        .unwrap(),
-                );
-
-                // Note that the developer needs to ensure
-                // that the entry pushed into submission queue is valid (e.g. fd, buffer).
-                opcode::Read::new(
-                    types::Fd(fd.as_ref().unwrap().as_raw_fd()),
-                    buffer.as_mut().unwrap().as_mut().unwrap().as_mut_ptr(),
-                    filesize_bytes as _,
-                )
-                .build()
-            }
+            } => create_sq_entry_for_get_op(location, buffer, fd),
         }
     }
 }
@@ -109,4 +83,41 @@ impl Operation {
 fn object_store_path_to_std_path(location: &object_store::path::Path) -> &std::path::Path {
     let location = location.as_ref();
     std::path::Path::new(location)
+}
+
+fn get_filesize_bytes(location: &std::path::Path) -> i64 {
+    stat(location).unwrap().st_size
+}
+
+fn create_sq_entry_for_get_op(
+    location: &object_store::path::Path,
+    buffer: &mut Option<object_store::Result<Vec<u8>>>,
+    fd: &mut Option<std::fs::File>,
+) -> squeue::Entry {
+    let location = object_store_path_to_std_path(location);
+
+    // Get filesize: TODO: Use io_uring to get filesize; see issue #41.
+    let filesize_bytes = get_filesize_bytes(location);
+
+    // Allocate vector:
+    *buffer = Some(Ok(Vec::with_capacity(filesize_bytes as _)));
+
+    // Create squeue::Entry
+    // TODO: Open file using io_uring. See issue #1
+    *fd = Some(
+        fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_DIRECT)
+            .open(location)
+            .unwrap(),
+    );
+
+    // Note that the developer needs to ensure
+    // that the entry pushed into submission queue is valid (e.g. fd, buffer).
+    opcode::Read::new(
+        types::Fd(fd.as_ref().unwrap().as_raw_fd()),
+        buffer.as_mut().unwrap().as_mut().unwrap().as_mut_ptr(),
+        filesize_bytes as _,
+    )
+    .build()
 }
