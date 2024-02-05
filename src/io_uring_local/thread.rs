@@ -1,10 +1,8 @@
+use io_uring::squeue;
 use io_uring::IoUring;
 use std::sync::mpsc::{Receiver, RecvError, TryRecvError};
 
-use crate::{
-    io_uring_local::prep_operation_for_io_uring::prepare_io_uring_entry,
-    operation::OperationWithCallback,
-};
+use crate::operation::{Operation, OperationWithCallback};
 
 pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
     const CQ_RING_SIZE: u32 = 16; // TODO: Enable the user to configure this.
@@ -31,7 +29,7 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
             };
 
             // Convert `Operation` to a `PreparedEntry`.
-            let sq_entry = prepare_io_uring_entry(op_with_callback);
+            let sq_entry = op_with_callback.get_operation().unwrap().to_iouring_entry();
             let sq_entry = sq_entry.user_data(todo!()); // TODO: Add user data!
             unsafe {
                 ring.submission()
@@ -51,6 +49,21 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
         for cqe in ring.completion() {
             n_tasks_in_flight_in_io_uring -= 1;
             todo!(); // TODO: Get the associated `OperationWithCallback` and call `execute_callback()`!
+        }
+    }
+}
+
+impl Operation {
+    pub(crate) fn to_iouring_entry(&self) -> squeue::Entry {
+        match self {
+            Operation::Get { location, .. } => {
+                // TODO:
+                // 1. Get filesize. (DON'T do this in the critical section of the Mutex!)
+                // 2. Allocate buffer, and assign it to InnerState.output
+                // 3. Create squeue::Entry
+                // 4. Return a PreparedEntry
+                todo!();
+            }
         }
     }
 }
