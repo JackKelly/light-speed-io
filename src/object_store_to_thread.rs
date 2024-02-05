@@ -6,6 +6,7 @@ use url::Url;
 
 use crate::operation::{Operation, OperationWithCallback};
 use crate::operation_future::OperationFuture;
+use crate::io_uring_local;
 
 /// `ObjectStoreToThread` is a bridge between `ObjectStore`'s API and the backend thread
 /// implemented in LSIO. `ObjectStoreToThread` (will) implement all `ObjectStore` methods
@@ -50,7 +51,7 @@ impl std::fmt::Display for ObjectStoreToThread {
 
 impl Default for ObjectStoreToThread {
     fn default() -> Self {
-        Self::new(crate::io_uring_local::thread::worker_thread_func)
+        Self::new(io_uring_local::worker_thread_func)
     }
 }
 
