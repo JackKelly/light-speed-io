@@ -1,9 +1,10 @@
-use bytes::Bytes;
+use std::fs;
+
 use object_store::path::Path;
 use object_store::Result;
 
 pub(crate) struct OperationWithCallback {
-    // This is a `Option` so we can `take` when we call it.
+    // This is a `Option` so we can `take` it.
     operation: Option<Operation>,
 
     // The callback function will be called when the operation completes.
@@ -28,8 +29,8 @@ impl OperationWithCallback {
         callback(self.operation.take().unwrap());
     }
 
-    pub(crate) fn get_operation(&self) -> &Option<Operation> {
-        &self.operation
+    pub(crate) fn get_mut_operation(&mut self) -> &mut Option<Operation> {
+        &mut self.operation
     }
 }
 
@@ -43,8 +44,15 @@ impl OperationWithCallback {
 pub(crate) enum Operation {
     Get {
         location: Path,
-        // This is an option for two reasons: 1) `buffer` will start life
+
+        // This is an `Option` for two reasons: 1) `buffer` will start life
         // _without_ an actual buffer! 2) So we can `take` the buffer.
-        buffer: Option<Result<Bytes>>,
+        buffer: Option<Result<Vec<u8>>>,
+
+        // Keeping the file descriptor in this struct is just a quick hack to ensure that
+        // we keep the file descriptor open until io_uring has finished with this task.
+        // TODO: Remove the file descriptor from this struct once we let io_uring open files!
+        // See Issue #1.
+        fd: Option<fs::File>,
     },
 }

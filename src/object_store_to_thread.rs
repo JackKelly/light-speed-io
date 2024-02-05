@@ -4,9 +4,9 @@ use std::sync::{mpsc, Arc};
 use std::thread;
 use url::Url;
 
+use crate::io_uring_local;
 use crate::operation::{Operation, OperationWithCallback};
 use crate::operation_future::OperationFuture;
-use crate::io_uring_local;
 
 /// `ObjectStoreToThread` is a bridge between `ObjectStore`'s API and the backend thread
 /// implemented in LSIO. `ObjectStoreToThread` (will) implement all `ObjectStore` methods
@@ -78,11 +78,12 @@ impl ObjectStoreToThread {
         let operation = Operation::Get {
             location: location.clone(), // TODO: Pass in a reference?
             buffer: None,
+            fd: None,
         };
         let (op_future, op_with_output) = OperationFuture::new(operation);
         self.worker_thread.send(op_with_output);
         match op_future.await {
-            Operation::Get{location: _, buffer} => buffer.unwrap(),
+            Operation::Get { buffer, .. } => buffer.unwrap().map(|buf| Bytes::from(buf)),
         }
     }
 }

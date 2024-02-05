@@ -16,6 +16,6 @@ bytes = "1.5.0"
 crossbeam = "0.8.4"
 io-uring = "0.6"
 libc = "0.2"  # Just used for libc::O_DIRECT in src/io_uring.rs
-nix = "0.27"
+nix = { version = "0.27", features = ["fs"] }
 object_store = "0.9.0"
 url = "2.5.0"
