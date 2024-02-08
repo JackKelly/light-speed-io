@@ -87,3 +87,16 @@ impl ObjectStoreAdapter {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_get_with_io_uring_local() {
+        let filename = Path::from("/home/jack/dev/rust/light-speed-io/README.md");
+        let store = ObjectStoreAdapter::default();
+        let b = store.get(&filename);
+        println!("{:?}", std::str::from_utf8(&b.await.unwrap()[..]).unwrap());
+    }
+}
