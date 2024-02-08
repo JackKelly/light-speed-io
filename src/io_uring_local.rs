@@ -115,7 +115,8 @@ fn create_sq_entry_for_get_op(
     let filesize_bytes = get_filesize_bytes(location);
 
     // Allocate vector:
-    // TODO: Don't initialise to all-zeros.
+    // TODO: Don't initialise to all-zeros. Issue #46.
+    // See https://doc.rust-lang.org/std/mem/union.MaybeUninit.html#initializing-an-array-element-by-element
     *buffer = Some(Ok(vec![0; filesize_bytes as _]));
 
     // Create squeue::Entry
