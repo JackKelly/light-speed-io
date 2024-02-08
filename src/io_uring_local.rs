@@ -69,8 +69,13 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
         for cqe in ring.completion() {
             n_tasks_in_flight_in_io_uring -= 1;
 
-            // TODO:
-            // - Handle any errors. See https://github.com/JackKelly/light-speed-io/blob/main/src/io_uring.rs#L115-L120
+            // Handle errors reported by io_uring:
+            if cqe.result() < 0 {
+                let err = nix::Error::from_i32(-cqe.result());
+                println!("{:?}", err);
+                // TODO: This error needs to be sent to the user. See issue #45.
+                // Something like: `Err(err.into())`
+            };
 
             // Get the associated `OperationWithCallback` and call `execute_callback()`!
             let ptr_to_op_with_callback =
