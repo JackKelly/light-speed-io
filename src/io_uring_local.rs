@@ -4,6 +4,7 @@ use io_uring::types;
 use io_uring::IoUring;
 use nix::sys::stat::stat;
 use std::fs;
+use std::mem::ManuallyDrop;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::OpenOptionsExt;
 use std::sync::mpsc::{Receiver, RecvError, TryRecvError};
@@ -19,7 +20,7 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
         // Keep io_uring's submission queue topped up:
         // TODO: Extract this inner loop into a separate function!
         'inner: loop {
-            let mut op_with_callback = match n_tasks_in_flight_in_io_uring {
+            let op_with_callback = match n_tasks_in_flight_in_io_uring {
                 0 => match rx.recv() {
                     // There are no tasks in flight in io_uring, so all that's
                     // left to do is to wait for more tasks.
@@ -34,13 +35,21 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
                 },
             };
 
+            // We need `op_with_callback` to remain in memory after this `loop` because
+            // we send a raw pointer to `op_with_callback` through io_uring, so we can
+            // access the appropriate `op_with_callback` associated with this io_uring op
+            // when the io_uring operation completes.
+            let mut op_with_callback = ManuallyDrop::new(op_with_callback);
+            let ptr_to_op_with_callback =
+                &mut op_with_callback as *mut ManuallyDrop<OperationWithCallback>;
+
             // Convert `Operation` to a `squeue::Entry`.
             let sq_entry = op_with_callback
                 .get_mut_operation()
                 .as_mut()
                 .unwrap()
                 .to_iouring_entry()
-                .user_data(123); // TODO: Add user data!
+                .user_data(ptr_to_op_with_callback as u64);
 
             // Submit to io_uring!
             unsafe {
@@ -57,13 +66,20 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
 
         println!("After ring.submit_and_wait");
 
-        // Spawn tasks to the Rayon ThreadPool to process data:
         for cqe in ring.completion() {
             n_tasks_in_flight_in_io_uring -= 1;
-            todo!();
+
             // TODO:
             // - Handle any errors. See https://github.com/JackKelly/light-speed-io/blob/main/src/io_uring.rs#L115-L120
-            // - Get the associated `OperationWithCallback` and call `execute_callback()`!
+
+            // Get the associated `OperationWithCallback` and call `execute_callback()`!
+            let ptr_to_op_with_callback =
+                cqe.user_data() as *mut ManuallyDrop<OperationWithCallback>;
+            let mut op_with_callback;
+            unsafe {
+                op_with_callback = ManuallyDrop::take(&mut *ptr_to_op_with_callback);
+            }
+            op_with_callback.execute_callback();
         }
     }
 }
