@@ -115,14 +115,17 @@ fn create_sq_entry_for_get_op(
     let filesize_bytes = get_filesize_bytes(location);
 
     // Allocate vector:
-    *buffer = Some(Ok(Vec::with_capacity(filesize_bytes as _)));
+    // TODO: Don't initialise to all-zeros.
+    *buffer = Some(Ok(vec![0; filesize_bytes as _]));
 
     // Create squeue::Entry
     // TODO: Open file using io_uring. See issue #1
     *fd = Some(
         fs::OpenOptions::new()
             .read(true)
-            .custom_flags(libc::O_DIRECT)
+            // TODO: Use DIRECT mode to open files. And allow the user to choose.
+            // I'll worry about DIRECT mode after we open file using io_uring. Issue #1.
+            // .custom_flags(libc::O_DIRECT)
             .open(location)
             .unwrap(),
     );
