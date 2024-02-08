@@ -7,6 +7,7 @@ use std::fs;
 use std::mem::ManuallyDrop;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::OpenOptionsExt;
+use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, RecvError, TryRecvError};
 
 use crate::operation::{Operation, OperationWithCallback};
@@ -101,22 +102,15 @@ impl Operation {
     }
 }
 
-fn object_store_path_to_std_path(location: &object_store::path::Path) -> &std::path::Path {
-    let location = location.as_ref();
-    std::path::Path::new(location)
-}
-
 fn get_filesize_bytes(location: &std::path::Path) -> i64 {
-    stat(location).unwrap().st_size
+    stat(location).expect("Failed to get filesize!").st_size
 }
 
 fn create_sq_entry_for_get_op(
-    location: &object_store::path::Path,
+    location: &PathBuf,
     buffer: &mut Option<object_store::Result<Vec<u8>>>,
     fd: &mut Option<std::fs::File>,
 ) -> squeue::Entry {
-    let location = object_store_path_to_std_path(location);
-
     // Get filesize: TODO: Use io_uring to get filesize; see issue #41.
     let filesize_bytes = get_filesize_bytes(location);
 

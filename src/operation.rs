@@ -1,6 +1,6 @@
 use std::fs;
+use std::path::PathBuf;
 
-use object_store::path::Path;
 use object_store::Result;
 
 pub(crate) struct OperationWithCallback {
@@ -43,7 +43,7 @@ impl OperationWithCallback {
 #[derive(Debug)]
 pub(crate) enum Operation {
     Get {
-        location: Path,
+        location: PathBuf,
 
         // This is an `Option` for two reasons: 1) `buffer` will start life
         // _without_ an actual buffer! 2) So we can `take` the buffer.
