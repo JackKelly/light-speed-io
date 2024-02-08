@@ -8,11 +8,11 @@ use crate::io_uring_local;
 use crate::operation::{Operation, OperationWithCallback};
 use crate::operation_future::OperationFuture;
 
-/// `ObjectStoreToThread` is a bridge between `ObjectStore`'s API and the backend thread
-/// implemented in LSIO. `ObjectStoreToThread` (will) implement all `ObjectStore` methods
+/// `ObjectStoreAdapter` is a bridge between `ObjectStore`'s API and the backend thread
+/// implemented in LSIO. `ObjectStoreAdapter` (will) implement all `ObjectStore` methods
 /// and sends the corresponding `Operation` enum variant to the thread for processing.
 #[derive(Debug)]
-pub struct ObjectStoreToThread {
+pub struct ObjectStoreAdapter {
     config: Arc<Config>,
     worker_thread: WorkerThread,
 }
@@ -43,19 +43,19 @@ impl WorkerThread {
     }
 }
 
-impl std::fmt::Display for ObjectStoreToThread {
+impl std::fmt::Display for ObjectStoreAdapter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "ObjectStoreToThread({})", self.config.root)
+        write!(f, "ObjectStoreAdapter({})", self.config.root)
     }
 }
 
-impl Default for ObjectStoreToThread {
+impl Default for ObjectStoreAdapter {
     fn default() -> Self {
         Self::new(io_uring_local::worker_thread_func)
     }
 }
 
-impl ObjectStoreToThread {
+impl ObjectStoreAdapter {
     /// Create new filesystem storage with no prefix
     pub fn new(func_for_get_thread: fn(mpsc::Receiver<OperationWithCallback>)) -> Self {
         Self {
@@ -67,12 +67,12 @@ impl ObjectStoreToThread {
     }
 }
 
-// This code block will eventually become `impl ObjectStore for ObjectStoreToThread` but,
+// This code block will eventually become `impl ObjectStore for ObjectStoreAdapter` but,
 // for now, I'm just implementing one method at a time (whilst being careful to
 // use the exact same function signatures as `ObjectStore`).
-impl ObjectStoreToThread {
-    // TODO: `ObjectStoreToThread` shouldn't implement `get` because `ObjectStore::get` has a default impl.
-    //       Instead, `ObjectStoreToThread` should impl `get_opts` which returns a `Result<GetResult>`.
+impl ObjectStoreAdapter {
+    // TODO: `ObjectStoreAdapter` shouldn't implement `get` because `ObjectStore::get` has a default impl.
+    //       Instead, `ObjectStoreAdapter` should impl `get_opts` which returns a `Result<GetResult>`.
     //       But I'm keeping things simple for now!
     pub async fn get(&self, location: &Path) -> Result<Bytes> {
         let operation = Operation::Get {
