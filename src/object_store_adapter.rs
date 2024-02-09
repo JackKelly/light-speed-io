@@ -195,27 +195,4 @@ mod tests {
         let b = store.get(&filename);
         println!("{:?}", std::str::from_utf8(&b.await.unwrap()[..]).unwrap());
     }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn benchmark_loading_1000_files_with_io_uring_local() {
-        const N: usize = 1000;
-
-        // Create a vector of filenames (files created by `fio`)
-        let filenames: Vec<Path> = (0..N)
-            .map(|i| Path::from(format!("///home/jack/temp/fio/reader1.0.{i}")))
-            .collect();
-
-        // Start reading async:
-        let store = ObjectStoreAdapter::default();
-        let mut futures = Vec::with_capacity(N);
-        for filename in &filenames {
-            futures.push(store.get(filename));
-        }
-
-        // Wait for everything to complete:
-        let mut results = Vec::with_capacity(N);
-        for f in futures {
-            results.push(f.await.unwrap());
-        }
-    }
 }
