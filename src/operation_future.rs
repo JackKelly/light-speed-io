@@ -22,8 +22,10 @@ impl OperationFuture {
         let waker_and_op_for_callback = waker_and_op.clone();
         let callback = move |operation| {
             // Take ownership of shared_state_for_callback:
+            println!("Start of callback");
             let mut waker_and_op_locked = waker_and_op_for_callback.lock().unwrap();
             waker_and_op_locked.set_operation_and_wake(operation);
+            println!("End of callback");
         };
 
         (
@@ -38,6 +40,7 @@ impl Future for OperationFuture {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut waker_and_op_locked = self.waker_and_op.lock().unwrap();
         if waker_and_op_locked.operation.is_some() {
+            println!("About to return Poll::Ready");
             Poll::Ready(waker_and_op_locked.operation.take().unwrap())
         } else {
             waker_and_op_locked.waker = Some(cx.waker().clone());
@@ -63,9 +66,12 @@ impl WakerAndOperation {
     }
 
     pub(crate) fn set_operation_and_wake(&mut self, operation: Operation) {
+        println!("At start of `set_operation_and_wake`");
         self.operation = Some(operation);
         if let Some(waker) = self.waker.take() {
-            waker.wake()
+            println!("Before `waker.wake()`");
+            waker.wake();
+            println!("After `waker.wake()`");
         }
     }
 }

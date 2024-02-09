@@ -40,9 +40,7 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
             // we send a raw pointer to `op_with_callback` through io_uring, so we can
             // access the appropriate `op_with_callback` associated with this io_uring op
             // when the io_uring operation completes.
-            let mut op_with_callback = ManuallyDrop::new(op_with_callback);
-            let ptr_to_op_with_callback =
-                &mut op_with_callback as *mut ManuallyDrop<OperationWithCallback>;
+            let mut op_with_callback = Box::new(op_with_callback);
 
             // Convert `Operation` to a `squeue::Entry`.
             let sq_entry = op_with_callback
@@ -50,7 +48,7 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
                 .as_mut()
                 .unwrap()
                 .to_iouring_entry()
-                .user_data(ptr_to_op_with_callback as u64);
+                .user_data(Box::into_raw(op_with_callback) as u64);
 
             // Submit to io_uring!
             unsafe {
@@ -65,26 +63,20 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
 
         ring.submit_and_wait(1).unwrap(); // TODO: Handle error!
 
-        println!("After ring.submit_and_wait");
-
         for cqe in ring.completion() {
             n_tasks_in_flight_in_io_uring -= 1;
 
             // Handle errors reported by io_uring:
             if cqe.result() < 0 {
                 let err = nix::Error::from_i32(-cqe.result());
-                println!("{:?}", err);
+                println!("Error from CQE: {:?}", err);
                 // TODO: This error needs to be sent to the user. See issue #45.
                 // Something like: `Err(err.into())`
             };
 
             // Get the associated `OperationWithCallback` and call `execute_callback()`!
-            let ptr_to_op_with_callback =
-                cqe.user_data() as *mut ManuallyDrop<OperationWithCallback>;
-            let mut op_with_callback;
-            unsafe {
-                op_with_callback = ManuallyDrop::take(&mut *ptr_to_op_with_callback);
-            }
+            let mut op_with_callback =
+                unsafe { Box::from_raw(cqe.user_data() as *mut OperationWithCallback) };
             op_with_callback.execute_callback();
         }
     }
@@ -117,7 +109,9 @@ fn create_sq_entry_for_get_op(
     // Allocate vector:
     // TODO: Don't initialise to all-zeros. Issue #46.
     // See https://doc.rust-lang.org/std/mem/union.MaybeUninit.html#initializing-an-array-element-by-element
-    *buffer = Some(Ok(vec![0; filesize_bytes as _]));
+    let _ = *buffer.insert(Ok(vec![0; filesize_bytes as _]));
+
+    println!("buffer = {:?}", *buffer);
 
     // Create squeue::Entry
     // TODO: Open file using io_uring. See issue #1

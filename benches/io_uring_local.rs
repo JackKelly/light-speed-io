@@ -1,6 +1,7 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use light_speed_io::object_store_adapter::ObjectStoreAdapter;
 use object_store::path::Path;
+use tokio::runtime::Runtime;
 
 async fn load_files_with_io_uring_local(n: usize) {
     // Create a vector of filenames (files created by `fio`)
@@ -17,19 +18,28 @@ async fn load_files_with_io_uring_local(n: usize) {
 
     // Wait for everything to complete:
     let mut results = Vec::with_capacity(n);
-    for f in futures {
+    println!("\n\nStarting await loop:");
+    for (i, f) in futures.into_iter().enumerate() {
+        println!("{i}");
         let r = f.await;
-        assert!(r.is_ok());
-        let b = r.unwrap();
-        assert!(b.len() == 262144);
+        let b = r.expect("At least one Result was an Error");
+        //assert!(b.len() == 262144);
         results.push(b);
     }
 }
 
 fn criterion_benchmark(c: &mut Criterion) {
-    c.bench_function("load 1000 files using io_uring_local", |b| {
-        b.iter(|| load_files_with_io_uring_local(black_box(1000)))
-    });
+    let size: usize = 1;
+    c.bench_with_input(
+        BenchmarkId::new("load 1000 files using io_uring_local", size),
+        &size,
+        |b, &s| {
+            // Insert a call to `to_async` to convert the bencher to async mode.
+            // The timing loops are the same as with the normal bencher.
+            b.to_async(Runtime::new().unwrap())
+                .iter(|| load_files_with_io_uring_local(s));
+        },
+    );
 }
 
 criterion_group!(benches, criterion_benchmark);

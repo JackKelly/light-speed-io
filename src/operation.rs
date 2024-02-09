@@ -27,6 +27,7 @@ impl OperationWithCallback {
     pub(crate) fn execute_callback(&mut self) {
         let callback = self.callback.take().unwrap();
         callback(self.operation.take().unwrap());
+        println!("After `callback(self.operation.take().unwrap());`");
     }
 
     pub(crate) fn get_mut_operation(&mut self) -> &mut Option<Operation> {
