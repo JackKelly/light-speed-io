@@ -1,8 +1,7 @@
 use bytes::Bytes;
 use object_store::{path::Path, Result};
-use snafu::{ensure, ResultExt, Snafu};
+use snafu::{ensure, Snafu};
 use std::io;
-use std::mem::ManuallyDrop;
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc};
 use std::thread;
@@ -51,7 +50,7 @@ impl From<Error> for object_store::Error {
                 source: source.into(),
             },
             _ => Self::Generic {
-                store: "LocalFileSystem",
+                store: "ObjectStoreAdapter",
                 source: Box::new(source),
             },
         }
@@ -155,7 +154,6 @@ impl ObjectStoreAdapter {
     pub async fn get(&self, location: &Path) -> Result<Bytes> {
         // let location = location.clone();
         let path = self.config.path_to_filesystem(location)?;
-        println!("\n\nfilename = {:?}", &path);
 
         let operation = Operation::Get {
             location: path,
@@ -165,21 +163,9 @@ impl ObjectStoreAdapter {
 
         let (op_future, op_with_output) = OperationFuture::new(operation);
         self.worker_thread.send(op_with_output);
-        println!("Sent to worker_thread");
         match op_future.await {
             Operation::Get { buffer, .. } => {
-                println!("Matched with Operation::Get");
-                let buffer = buffer.expect("Buffer should not be None!");
-                match buffer {
-                    Ok(buf) => {
-                        println!("About to convert to Bytes");
-                        Ok(Bytes::from(buf))
-                    }
-                    Err(e) => {
-                        println!("Error!");
-                        Err(e)
-                    }
-                }
+                buffer.expect("Buffer should not be None!").map(Bytes::from)
             }
         }
     }
@@ -205,11 +191,10 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_get_with_io_uring_local() {
-        // let filename = Path::from("///home/jack/temp/fio/reader1.0.0");
         let filename = Path::from("///home/jack/dev/rust/light-speed-io/README.md");
         let store = ObjectStoreAdapter::default();
         let b = store.get(&filename).await.unwrap();
         println!("Loaded {} bytes", b.len());
-        // println!("{:?}", std::str::from_utf8(&b[..]).unwrap());
+        println!("{:?}", std::str::from_utf8(&b[..]).unwrap());
     }
 }

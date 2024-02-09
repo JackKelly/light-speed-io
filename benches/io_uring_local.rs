@@ -1,9 +1,17 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use light_speed_io::object_store_adapter::ObjectStoreAdapter;
 use object_store::path::Path;
+use std::process::Command;
 use tokio::runtime::Runtime;
 
 async fn load_files_with_io_uring_local(n: usize) {
+    // Clear page cache
+    let _ = Command::new("vmtouch")
+        .arg("-e")
+        .arg("/home/jack/temp/fio/")
+        .output()
+        .expect("vmtouch failed");
+
     // Create a vector of filenames (files created by `fio`)
     let filenames: Vec<Path> = (0..n)
         .map(|i| Path::from(format!("///home/jack/temp/fio/reader1.0.{i}")))
@@ -18,12 +26,10 @@ async fn load_files_with_io_uring_local(n: usize) {
 
     // Wait for everything to complete:
     let mut results = Vec::with_capacity(n);
-    println!("\n\nStarting await loop:");
-    for (i, f) in futures.into_iter().enumerate() {
-        println!("{i}");
+    for f in futures {
         let r = f.await;
         let b = r.expect("At least one Result was an Error");
-        //assert!(b.len() == 262144);
+        assert!(b.len() == 262144);
         results.push(b);
     }
 }

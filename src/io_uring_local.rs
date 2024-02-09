@@ -4,9 +4,7 @@ use io_uring::types;
 use io_uring::IoUring;
 use nix::sys::stat::stat;
 use std::fs;
-use std::mem::ManuallyDrop;
 use std::os::fd::AsRawFd;
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, RecvError, TryRecvError};
 
@@ -110,8 +108,6 @@ fn create_sq_entry_for_get_op(
     // TODO: Don't initialise to all-zeros. Issue #46.
     // See https://doc.rust-lang.org/std/mem/union.MaybeUninit.html#initializing-an-array-element-by-element
     let _ = *buffer.insert(Ok(vec![0; filesize_bytes as _]));
-
-    println!("buffer = {:?}", *buffer);
 
     // Create squeue::Entry
     // TODO: Open file using io_uring. See issue #1
