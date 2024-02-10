@@ -182,6 +182,5 @@ cython_debug/
 ################ END OF PYTHON GITIGNORE ############################
 
 .vscode/
-flamegraph.svg
 perf.data
 perf.data.*

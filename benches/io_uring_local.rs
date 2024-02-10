@@ -30,7 +30,7 @@ fn bench(c: &mut Criterion) {
     const N_FILES: usize = 1000;
 
     // Configure group:
-    let mut group = c.benchmark_group(format!("Load {N_FILES} files"));
+    let mut group = c.benchmark_group(format!("load_{N_FILES}_files"));
     group.sample_size(10);
     group.throughput(criterion::Throughput::Bytes(
         (FILE_SIZE_BYTES * N_FILES) as u64,
