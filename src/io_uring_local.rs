@@ -1,3 +1,4 @@
+use io_uring::cqueue;
 use io_uring::opcode;
 use io_uring::squeue;
 use io_uring::types;
@@ -12,7 +13,8 @@ use crate::operation::{Operation, OperationWithCallback};
 
 pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
     const CQ_RING_SIZE: u32 = 128; // TODO: Enable the user to configure this.
-    let mut ring = IoUring::new(CQ_RING_SIZE).unwrap();
+    let mut ring: IoUring<squeue::Entry, cqueue::Entry> =
+        io_uring::IoUring::builder().build(CQ_RING_SIZE).unwrap();
     let mut n_tasks_in_flight_in_io_uring: u32 = 0;
 
     'outer: loop {
