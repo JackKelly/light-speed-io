@@ -4,6 +4,8 @@ use object_store::path::Path;
 use std::process::Command;
 use tokio::runtime::Runtime;
 
+const FILE_SIZE_BYTES: usize = 262_144;
+
 async fn load_files_with_io_uring_local(n: usize) {
     // Clear page cache
     let _ = Command::new("vmtouch")
@@ -29,24 +31,30 @@ async fn load_files_with_io_uring_local(n: usize) {
     for f in futures {
         let r = f.await;
         let b = r.expect("At least one Result was an Error");
-        assert!(b.len() == 262144);
+        assert!(b.len() == FILE_SIZE_BYTES);
         results.push(b);
     }
 }
 
-fn criterion_benchmark(c: &mut Criterion) {
-    let size: usize = 1000;
-    c.bench_with_input(
-        BenchmarkId::new("load 1000 files using io_uring_local", size),
-        &size,
-        |b, &s| {
-            // Insert a call to `to_async` to convert the bencher to async mode.
-            // The timing loops are the same as with the normal bencher.
-            b.to_async(Runtime::new().unwrap())
-                .iter(|| load_files_with_io_uring_local(s));
-        },
-    );
+fn bench(c: &mut Criterion) {
+    const N_FILES: usize = 1000;
+
+    // Configure group:
+    let mut group = c.benchmark_group(format!("Load {N_FILES} files"));
+    group.sample_size(10);
+    group.throughput(criterion::Throughput::Bytes(
+        (FILE_SIZE_BYTES * N_FILES) as u64,
+    ));
+
+    // Run function:
+    group.bench_function("io_uring_local", |b| {
+        // Insert a call to `to_async` to convert the bencher to async mode.
+        // The timing loops are the same as with the normal bencher.
+        b.to_async(Runtime::new().unwrap())
+            .iter(|| async { load_files_with_io_uring_local(N_FILES).await });
+    });
+    group.finish();
 }
 
-criterion_group!(benches, criterion_benchmark);
+criterion_group!(benches, bench);
 criterion_main!(benches);
