@@ -11,7 +11,7 @@ use std::sync::mpsc::{Receiver, RecvError, TryRecvError};
 use crate::operation::{Operation, OperationWithCallback};
 
 pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
-    const CQ_RING_SIZE: u32 = 16; // TODO: Enable the user to configure this.
+    const CQ_RING_SIZE: u32 = 128; // TODO: Enable the user to configure this.
     let mut ring = IoUring::new(CQ_RING_SIZE).unwrap();
     let mut n_tasks_in_flight_in_io_uring: u32 = 0;
 
