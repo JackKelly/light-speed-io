@@ -72,7 +72,7 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
         if !have_submitted {
             // We need to call `submit` once.
             // TODO: We need to call `submit` again if it's been more than
-            // 1 second since we last submitted data.
+            // 1 second since we last submitted data. Issue #52.
             ring.submit().unwrap();
             have_submitted = true;
         }
@@ -99,6 +99,7 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
             if i > (CQ_RING_SIZE / 2) as _ {
                 // Break, so we keep the SQ topped up.
                 // TODO: We should probably only break here if rx.try_recv() has data.
+                // But maybe it's fine to just check rx.try_recv() at the top of this loop.
                 break;
             }
         }
