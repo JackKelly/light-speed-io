@@ -12,12 +12,15 @@ use std::sync::mpsc::{Receiver, RecvError, TryRecvError};
 use crate::operation::{Operation, OperationWithCallback};
 
 pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
-    const CQ_RING_SIZE: u32 = 128; // TODO: Enable the user to configure this.
+    const CQ_RING_SIZE: u32 = 32; // TODO: Enable the user to configure this.
     let mut ring: IoUring<squeue::Entry, cqueue::Entry> = io_uring::IoUring::builder()
         .setup_sqpoll(1000)
         .build(CQ_RING_SIZE)
         .unwrap();
     let mut n_tasks_in_flight_in_io_uring: u32 = 0;
+    let mut n_ops_received_from_user: u32 = 0;
+    let mut n_ops_completed: u32 = 0;
+    let mut have_submitted = false;
 
     'outer: loop {
         // Keep io_uring's submission queue topped up:
@@ -61,12 +64,24 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
 
             // Increment counter:
             n_tasks_in_flight_in_io_uring += 1;
+            n_ops_received_from_user += 1;
         }
 
-        ring.submit_and_wait(1).unwrap(); // TODO: Handle error!
+        assert_ne!(n_tasks_in_flight_in_io_uring, 0);
 
-        for cqe in ring.completion() {
+        if !have_submitted {
+            // We need to call `submit` once.
+            // TODO: We need to call `submit` again if it's been more than
+            // 1 second since we last submitted data.
+            ring.submit().unwrap();
+            have_submitted = true;
+        }
+
+        // TODO: If ring.completion().empty() and n_tasks_in_flight == CQ_RING_SIZE-1,
+        // then I think we have to ring.submit_and_wait()? Issue #49.
+        for (i, cqe) in ring.completion().enumerate() {
             n_tasks_in_flight_in_io_uring -= 1;
+            n_ops_completed += 1;
 
             // Handle errors reported by io_uring:
             if cqe.result() < 0 {
@@ -80,8 +95,15 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
             let mut op_with_callback =
                 unsafe { Box::from_raw(cqe.user_data() as *mut OperationWithCallback) };
             op_with_callback.execute_callback();
+
+            if i > (CQ_RING_SIZE / 2) as _ {
+                // Break, so we keep the SQ topped up.
+                // TODO: We should probably only break here if rx.try_recv() has data.
+                break;
+            }
         }
     }
+    assert_eq!(n_ops_received_from_user, n_ops_completed);
 }
 
 impl Operation {
