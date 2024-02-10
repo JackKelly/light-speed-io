@@ -35,7 +35,7 @@ async fn load_files_with_io_uring_local(n: usize) {
 }
 
 fn criterion_benchmark(c: &mut Criterion) {
-    let size: usize = 1;
+    let size: usize = 1000;
     c.bench_with_input(
         BenchmarkId::new("load 1000 files using io_uring_local", size),
         &size,
