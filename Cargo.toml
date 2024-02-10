@@ -7,27 +7,23 @@ homepage = "https://github.com/JackKelly/light-speed-io"
 repository = "https://github.com/JackKelly/light-speed-io"
 readme = "README.md"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [lib]
-# Note that lib.name is automatically created from package.name,
-# with hyphens replaced by underscores.
-
-# "cdylib" is necessary to produce a shared library for Python to import from.
-#
-# Downstream Rust code (including code in `bin/`, `examples/`, and `tests/`) will not be able
-# to `use string_sum;` unless the "rlib" or "lib" crate type is also included, e.g.:
-# crate-type = ["cdylib", "rlib"]. Also see:
-# reddit.com/r/rust/comments/p9ibhf/differences_between_lib_and_rlib_cratetype/
-crate-type = ["cdylib", "lib"]
+crate-type = ["lib"]   # The crate types to generate.
 
 [dependencies]
 anyhow = "1.0"
-crossbeam = "0.8.4"
+bytes = "1.5.0"
 io-uring = "0.6"
 libc = "0.2"  # Just used for libc::O_DIRECT in src/io_uring.rs
-nix = "0.27"
-rayon = "1.8"
+nix = { version = "0.27", features = ["fs"] }
+object_store = "0.9.0"
+snafu = "0.8.0"
+tokio = { version = "1.36.0", features = ["rt-multi-thread"]}
+url = "2.5.0"
 
-# [dependencies.pyo3]  # TODO: Re-enable!
-# version = "0.20.0"
+[dev-dependencies]
+criterion = { version = "0.5.1", features = ["html_reports", "async_tokio"] }
+
+[[bench]]
+name = "io_uring_local"
+harness = false
