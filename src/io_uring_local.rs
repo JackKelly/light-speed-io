@@ -22,7 +22,7 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
             let op_with_callback = match n_tasks_in_flight_in_io_uring {
                 0 => match rx.recv() {
                     // There are no tasks in flight in io_uring, so all that's
-                    // left to do is to wait for more tasks.
+                    // left to do is to wait for more `Operations` from the user.
                     Ok(s) => s,
                     Err(RecvError) => break 'outer, // The caller hung up.
                 },
