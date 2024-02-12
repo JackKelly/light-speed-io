@@ -12,10 +12,10 @@ use std::sync::mpsc::{Receiver, RecvError, TryRecvError};
 use crate::operation::{Operation, OperationWithCallback};
 
 pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
-    const CQ_RING_SIZE: u32 = 32; // TODO: Enable the user to configure this.
+    const SQ_RING_SIZE: u32 = 32; // TODO: Enable the user to configure this.
     let mut ring: IoUring<squeue::Entry, cqueue::Entry> = io_uring::IoUring::builder()
-        .setup_sqpoll(1000)
-        .build(CQ_RING_SIZE)
+        .setup_sqpoll(1000) // The kernel sqpoll thread will sleep after this many milliseconds.
+        .build(SQ_RING_SIZE)
         .unwrap();
     let mut n_tasks_in_flight_in_io_uring: u32 = 0;
     let mut n_ops_received_from_user: u32 = 0;
@@ -33,12 +33,12 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
                     Ok(s) => s,
                     Err(RecvError) => break 'outer, // The caller hung up.
                 },
-                CQ_RING_SIZE.. => break 'inner, // The CQ is full!
-                _ => match rx.try_recv() {
+                n if n < SQ_RING_SIZE => match rx.try_recv() {
                     Ok(s) => s,
                     Err(TryRecvError::Empty) => break 'inner,
                     Err(TryRecvError::Disconnected) => break 'outer,
                 },
+                _ => break 'inner, // The CQ is full!
             };
 
             // We need `op_with_callback` to remain in memory after this `loop` because
@@ -96,10 +96,10 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
                 unsafe { Box::from_raw(cqe.user_data() as *mut OperationWithCallback) };
             op_with_callback.execute_callback();
 
-            if i > (CQ_RING_SIZE / 2) as _ {
+            if i > (SQ_RING_SIZE / 2) as _ {
                 // Break, so we keep the SQ topped up.
-                // TODO: We should probably only break here if rx.try_recv() has data.
-                // But maybe it's fine to just check rx.try_recv() at the top of this loop.
+                // TODO: Ideally, we'd only break here if `rx.try_recv()` has data.
+                // But maybe it's fine to just check `rx.try_recv()` at the top of this loop.
                 break;
             }
         }
