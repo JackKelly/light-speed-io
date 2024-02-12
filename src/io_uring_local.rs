@@ -12,14 +12,20 @@ use std::sync::mpsc::{Receiver, RecvError, TryRecvError};
 use crate::operation::{Operation, OperationWithCallback};
 
 pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
-    const SQ_RING_SIZE: u32 = 32; // TODO: Enable the user to configure this.
+    const SQ_RING_SIZE: u32 = 32; // TODO: Allow the user to configure this SQ_RING_SIZE.
     let mut ring: IoUring<squeue::Entry, cqueue::Entry> = io_uring::IoUring::builder()
         .setup_sqpoll(1000) // The kernel sqpoll thread will sleep after this many milliseconds.
+        // TODO: Allow the user to decide whether sqpoll is used.
         .build(SQ_RING_SIZE)
         .unwrap();
     let mut n_tasks_in_flight_in_io_uring: u32 = 0;
     let mut n_ops_received_from_user: u32 = 0;
     let mut n_ops_completed: u32 = 0;
+
+    // Performance counters. Not needed for correct operation.
+    let mut completion_was_empty = 0;
+    let mut cum_tasks_in_flight: u64 = 0;
+    let mut outer_loop_iterations = 0;
 
     'outer: loop {
         // Keep io_uring's submission queue topped up:
@@ -67,12 +73,17 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
         }
 
         assert_ne!(n_tasks_in_flight_in_io_uring, 0);
+        cum_tasks_in_flight += n_tasks_in_flight_in_io_uring as u64;
+        outer_loop_iterations += 1;
 
-        // `ring.submit()` is basically a no-op if the kernel's sqpoll thread is still awake.
-        ring.submit().unwrap();
+        if ring.completion().is_empty() {
+            ring.submit_and_wait(1).unwrap();
+            completion_was_empty += 1;
+        } else {
+            // `ring.submit()` is basically a no-op if the kernel's sqpoll thread is still awake.
+            ring.submit().unwrap();
+        }
 
-        // TODO: If ring.completion().empty() and n_tasks_in_flight == CQ_RING_SIZE-1,
-        // then I think we have to ring.submit_and_wait()? Issue #49.
         for (i, cqe) in ring.completion().enumerate() {
             n_tasks_in_flight_in_io_uring -= 1;
             n_ops_completed += 1;
@@ -99,6 +110,11 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
         }
     }
     assert_eq!(n_ops_received_from_user, n_ops_completed);
+    println!("completion_was_empty: {completion_was_empty}");
+    println!(
+        "average tasks in flight: {}",
+        cum_tasks_in_flight / (outer_loop_iterations as u64)
+    );
 }
 
 impl Operation {
