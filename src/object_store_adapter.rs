@@ -159,7 +159,6 @@ impl ObjectStoreAdapter {
         let operation = Operation::Get {
             location: path,
             buffer: None,
-            fd: None,
         };
 
         let (op_future, op_with_output) = OperationFuture::new(operation);

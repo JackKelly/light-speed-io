@@ -48,11 +48,5 @@ pub(crate) enum Operation {
         // This is an `Option` for two reasons: 1) `buffer` will start life
         // _without_ an actual buffer! 2) So we can `take` the buffer.
         buffer: Option<Result<Vec<u8>>>,
-
-        // Keeping the file descriptor in this struct is just a quick hack to ensure that
-        // we keep the file descriptor open until io_uring has finished with this task.
-        // TODO: Remove the file descriptor from this struct once we let io_uring open files!
-        // See Issue #1.
-        fd: Option<fs::File>,
     },
 }

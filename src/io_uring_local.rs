@@ -2,10 +2,13 @@ use io_uring::cqueue;
 use io_uring::opcode;
 use io_uring::squeue;
 use io_uring::types;
+use io_uring::types::Fixed;
+use io_uring::types::OpenHow;
 use io_uring::IoUring;
 use nix::sys::stat::stat;
 use std::fs;
 use std::os::fd::AsRawFd;
+use std::os::fd::RawFd;
 use std::path::PathBuf;
 use std::sync::mpsc::TryRecvError;
 use std::sync::mpsc::{Receiver, RecvError};
@@ -22,10 +25,19 @@ pub(crate) fn worker_thread_func(rx: Receiver<Box<OperationWithCallback>>) {
         // TODO: Allow the user to decide whether sqpoll is used.
         .build(SQ_RING_SIZE)
         .unwrap();
+    let submitter = ring.submitter();
+
+    // Register "fixed" file descriptors, for use in chaining open, read, close:
+    // TODO: We only need unique FDs for each file in flight in io_uring. WE should re-use SQ_RING_SIZE FDs!
+    let fds: Vec<RawFd> = (0..1000).map(|fd| RawFd::from(fd)).collect();
+    submitter.register_files(&fds).unwrap();
+
+    // Counters
     let mut n_tasks_in_flight_in_io_uring: u32 = 0;
     let mut n_ops_received_from_user: u32 = 0;
     let mut n_ops_completed: u32 = 0;
     let mut rx_might_have_more_data_waiting: bool;
+    let mut fixed_fd: u32 = 0;
 
     'outer: loop {
         // Keep io_uring's submission queue topped up:
@@ -53,33 +65,31 @@ pub(crate) fn worker_thread_func(rx: Receiver<Box<OperationWithCallback>>) {
                 },
             };
 
-            // Convert `Operation` to a `squeue::Entry`.
-            let sq_entry = op_with_callback
-                .get_mut_operation()
-                .as_mut()
-                .unwrap()
-                .to_iouring_entry()
-                .user_data(Box::into_raw(op_with_callback) as u64);
+            // Convert `Operation` to one or more `squeue::Entry`.
+            let sq_entries = create_sq_entries(op_with_callback, fixed_fd);
 
             // Submit to io_uring!
-            unsafe {
-                ring.submission()
-                    .push(&sq_entry)
-                    .expect("io_uring submission queue full")
+            for sq_entry in sq_entries {
+                unsafe {
+                    ring.submission()
+                        .push(&sq_entry)
+                        .expect("io_uring submission queue full")
+                }
+                n_tasks_in_flight_in_io_uring += 1;
             }
 
             // Increment counter:
-            n_tasks_in_flight_in_io_uring += 1;
             n_ops_received_from_user += 1;
+            fixed_fd +1;
         }
 
         assert_ne!(n_tasks_in_flight_in_io_uring, 0);
 
         if ring.completion().is_empty() {
-            ring.submit_and_wait(1).unwrap();
+            submitter.submit_and_wait(1).unwrap();
         } else {
             // `ring.submit()` is basically a no-op if the kernel's sqpoll thread is still awake.
-            ring.submit().unwrap();
+            submitter.submit().unwrap();
         }
 
         for (i, cqe) in ring.completion().enumerate() {
@@ -108,16 +118,17 @@ pub(crate) fn worker_thread_func(rx: Receiver<Box<OperationWithCallback>>) {
     assert_eq!(n_ops_received_from_user, n_ops_completed);
 }
 
-impl Operation {
-    fn to_iouring_entry(&mut self) -> squeue::Entry {
-        match *self {
-            Operation::Get {
-                ref location,
-                ref mut buffer,
-                ref mut fd,
-            } => create_sq_entry_for_get_op(location, buffer, fd),
-        }
+fn create_sq_entries(mut op_with_callback: Box<OperationWithCallback>, fixed_fd: u32) -> Vec<squeue::Entry> {
+    let op = op_with_callback.get_mut_operation().as_mut().unwrap();
+
+    match op {
+        Operation::Get {
+            ref location,
+            ref mut buffer,
+        } => create_sq_entry_for_get_op(location, buffer, fixed_fd),
     }
+
+    // entry.user_data(Box::into_raw(op_with_callback) as u64);
 }
 
 fn get_filesize_bytes(location: &std::path::Path) -> i64 {
@@ -127,8 +138,8 @@ fn get_filesize_bytes(location: &std::path::Path) -> i64 {
 fn create_sq_entry_for_get_op(
     location: &PathBuf,
     buffer: &mut Option<object_store::Result<Vec<u8>>>,
-    fd: &mut Option<std::fs::File>,
-) -> squeue::Entry {
+    fixed_fd: u32,
+) -> Vec<squeue::Entry> {
     // Get filesize: TODO: Use io_uring to get filesize; see issue #41.
     let filesize_bytes = get_filesize_bytes(location);
 
@@ -137,8 +148,15 @@ fn create_sq_entry_for_get_op(
     // See https://doc.rust-lang.org/std/mem/union.MaybeUninit.html#initializing-an-array-element-by-element
     let _ = *buffer.insert(Ok(vec![0; filesize_bytes as _]));
 
-    // Create squeue::Entry
-    // TODO: Open file using io_uring. See issue #1
+    let mut entries = Vec::with_capacity(3); // 3 Entries: open, read, close
+
+    // Prepare to open the file.
+    // This is a work in progress, and doesn't currently compile! See issue #1.
+    let open_how = OpenHow::new().flags(libc::O_DIRECT as u64); // TODO: I'm worried about this cast to u64!
+    entries.push(
+        opcode::OpenAt2::new(-1 as _, location.as_os_str().as_encoded_bytes().as_ptr() as _, &open_how)
+    );
+
     *fd = Some(
         fs::OpenOptions::new()
             .read(true)
@@ -152,9 +170,11 @@ fn create_sq_entry_for_get_op(
     // Note that the developer needs to ensure
     // that the entry pushed into submission queue is valid (e.g. fd, buffer).
     opcode::Read::new(
-        types::Fd(fd.as_ref().unwrap().as_raw_fd()),
+        types::Fd(fixed_fd),
         buffer.as_mut().unwrap().as_mut().unwrap().as_mut_ptr(),
         filesize_bytes as _,
     )
     .build()
+
+    entries
 }
