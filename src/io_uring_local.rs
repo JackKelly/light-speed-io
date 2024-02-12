@@ -14,6 +14,9 @@ use crate::operation::{Operation, OperationWithCallback};
 
 pub(crate) fn worker_thread_func(rx: Receiver<Box<OperationWithCallback>>) {
     const SQ_RING_SIZE: u32 = 32; // TODO: Allow the user to configure SQ_RING_SIZE.
+    const MAX_ENTRIES_PER_CHAIN: u32 = 3; // Maximum number of io_uring entries per io_uring chain.
+    assert!(MAX_ENTRIES_PER_CHAIN < SQ_RING_SIZE);
+    const MAX_ENTRIES_BEFORE_BREAKING_LOOP: u32 = SQ_RING_SIZE - MAX_ENTRIES_PER_CHAIN;
     let mut ring: IoUring<squeue::Entry, cqueue::Entry> = io_uring::IoUring::builder()
         .setup_sqpoll(1000) // The kernel sqpoll thread will sleep after this many milliseconds.
         // TODO: Allow the user to decide whether sqpoll is used.
@@ -35,10 +38,11 @@ pub(crate) fn worker_thread_func(rx: Receiver<Box<OperationWithCallback>>) {
                     Ok(s) => s,
                     Err(RecvError) => break 'outer, // The caller hung up.
                 },
-                SQ_RING_SIZE => {
+                MAX_ENTRIES_BEFORE_BREAKING_LOOP => {
+                    // The SQ is full!
                     rx_might_have_more_data_waiting = true;
                     break 'inner;
-                } // The SQ is full!
+                }
                 _ => match rx.try_recv() {
                     Ok(s) => s,
                     Err(TryRecvError::Empty) => {
