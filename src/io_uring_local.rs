@@ -13,7 +13,7 @@ use std::sync::mpsc::{Receiver, RecvError};
 use crate::operation::{Operation, OperationWithCallback};
 
 pub(crate) fn worker_thread_func(rx: Receiver<Box<OperationWithCallback>>) {
-    const SQ_RING_SIZE: u32 = 32; // TODO: Allow the user to configure this SQ_RING_SIZE.
+    const SQ_RING_SIZE: u32 = 32; // TODO: Allow the user to configure SQ_RING_SIZE.
     let mut ring: IoUring<squeue::Entry, cqueue::Entry> = io_uring::IoUring::builder()
         .setup_sqpoll(1000) // The kernel sqpoll thread will sleep after this many milliseconds.
         // TODO: Allow the user to decide whether sqpoll is used.
@@ -24,15 +24,6 @@ pub(crate) fn worker_thread_func(rx: Receiver<Box<OperationWithCallback>>) {
     let mut n_ops_completed: u32 = 0;
     let mut rx_might_have_more_data_waiting: bool;
 
-    // Performance counters. Not needed for correct operation.
-    let mut completion_was_empty = 0;
-    let mut cum_tasks_in_flight: u64 = 0;
-    let mut outer_loop_iterations = 0;
-    let mut n_rx_recv_ok = 0;
-    let mut n_rx_try_recv_ok = 0;
-    let mut n_times_hit_max_ring_size = 0;
-    let mut n_rx_try_recv_empty = 0;
-
     'outer: loop {
         // Keep io_uring's submission queue topped up:
         // TODO: Extract this inner loop into a separate function!
@@ -41,24 +32,16 @@ pub(crate) fn worker_thread_func(rx: Receiver<Box<OperationWithCallback>>) {
                 0 => match rx.recv() {
                     // There are no tasks in flight in io_uring, so all that's
                     // left to do is to wait for more `Operations` from the user.
-                    Ok(s) => {
-                        n_rx_recv_ok += 1;
-                        s
-                    }
+                    Ok(s) => s,
                     Err(RecvError) => break 'outer, // The caller hung up.
                 },
                 SQ_RING_SIZE => {
-                    n_times_hit_max_ring_size += 1;
                     rx_might_have_more_data_waiting = true;
                     break 'inner;
                 } // The SQ is full!
                 _ => match rx.try_recv() {
-                    Ok(s) => {
-                        n_rx_try_recv_ok += 1;
-                        s
-                    }
+                    Ok(s) => s,
                     Err(TryRecvError::Empty) => {
-                        n_rx_try_recv_empty += 1;
                         rx_might_have_more_data_waiting = false;
                         break 'inner;
                     }
@@ -87,12 +70,9 @@ pub(crate) fn worker_thread_func(rx: Receiver<Box<OperationWithCallback>>) {
         }
 
         assert_ne!(n_tasks_in_flight_in_io_uring, 0);
-        cum_tasks_in_flight += n_tasks_in_flight_in_io_uring as u64;
-        outer_loop_iterations += 1;
 
         if ring.completion().is_empty() {
             ring.submit_and_wait(1).unwrap();
-            completion_was_empty += 1;
         } else {
             // `ring.submit()` is basically a no-op if the kernel's sqpoll thread is still awake.
             ring.submit().unwrap();
@@ -122,16 +102,6 @@ pub(crate) fn worker_thread_func(rx: Receiver<Box<OperationWithCallback>>) {
         }
     }
     assert_eq!(n_ops_received_from_user, n_ops_completed);
-    println!("completion_was_empty: {completion_was_empty}");
-    println!(
-        "average tasks in flight: {}",
-        cum_tasks_in_flight / (outer_loop_iterations as u64)
-    );
-    dbg!(n_rx_recv_ok);
-    dbg!(n_rx_try_recv_ok);
-    dbg!(n_rx_try_recv_empty);
-    dbg!(n_times_hit_max_ring_size);
-    println!("--------");
 }
 
 impl Operation {

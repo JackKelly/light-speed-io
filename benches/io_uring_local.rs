@@ -1,7 +1,7 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 use light_speed_io::object_store_adapter::ObjectStoreAdapter;
 use object_store::path::Path as ObjectStorePath;
-use std::{process::Command, time::Instant};
+use std::{process::Command, time::Duration};
 use tokio::runtime::Runtime;
 
 const FILE_SIZE_BYTES: usize = 262_144;
@@ -13,15 +13,9 @@ async fn load_files_with_io_uring_local(filenames: &Vec<ObjectStorePath>) {
     // Start reading async:
     let store = ObjectStoreAdapter::default();
     let mut futures = Vec::with_capacity(n);
-    let start = Instant::now();
     for filename in filenames {
         futures.push(store.get(filename));
     }
-    println!(
-        "Time taken to submit {} `get` tasks: {:?}",
-        filenames.len(),
-        start.elapsed()
-    );
 
     // Wait for everything to complete:
     let mut results = Vec::with_capacity(n);
@@ -41,6 +35,9 @@ fn bench(c: &mut Criterion) {
     group.throughput(criterion::Throughput::Bytes(
         (FILE_SIZE_BYTES * N_FILES) as u64,
     ));
+
+    // Disable warmup because I think it might be causing the SSD to thermally throttle!
+    group.warm_up_time(Duration::from_millis(1));
 
     let filenames = get_filenames(N_FILES);
 
