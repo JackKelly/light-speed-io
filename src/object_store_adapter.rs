@@ -1,8 +1,10 @@
 use bytes::Bytes;
 use object_store::{path::Path, Result};
 use snafu::{ensure, Snafu};
+use std::future::Future;
 use std::io;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::{mpsc, Arc};
 use std::thread;
 use url::Url;
@@ -151,9 +153,8 @@ impl ObjectStoreAdapter {
     // TODO: `ObjectStoreAdapter` shouldn't implement `get` because `ObjectStore::get` has a default impl.
     //       Instead, `ObjectStoreAdapter` should impl `get_opts` which returns a `Result<GetResult>`.
     //       But I'm keeping things simple for now!
-    pub async fn get(&self, location: &Path) -> Result<Bytes> {
-        print!("a");
-        let path = self.config.path_to_filesystem(location)?;
+    pub fn get(&self, location: &Path) -> Pin<Box<dyn Future<Output = Result<Bytes>>>> {
+        let path = self.config.path_to_filesystem(location).unwrap();
 
         let operation = Operation::Get {
             location: path,
@@ -162,15 +163,14 @@ impl ObjectStoreAdapter {
         };
 
         let (op_future, op_with_output) = OperationFuture::new(operation);
-        print!("b");
         self.worker_thread.send(op_with_output);
-        print!("c");
-        match op_future.await {
-            Operation::Get { buffer, .. } => {
-                print!("d");
-                buffer.expect("Buffer should not be None!").map(Bytes::from)
+        Box::pin(async {
+            match op_future.await {
+                Operation::Get { buffer, .. } => {
+                    buffer.expect("Buffer should not be None!").map(Bytes::from)
+                }
             }
-        }
+        })
     }
 }
 

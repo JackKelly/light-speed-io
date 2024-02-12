@@ -7,9 +7,8 @@ use nix::sys::stat::stat;
 use std::fs;
 use std::os::fd::AsRawFd;
 use std::path::PathBuf;
-use std::sync::mpsc::RecvTimeoutError;
+use std::sync::mpsc::TryRecvError;
 use std::sync::mpsc::{Receiver, RecvError};
-use std::time::Duration;
 
 use crate::operation::{Operation, OperationWithCallback};
 
@@ -23,15 +22,16 @@ pub(crate) fn worker_thread_func(rx: Receiver<Box<OperationWithCallback>>) {
     let mut n_tasks_in_flight_in_io_uring: u32 = 0;
     let mut n_ops_received_from_user: u32 = 0;
     let mut n_ops_completed: u32 = 0;
+    let mut rx_might_have_more_data_waiting: bool;
 
     // Performance counters. Not needed for correct operation.
     let mut completion_was_empty = 0;
     let mut cum_tasks_in_flight: u64 = 0;
     let mut outer_loop_iterations = 0;
-    let mut n_rx_recv = 0;
-    let mut n_rx_recv_timeout = 0;
-    let mut n_break = 0;
-    let mut n_timeouts = 0;
+    let mut n_rx_recv_ok = 0;
+    let mut n_rx_try_recv_ok = 0;
+    let mut n_times_hit_max_ring_size = 0;
+    let mut n_rx_try_recv_empty = 0;
 
     'outer: loop {
         // Keep io_uring's submission queue topped up:
@@ -42,25 +42,27 @@ pub(crate) fn worker_thread_func(rx: Receiver<Box<OperationWithCallback>>) {
                     // There are no tasks in flight in io_uring, so all that's
                     // left to do is to wait for more `Operations` from the user.
                     Ok(s) => {
-                        n_rx_recv += 1;
+                        n_rx_recv_ok += 1;
                         s
                     }
                     Err(RecvError) => break 'outer, // The caller hung up.
                 },
                 SQ_RING_SIZE => {
-                    n_break += 1;
+                    n_times_hit_max_ring_size += 1;
+                    rx_might_have_more_data_waiting = true;
                     break 'inner;
                 } // The SQ is full!
-                _ => match rx.recv_timeout(Duration::from_millis(1)) {
+                _ => match rx.try_recv() {
                     Ok(s) => {
-                        n_rx_recv_timeout += 1;
+                        n_rx_try_recv_ok += 1;
                         s
                     }
-                    Err(RecvTimeoutError::Timeout) => {
-                        n_timeouts += 1;
+                    Err(TryRecvError::Empty) => {
+                        n_rx_try_recv_empty += 1;
+                        rx_might_have_more_data_waiting = false;
                         break 'inner;
                     }
-                    Err(RecvTimeoutError::Disconnected) => break 'outer,
+                    Err(TryRecvError::Disconnected) => break 'outer,
                 },
             };
 
@@ -113,10 +115,8 @@ pub(crate) fn worker_thread_func(rx: Receiver<Box<OperationWithCallback>>) {
                 unsafe { Box::from_raw(cqe.user_data() as *mut OperationWithCallback) };
             op_with_callback.execute_callback();
 
-            if i > (SQ_RING_SIZE / 2) as _ {
-                // Break, so we keep the SQ topped up.
-                // TODO: Ideally, we'd only break here if `rx.try_recv()` has data.
-                // But maybe it's fine to just check `rx.try_recv()` at the top of this loop.
+            if rx_might_have_more_data_waiting && i > (SQ_RING_SIZE / 2) as _ {
+                // Break, to keep the SQ topped up.
                 break;
             }
         }
@@ -127,10 +127,10 @@ pub(crate) fn worker_thread_func(rx: Receiver<Box<OperationWithCallback>>) {
         "average tasks in flight: {}",
         cum_tasks_in_flight / (outer_loop_iterations as u64)
     );
-    dbg!(n_rx_recv);
-    dbg!(n_rx_recv_timeout);
-    dbg!(n_timeouts);
-    dbg!(n_break);
+    dbg!(n_rx_recv_ok);
+    dbg!(n_rx_try_recv_ok);
+    dbg!(n_rx_try_recv_empty);
+    dbg!(n_times_hit_max_ring_size);
     println!("--------");
 }
 
