@@ -20,7 +20,6 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
     let mut n_tasks_in_flight_in_io_uring: u32 = 0;
     let mut n_ops_received_from_user: u32 = 0;
     let mut n_ops_completed: u32 = 0;
-    let mut have_submitted = false;
 
     'outer: loop {
         // Keep io_uring's submission queue topped up:
@@ -69,13 +68,8 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
 
         assert_ne!(n_tasks_in_flight_in_io_uring, 0);
 
-        if !have_submitted {
-            // We need to call `submit` once.
-            // TODO: We need to call `submit` again if it's been more than
-            // 1 second since we last submitted data. Issue #52.
-            ring.submit().unwrap();
-            have_submitted = true;
-        }
+        // `ring.submit()` is basically a no-op if the kernel's sqpoll thread is still awake.
+        ring.submit().unwrap();
 
         // TODO: If ring.completion().empty() and n_tasks_in_flight == CQ_RING_SIZE-1,
         // then I think we have to ring.submit_and_wait()? Issue #49.
