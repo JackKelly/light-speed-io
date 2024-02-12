@@ -103,17 +103,17 @@ impl Config {
 #[derive(Debug)]
 struct WorkerThread {
     handle: thread::JoinHandle<()>,
-    sender: mpsc::Sender<OperationWithCallback>, // Channel to send ops to the worker thread
+    sender: mpsc::Sender<Box<OperationWithCallback>>, // Channel to send ops to the worker thread
 }
 
 impl WorkerThread {
-    pub fn new(worker_thread_func: fn(mpsc::Receiver<OperationWithCallback>)) -> Self {
+    pub fn new(worker_thread_func: fn(mpsc::Receiver<Box<OperationWithCallback>>)) -> Self {
         let (sender, rx) = mpsc::channel();
         let handle = thread::spawn(move || worker_thread_func(rx));
         Self { handle, sender }
     }
 
-    pub fn send(&self, op_with_output: OperationWithCallback) {
+    pub fn send(&self, op_with_output: Box<OperationWithCallback>) {
         self.sender
             .send(op_with_output)
             .expect("Failed to send message to worker thread!");
@@ -134,7 +134,7 @@ impl Default for ObjectStoreAdapter {
 
 impl ObjectStoreAdapter {
     /// Create new filesystem storage with no prefix
-    pub fn new(func_for_get_thread: fn(mpsc::Receiver<OperationWithCallback>)) -> Self {
+    pub fn new(func_for_get_thread: fn(mpsc::Receiver<Box<OperationWithCallback>>)) -> Self {
         Self {
             config: Arc::new(Config {
                 root: Url::parse("file:///").unwrap(),
@@ -152,7 +152,7 @@ impl ObjectStoreAdapter {
     //       Instead, `ObjectStoreAdapter` should impl `get_opts` which returns a `Result<GetResult>`.
     //       But I'm keeping things simple for now!
     pub async fn get(&self, location: &Path) -> Result<Bytes> {
-        // let location = location.clone();
+        print!("a");
         let path = self.config.path_to_filesystem(location)?;
 
         let operation = Operation::Get {
@@ -162,9 +162,12 @@ impl ObjectStoreAdapter {
         };
 
         let (op_future, op_with_output) = OperationFuture::new(operation);
+        print!("b");
         self.worker_thread.send(op_with_output);
+        print!("c");
         match op_future.await {
             Operation::Get { buffer, .. } => {
+                print!("d");
                 buffer.expect("Buffer should not be None!").map(Bytes::from)
             }
         }
@@ -189,12 +192,22 @@ fn is_valid_file_path(path: &Path) -> bool {
 mod tests {
     use super::*;
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn test_get_with_io_uring_local() {
-        let filename = Path::from("///home/jack/dev/rust/light-speed-io/README.md");
+        let filenames = vec![
+            Path::from("///home/jack/dev/rust/light-speed-io/README.md"),
+            Path::from("///home/jack/dev/rust/light-speed-io/Cargo.toml"),
+        ];
         let store = ObjectStoreAdapter::default();
-        let b = store.get(&filename).await.unwrap();
-        println!("Loaded {} bytes", b.len());
-        println!("{:?}", std::str::from_utf8(&b[..]).unwrap());
+        let mut futures = Vec::new();
+        for filename in &filenames {
+            futures.push(store.get(filename));
+        }
+
+        for future in futures {
+            let b = future.await.unwrap();
+            println!("Loaded {} bytes", b.len());
+            println!("{:?}", std::str::from_utf8(&b[..]).unwrap());
+        }
     }
 }

@@ -7,11 +7,13 @@ use nix::sys::stat::stat;
 use std::fs;
 use std::os::fd::AsRawFd;
 use std::path::PathBuf;
-use std::sync::mpsc::{Receiver, RecvError, TryRecvError};
+use std::sync::mpsc::RecvTimeoutError;
+use std::sync::mpsc::{Receiver, RecvError};
+use std::time::Duration;
 
 use crate::operation::{Operation, OperationWithCallback};
 
-pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
+pub(crate) fn worker_thread_func(rx: Receiver<Box<OperationWithCallback>>) {
     const SQ_RING_SIZE: u32 = 32; // TODO: Allow the user to configure this SQ_RING_SIZE.
     let mut ring: IoUring<squeue::Entry, cqueue::Entry> = io_uring::IoUring::builder()
         .setup_sqpoll(1000) // The kernel sqpoll thread will sleep after this many milliseconds.
@@ -26,31 +28,41 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
     let mut completion_was_empty = 0;
     let mut cum_tasks_in_flight: u64 = 0;
     let mut outer_loop_iterations = 0;
+    let mut n_rx_recv = 0;
+    let mut n_rx_recv_timeout = 0;
+    let mut n_break = 0;
+    let mut n_timeouts = 0;
 
     'outer: loop {
         // Keep io_uring's submission queue topped up:
         // TODO: Extract this inner loop into a separate function!
         'inner: loop {
-            let op_with_callback = match n_tasks_in_flight_in_io_uring {
+            let mut op_with_callback = match n_tasks_in_flight_in_io_uring {
                 0 => match rx.recv() {
                     // There are no tasks in flight in io_uring, so all that's
                     // left to do is to wait for more `Operations` from the user.
-                    Ok(s) => s,
+                    Ok(s) => {
+                        n_rx_recv += 1;
+                        s
+                    }
                     Err(RecvError) => break 'outer, // The caller hung up.
                 },
-                n if n < SQ_RING_SIZE => match rx.try_recv() {
-                    Ok(s) => s,
-                    Err(TryRecvError::Empty) => break 'inner,
-                    Err(TryRecvError::Disconnected) => break 'outer,
+                SQ_RING_SIZE => {
+                    n_break += 1;
+                    break 'inner;
+                } // The SQ is full!
+                _ => match rx.recv_timeout(Duration::from_millis(1)) {
+                    Ok(s) => {
+                        n_rx_recv_timeout += 1;
+                        s
+                    }
+                    Err(RecvTimeoutError::Timeout) => {
+                        n_timeouts += 1;
+                        break 'inner;
+                    }
+                    Err(RecvTimeoutError::Disconnected) => break 'outer,
                 },
-                _ => break 'inner, // The CQ is full!
             };
-
-            // We need `op_with_callback` to remain in memory after this `loop` because
-            // we send a raw pointer to `op_with_callback` through io_uring, so we can
-            // access the appropriate `op_with_callback` associated with this io_uring op
-            // when the io_uring operation completes.
-            let mut op_with_callback = Box::new(op_with_callback);
 
             // Convert `Operation` to a `squeue::Entry`.
             let sq_entry = op_with_callback
@@ -115,6 +127,11 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
         "average tasks in flight: {}",
         cum_tasks_in_flight / (outer_loop_iterations as u64)
     );
+    dbg!(n_rx_recv);
+    dbg!(n_rx_recv_timeout);
+    dbg!(n_timeouts);
+    dbg!(n_break);
+    println!("--------");
 }
 
 impl Operation {
