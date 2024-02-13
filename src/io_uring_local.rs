@@ -32,7 +32,7 @@ pub(crate) fn worker_thread_func(rx: Receiver<Box<OperationWithCallback>>) {
     // Counters
     let mut n_tasks_in_flight_in_io_uring: u32 = 0;
     let mut n_ops_received_from_user: u32 = 0;
-    let mut n_ops_completed: u32 = 0;
+    let mut n_user_ops_completed: u32 = 0;
     let mut rx_might_have_more_data_waiting: bool;
     let mut fixed_fd: u32 = 0;
 
@@ -82,7 +82,6 @@ pub(crate) fn worker_thread_func(rx: Receiver<Box<OperationWithCallback>>) {
 
         for (i, cqe) in ring.completion().enumerate() {
             n_tasks_in_flight_in_io_uring -= 1;
-            n_ops_completed += 1;
 
             // Handle errors reported by io_uring:
             if cqe.result() < 0 {
@@ -98,6 +97,8 @@ pub(crate) fn worker_thread_func(rx: Receiver<Box<OperationWithCallback>>) {
                 continue;
             }
 
+            n_user_ops_completed += 1;
+
             // Get the associated `OperationWithCallback` and call `execute_callback()`!
             let mut op_with_callback =
                 unsafe { Box::from_raw(cqe.user_data() as *mut OperationWithCallback) };
@@ -109,7 +110,7 @@ pub(crate) fn worker_thread_func(rx: Receiver<Box<OperationWithCallback>>) {
             }
         }
     }
-    // assert_eq!(n_ops_received_from_user, n_ops_completed); // TODO: Make this work again!
+    assert_eq!(n_ops_received_from_user, n_user_ops_completed);
 }
 
 fn submit_sq_entries_for_op(
