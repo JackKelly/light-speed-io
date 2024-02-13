@@ -6,7 +6,6 @@ use io_uring::types::OpenHow;
 use io_uring::IoUring;
 use nix::sys::stat::stat;
 use std::ffi::CString;
-use std::fs;
 use std::os::fd::RawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
@@ -25,12 +24,11 @@ pub(crate) fn worker_thread_func(rx: Receiver<Box<OperationWithCallback>>) {
         // TODO: Allow the user to decide whether sqpoll is used.
         .build(SQ_RING_SIZE)
         .unwrap();
-    let submitter = ring.submitter();
 
     // Register "fixed" file descriptors, for use in chaining open, read, close:
     // TODO: We only need unique FDs for each file in flight in io_uring. WE should re-use SQ_RING_SIZE FDs!
     let fds: Vec<RawFd> = (0..1000).map(|fd| RawFd::from(fd)).collect();
-    submitter.register_files(&fds).unwrap();
+    ring.submitter().register_files(&fds).unwrap();
 
     // Counters
     let mut n_tasks_in_flight_in_io_uring: u32 = 0;
@@ -80,16 +78,16 @@ pub(crate) fn worker_thread_func(rx: Receiver<Box<OperationWithCallback>>) {
 
             // Increment counter:
             n_ops_received_from_user += 1;
-            fixed_fd + 1;
+            fixed_fd += 1;
         }
 
         assert_ne!(n_tasks_in_flight_in_io_uring, 0);
 
         if ring.completion().is_empty() {
-            submitter.submit_and_wait(1).unwrap();
+            ring.submit_and_wait(1).unwrap();
         } else {
             // `ring.submit()` is basically a no-op if the kernel's sqpoll thread is still awake.
-            submitter.submit().unwrap();
+            ring.submit().unwrap();
         }
 
         for (i, cqe) in ring.completion().enumerate() {
@@ -100,9 +98,15 @@ pub(crate) fn worker_thread_func(rx: Receiver<Box<OperationWithCallback>>) {
             if cqe.result() < 0 {
                 let err = nix::Error::from_i32(-cqe.result());
                 println!("Error from CQE: {:?}", err);
-                // TODO: This error needs to be sent to the user. See issue #45.
-                // Something like: `Err(err.into())`
+                // TODO: This error needs to be sent to the user and, ideally, associated with a filename.
+                // Something like: `Err(err.into())`. See issue #45.
             };
+
+            if cqe.user_data() == 0 {
+                // This is an `open` or `close` operation. For now, we ignore these.
+                // TODO: Keep track of `open` and `close` operations. See issue #54.
+                continue;
+            }
 
             // Get the associated `OperationWithCallback` and call `execute_callback()`!
             let mut op_with_callback =
@@ -184,7 +188,7 @@ fn create_sq_entry_for_get_op(
         filesize_bytes as _,
     )
     .build()
-    .user_data(Box::into_raw(op_with_callback) as _); // TODO: Put the Box<OperationWithCallback> into here.
+    .user_data(Box::into_raw(op_with_callback) as _);
     entries.push(read_op);
 
     // Prepare the "close" opcode:
