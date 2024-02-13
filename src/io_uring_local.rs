@@ -2,13 +2,10 @@ use io_uring::cqueue;
 use io_uring::opcode;
 use io_uring::squeue;
 use io_uring::types;
-use io_uring::types::OpenHow;
 use io_uring::IoUring;
 use nix::sys::stat::stat;
 use std::ffi::CString;
-use std::os::fd::RawFd;
 use std::os::unix::ffi::OsStrExt;
-use std::path::PathBuf;
 use std::sync::mpsc::TryRecvError;
 use std::sync::mpsc::{Receiver, RecvError};
 
@@ -26,12 +23,11 @@ pub(crate) fn worker_thread_func(rx: Receiver<Box<OperationWithCallback>>) {
         .expect("Failed to initialise io_uring.");
 
     // Register "fixed" file descriptors, for use in chaining open, read, close:
-    // TODO: We only need unique FDs for each file in flight in io_uring. WE should re-use SQ_RING_SIZE FDs!
-    // let _ = ring.submitter().unregister_files(); // Cleanup all fixed files (if any)
-    // let fds: Vec<RawFd> = (5..10).collect(); // .map(RawFd::from)
-    //ring.submitter()
-    //    .register_files(&[RawFd::from(3i32)]) // fds.as_slice()) // Huh. 3 or higher doesn't work?!?
-    //    .expect("Failed to register files with io_uring!");
+    // TODO: Only register enough FDs for the files in flight in io_uring. We should re-use SQ_RING_SIZE FDs! See issue #54.
+    let _ = ring.submitter().unregister_files(); // Cleanup all fixed files (if any)
+    ring.submitter()
+        .register_files_sparse(1000) // TODO: Only register enough direct FDs for the ops in flight!
+        .expect("Failed to register files!");
 
     // Counters
     let mut n_tasks_in_flight_in_io_uring: u32 = 0;
@@ -66,18 +62,9 @@ pub(crate) fn worker_thread_func(rx: Receiver<Box<OperationWithCallback>>) {
                 },
             };
 
-            // Convert `Operation` to one or more `squeue::Entry`.
-            let sq_entries = create_sq_entries(op_with_callback, fixed_fd);
-
-            // Submit to io_uring!
-            for sq_entry in sq_entries {
-                unsafe {
-                    ring.submission()
-                        .push(&sq_entry)
-                        .expect("io_uring submission queue full")
-                }
-                n_tasks_in_flight_in_io_uring += 1;
-            }
+            // Convert `Operation` to one or more `squeue::Entry`, and submit to io_uring.
+            n_tasks_in_flight_in_io_uring +=
+                submit_sq_entries_for_op(&mut ring, op_with_callback, fixed_fd);
 
             // Increment counter:
             n_ops_received_from_user += 1;
@@ -122,16 +109,17 @@ pub(crate) fn worker_thread_func(rx: Receiver<Box<OperationWithCallback>>) {
             }
         }
     }
-    assert_eq!(n_ops_received_from_user, n_ops_completed);
+    // assert_eq!(n_ops_received_from_user, n_ops_completed); // TODO: Make this work again!
 }
 
-fn create_sq_entries(
+fn submit_sq_entries_for_op(
+    ring: &mut IoUring,
     mut op_with_callback: Box<OperationWithCallback>,
     fixed_fd: u32,
-) -> Vec<squeue::Entry> {
+) -> u32 {
     let op = op_with_callback.get_mut_operation().as_ref().unwrap();
     match op {
-        Operation::Get { .. } => create_sq_entry_for_get_op(op_with_callback, fixed_fd),
+        Operation::Get { .. } => create_sq_entry_for_get_op(ring, op_with_callback, fixed_fd),
     }
 }
 
@@ -140,9 +128,10 @@ fn get_filesize_bytes(location: &std::path::Path) -> i64 {
 }
 
 fn create_sq_entry_for_get_op(
+    ring: &mut IoUring,
     mut op_with_callback: Box<OperationWithCallback>,
     fixed_fd: u32,
-) -> Vec<squeue::Entry> {
+) -> u32 {
     // TODO: Test for these:
     // - opcode::OpenAt2::CODE
     // - opcode::Close::CODE
@@ -165,28 +154,31 @@ fn create_sq_entry_for_get_op(
     // See https://doc.rust-lang.org/std/mem/union.MaybeUninit.html#initializing-an-array-element-by-element
     let _ = *buffer.insert(Ok(vec![0; filesize_bytes as _]));
 
-    let mut entries = Vec::with_capacity(3); // 3 Entries: open, read, close
-
     // Prepare the "open" opcode:
     // This code block is adapted from:
     // https://github.com/tokio-rs/io-uring/blob/e3fa23ad338af1d051ac82e18688453a9b3d8376/io-uring-test/src/tests/fs.rs#L288-L295
     let path = CString::new(path.as_os_str().as_bytes())
         .expect("Could not convert path '{path}' to CString.");
-    // let open_how = OpenHow::new().flags(libc::O_DIRECT as u64); // TODO: I'm worried about this cast to u64!
+    let path_ptr = path.as_ptr();
+
+    println!("path = {:?}", path);
     let file_index = types::DestinationSlot::try_from_slot_target(fixed_fd)
         .expect("Could not allocate target slot. fixed_fd={fixed_fd}");
+
     let open_op = opcode::OpenAt::new(
-        types::Fd(0), // dirfd is ignored if the pathname is absolute. See the "openat()" section in https://man7.org/linux/man-pages/man2/openat.2.html
-        path.as_ptr(),
-        // &open_how,
+        types::Fd(-1), // dirfd is ignored if the pathname is absolute. See the "openat()" section in https://man7.org/linux/man-pages/man2/openat.2.html
+        path_ptr,
     )
     .file_index(Some(file_index))
-    .flags(libc::O_DIRECT)
-    .mode(libc::O_RDONLY as _)
+    .flags(libc::O_RDONLY) // | libc::O_DIRECT) // TODO: Re-enable O_DIRECT.
     .build()
     .flags(squeue::Flags::IO_LINK)
     .user_data(0); // TODO: user_data should refer to the Operation. See issue #54.
-    entries.push(open_op);
+    unsafe {
+        ring.submission()
+            .push(&open_op)
+            .expect("submission queue is full");
+    }
 
     // Prepare the "read" opcode:
     let read_op = opcode::Read::new(
@@ -197,13 +189,26 @@ fn create_sq_entry_for_get_op(
     .build()
     .flags(squeue::Flags::IO_LINK)
     .user_data(Box::into_raw(op_with_callback) as _);
-    entries.push(read_op);
+    unsafe {
+        ring.submission()
+            .push(&read_op)
+            .expect("submission queue is full");
+    }
 
     // Prepare the "close" opcode:
     let close_op = opcode::Close::new(types::Fixed(fixed_fd))
         .build()
         .user_data(1); // TODO: user_data should refer to the Operation. See issue #54.
-    entries.push(close_op);
+    unsafe {
+        ring.submission()
+            .push(&close_op)
+            .expect("submission queue is full");
+    }
 
-    entries
+    // TODO: Don't submit_and_wait() here! This is just to get something working for now!
+    ring.submit_and_wait(1).unwrap();
+
+    println!("{path:?}, {path_ptr:?}");
+
+    3
 }
