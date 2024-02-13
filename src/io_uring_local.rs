@@ -2,13 +2,13 @@ use io_uring::cqueue;
 use io_uring::opcode;
 use io_uring::squeue;
 use io_uring::types;
-use io_uring::types::Fixed;
 use io_uring::types::OpenHow;
 use io_uring::IoUring;
 use nix::sys::stat::stat;
+use std::ffi::CString;
 use std::fs;
-use std::os::fd::AsRawFd;
 use std::os::fd::RawFd;
+use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 use std::sync::mpsc::TryRecvError;
 use std::sync::mpsc::{Receiver, RecvError};
@@ -80,7 +80,7 @@ pub(crate) fn worker_thread_func(rx: Receiver<Box<OperationWithCallback>>) {
 
             // Increment counter:
             n_ops_received_from_user += 1;
-            fixed_fd +1;
+            fixed_fd + 1;
         }
 
         assert_ne!(n_tasks_in_flight_in_io_uring, 0);
@@ -118,17 +118,18 @@ pub(crate) fn worker_thread_func(rx: Receiver<Box<OperationWithCallback>>) {
     assert_eq!(n_ops_received_from_user, n_ops_completed);
 }
 
-fn create_sq_entries(mut op_with_callback: Box<OperationWithCallback>, fixed_fd: u32) -> Vec<squeue::Entry> {
+fn create_sq_entries(
+    mut op_with_callback: Box<OperationWithCallback>,
+    fixed_fd: u32,
+) -> Vec<squeue::Entry> {
     let op = op_with_callback.get_mut_operation().as_mut().unwrap();
 
     match op {
         Operation::Get {
             ref location,
             ref mut buffer,
-        } => create_sq_entry_for_get_op(location, buffer, fixed_fd),
+        } => create_sq_entry_for_get_op(op_with_callback, location, buffer, fixed_fd),
     }
-
-    // entry.user_data(Box::into_raw(op_with_callback) as u64);
 }
 
 fn get_filesize_bytes(location: &std::path::Path) -> i64 {
@@ -136,12 +137,21 @@ fn get_filesize_bytes(location: &std::path::Path) -> i64 {
 }
 
 fn create_sq_entry_for_get_op(
-    location: &PathBuf,
+    mut op_with_callback: Box<OperationWithCallback>,
+    path: &PathBuf,
     buffer: &mut Option<object_store::Result<Vec<u8>>>,
     fixed_fd: u32,
 ) -> Vec<squeue::Entry> {
+    // TODO: Test for these:
+    // - opcode::OpenAt2::CODE
+    // - opcode::Close::CODE
+    // - opcode::Socket::CODE // to ensure fixed table support
+
+    // See this comment for more information on chaining open, read, close in io_uring:
+    // https://github.com/JackKelly/light-speed-io/issues/1#issuecomment-1939244204
+
     // Get filesize: TODO: Use io_uring to get filesize; see issue #41.
-    let filesize_bytes = get_filesize_bytes(location);
+    let filesize_bytes = get_filesize_bytes(path);
 
     // Allocate vector:
     // TODO: Don't initialise to all-zeros. Issue #46.
@@ -150,31 +160,38 @@ fn create_sq_entry_for_get_op(
 
     let mut entries = Vec::with_capacity(3); // 3 Entries: open, read, close
 
-    // Prepare to open the file.
-    // This is a work in progress, and doesn't currently compile! See issue #1.
-    let open_how = OpenHow::new().flags(libc::O_DIRECT as u64); // TODO: I'm worried about this cast to u64!
-    entries.push(
-        opcode::OpenAt2::new(-1 as _, location.as_os_str().as_encoded_bytes().as_ptr() as _, &open_how)
+    // Prepare the "open" opcode:
+    // This code block is adapted from:
+    // https://github.com/tokio-rs/io-uring/blob/e3fa23ad338af1d051ac82e18688453a9b3d8376/io-uring-test/src/tests/fs.rs#L288-L295
+    let path = CString::new(path.as_os_str().as_bytes())
+        .expect("Could not convert path '{path}' to CString.");
+    let open_how = OpenHow::new().flags((libc::O_RDONLY | libc::O_DIRECT) as u64); // TODO: I'm worried about this cast to u64!
+    let file_index = types::DestinationSlot::try_from_slot_target(fixed_fd)
+        .expect("Could not allocate target slot. fixed_fd={fixed_fd}");
+    let open_op = opcode::OpenAt2::new(
+        types::Fd(0), // dirfd is ignored if the pathname is absolute. See the "openat()" section in https://man7.org/linux/man-pages/man2/openat.2.html
+        path.as_ptr(),
+        &open_how,
     );
+    let open_op = open_op.file_index(Some(file_index));
+    let open_op = open_op.build().user_data(0);
+    entries.push(open_op);
 
-    *fd = Some(
-        fs::OpenOptions::new()
-            .read(true)
-            // TODO: Use DIRECT mode to open files. And allow the user to choose.
-            // I'll worry about DIRECT mode after we open file using io_uring. Issue #1.
-            // .custom_flags(libc::O_DIRECT)
-            .open(location)
-            .unwrap(),
-    );
-
-    // Note that the developer needs to ensure
-    // that the entry pushed into submission queue is valid (e.g. fd, buffer).
-    opcode::Read::new(
-        types::Fd(fixed_fd),
+    // Prepare the "read" opcode:
+    let read_op = opcode::Read::new(
+        types::Fixed(fixed_fd),
         buffer.as_mut().unwrap().as_mut().unwrap().as_mut_ptr(),
         filesize_bytes as _,
     )
     .build()
+    .user_data(Box::into_raw(op_with_callback) as _); // TODO: Put the Box<OperationWithCallback> into here.
+    entries.push(read_op);
+
+    // Prepare the "close" opcode:
+    let close_op = opcode::Close::new(types::Fixed(fixed_fd))
+        .build()
+        .user_data(0);
+    entries.push(close_op);
 
     entries
 }
