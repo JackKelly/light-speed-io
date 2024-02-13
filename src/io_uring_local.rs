@@ -23,12 +23,15 @@ pub(crate) fn worker_thread_func(rx: Receiver<Box<OperationWithCallback>>) {
         .setup_sqpoll(1000) // The kernel sqpoll thread will sleep after this many milliseconds.
         // TODO: Allow the user to decide whether sqpoll is used.
         .build(SQ_RING_SIZE)
-        .unwrap();
+        .expect("Failed to initialise io_uring.");
 
     // Register "fixed" file descriptors, for use in chaining open, read, close:
     // TODO: We only need unique FDs for each file in flight in io_uring. WE should re-use SQ_RING_SIZE FDs!
-    let fds: Vec<RawFd> = (0..1000).map(|fd| RawFd::from(fd)).collect();
-    ring.submitter().register_files(&fds).unwrap();
+    // let _ = ring.submitter().unregister_files(); // Cleanup all fixed files (if any)
+    // let fds: Vec<RawFd> = (5..10).collect(); // .map(RawFd::from)
+    //ring.submitter()
+    //    .register_files(&[RawFd::from(3i32)]) // fds.as_slice()) // Huh. 3 or higher doesn't work?!?
+    //    .expect("Failed to register files with io_uring!");
 
     // Counters
     let mut n_tasks_in_flight_in_io_uring: u32 = 0;
@@ -41,7 +44,7 @@ pub(crate) fn worker_thread_func(rx: Receiver<Box<OperationWithCallback>>) {
         // Keep io_uring's submission queue topped up:
         // TODO: Extract this inner loop into a separate function!
         'inner: loop {
-            let mut op_with_callback = match n_tasks_in_flight_in_io_uring {
+            let op_with_callback = match n_tasks_in_flight_in_io_uring {
                 0 => match rx.recv() {
                     // There are no tasks in flight in io_uring, so all that's
                     // left to do is to wait for more `Operations` from the user.
@@ -126,13 +129,9 @@ fn create_sq_entries(
     mut op_with_callback: Box<OperationWithCallback>,
     fixed_fd: u32,
 ) -> Vec<squeue::Entry> {
-    let op = op_with_callback.get_mut_operation().as_mut().unwrap();
-
+    let op = op_with_callback.get_mut_operation().as_ref().unwrap();
     match op {
-        Operation::Get {
-            ref location,
-            ref mut buffer,
-        } => create_sq_entry_for_get_op(op_with_callback, location, buffer, fixed_fd),
+        Operation::Get { .. } => create_sq_entry_for_get_op(op_with_callback, fixed_fd),
     }
 }
 
@@ -142,14 +141,18 @@ fn get_filesize_bytes(location: &std::path::Path) -> i64 {
 
 fn create_sq_entry_for_get_op(
     mut op_with_callback: Box<OperationWithCallback>,
-    path: &PathBuf,
-    buffer: &mut Option<object_store::Result<Vec<u8>>>,
     fixed_fd: u32,
 ) -> Vec<squeue::Entry> {
     // TODO: Test for these:
     // - opcode::OpenAt2::CODE
     // - opcode::Close::CODE
     // - opcode::Socket::CODE // to ensure fixed table support
+
+    let (path, buffer) = match op_with_callback.get_mut_operation().as_mut().unwrap() {
+        Operation::Get {
+            location, buffer, ..
+        } => (location, buffer),
+    };
 
     // See this comment for more information on chaining open, read, close in io_uring:
     // https://github.com/JackKelly/light-speed-io/issues/1#issuecomment-1939244204
@@ -169,16 +172,20 @@ fn create_sq_entry_for_get_op(
     // https://github.com/tokio-rs/io-uring/blob/e3fa23ad338af1d051ac82e18688453a9b3d8376/io-uring-test/src/tests/fs.rs#L288-L295
     let path = CString::new(path.as_os_str().as_bytes())
         .expect("Could not convert path '{path}' to CString.");
-    let open_how = OpenHow::new().flags((libc::O_RDONLY | libc::O_DIRECT) as u64); // TODO: I'm worried about this cast to u64!
+    // let open_how = OpenHow::new().flags(libc::O_DIRECT as u64); // TODO: I'm worried about this cast to u64!
     let file_index = types::DestinationSlot::try_from_slot_target(fixed_fd)
         .expect("Could not allocate target slot. fixed_fd={fixed_fd}");
-    let open_op = opcode::OpenAt2::new(
+    let open_op = opcode::OpenAt::new(
         types::Fd(0), // dirfd is ignored if the pathname is absolute. See the "openat()" section in https://man7.org/linux/man-pages/man2/openat.2.html
         path.as_ptr(),
-        &open_how,
-    );
-    let open_op = open_op.file_index(Some(file_index));
-    let open_op = open_op.build().user_data(0);
+        // &open_how,
+    )
+    .file_index(Some(file_index))
+    .flags(libc::O_DIRECT)
+    .mode(libc::O_RDONLY as _)
+    .build()
+    .flags(squeue::Flags::IO_LINK)
+    .user_data(0); // TODO: user_data should refer to the Operation. See issue #54.
     entries.push(open_op);
 
     // Prepare the "read" opcode:
@@ -188,13 +195,14 @@ fn create_sq_entry_for_get_op(
         filesize_bytes as _,
     )
     .build()
+    .flags(squeue::Flags::IO_LINK)
     .user_data(Box::into_raw(op_with_callback) as _);
     entries.push(read_op);
 
     // Prepare the "close" opcode:
     let close_op = opcode::Close::new(types::Fixed(fixed_fd))
         .build()
-        .user_data(0);
+        .user_data(0); // TODO: user_data should refer to the Operation. See issue #54.
     entries.push(close_op);
 
     entries
