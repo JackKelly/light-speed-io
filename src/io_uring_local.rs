@@ -100,12 +100,12 @@ pub(crate) fn worker_thread_func(rx: Receiver<Box<OperationWithCallback>>) {
             // Handle errors reported by io_uring:
             if cqe.result() < 0 {
                 let err = nix::Error::from_i32(-cqe.result());
-                println!("Error from CQE: {:?}", err);
+                println!("Error from CQE: {:?}. user_data = {}", err, cqe.user_data());
                 // TODO: This error needs to be sent to the user and, ideally, associated with a filename.
                 // Something like: `Err(err.into())`. See issue #45.
             };
 
-            if cqe.user_data() == 0 {
+            if cqe.user_data() == 0 || cqe.user_data() == 1 {
                 // This is an `open` or `close` operation. For now, we ignore these.
                 // TODO: Keep track of `open` and `close` operations. See issue #54.
                 continue;
@@ -202,7 +202,7 @@ fn create_sq_entry_for_get_op(
     // Prepare the "close" opcode:
     let close_op = opcode::Close::new(types::Fixed(fixed_fd))
         .build()
-        .user_data(0); // TODO: user_data should refer to the Operation. See issue #54.
+        .user_data(1); // TODO: user_data should refer to the Operation. See issue #54.
     entries.push(close_op);
 
     entries
