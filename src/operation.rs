@@ -1,5 +1,6 @@
 use std::ffi::CString;
 
+use aligned_vec::{AVec, ConstAlign};
 use object_store::Result;
 
 pub struct OperationWithCallback {
@@ -49,6 +50,6 @@ pub(crate) enum Operation {
 
         // This is an `Option` for two reasons: 1) `buffer` will start life
         // _without_ an actual buffer! 2) So we can `take` the buffer.
-        buffer: Option<Result<Vec<u8>>>,
+        buffer: Option<Result<AVec<u8, ConstAlign<512>>>>,
     },
 }

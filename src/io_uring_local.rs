@@ -1,3 +1,6 @@
+use aligned_vec::avec;
+use aligned_vec::AVec;
+use aligned_vec::ConstAlign;
 use io_uring::cqueue;
 use io_uring::opcode;
 use io_uring::squeue;
@@ -166,7 +169,11 @@ fn create_sq_entry_for_get_op(
     // Allocate vector:
     // TODO: Don't initialise to all-zeros. Issue #46.
     // See https://doc.rust-lang.org/std/mem/union.MaybeUninit.html#initializing-an-array-element-by-element
-    let _ = *buffer.insert(Ok(vec![0; filesize_bytes as _]));
+    let mut vec: AVec<u8, ConstAlign<512>> = AVec::with_capacity(512, filesize_bytes as _);
+    for element in vec.iter_mut() {
+        *element = 0;
+    }
+    let _ = *buffer.insert(Ok(vec));
 
     // Prepare the "open" opcode:
     // This code block is adapted from:
@@ -179,7 +186,7 @@ fn create_sq_entry_for_get_op(
         path_ptr,
     )
     .file_index(Some(file_index))
-    .flags(libc::O_RDONLY) // | libc::O_DIRECT) // TODO: Re-enable O_DIRECT.
+    .flags(libc::O_RDONLY | libc::O_DIRECT) // TODO: Re-enable O_DIRECT.
     .build()
     .flags(squeue::Flags::IO_LINK)
     .user_data(0); // TODO: user_data should refer to the Operation. See issue #54.
