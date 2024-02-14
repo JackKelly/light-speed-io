@@ -11,7 +11,7 @@ use std::sync::mpsc::{Receiver, RecvError};
 use crate::operation::{Operation, OperationWithCallback};
 
 pub(crate) fn worker_thread_func(rx: Receiver<Box<OperationWithCallback>>) {
-    const SQ_RING_SIZE: u32 = 32; // TODO: Allow the user to configure SQ_RING_SIZE.
+    const SQ_RING_SIZE: u32 = 64; // TODO: Allow the user to configure SQ_RING_SIZE.
     const MAX_ENTRIES_PER_CHAIN: u32 = 3; // Maximum number of io_uring entries per io_uring chain.
     assert!(MAX_ENTRIES_PER_CHAIN < SQ_RING_SIZE);
     const MAX_ENTRIES_BEFORE_BREAKING_LOOP: u32 = SQ_RING_SIZE - MAX_ENTRIES_PER_CHAIN;
