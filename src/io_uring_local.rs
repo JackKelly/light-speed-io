@@ -166,12 +166,21 @@ fn create_sq_entry_for_get_op(
     // Get filesize: TODO: Use io_uring to get filesize; see issue #41.
     let filesize_bytes = get_filesize_bytes(path.as_c_str());
 
+    // Align buffer size to 512 bytes
+    const ALIGN_BYTES: usize = 512;
+    let buf_size_bytes = ((filesize_bytes as usize / ALIGN_BYTES) + 1) * ALIGN_BYTES;
+
     // Allocate vector:
     // TODO: Don't initialise to all-zeros. Issue #46.
     // See https://doc.rust-lang.org/std/mem/union.MaybeUninit.html#initializing-an-array-element-by-element
-    let mut vec: AVec<u8, ConstAlign<512>> = AVec::with_capacity(512, filesize_bytes as _);
-    for element in vec.iter_mut() {
-        *element = 0;
+    let mut vec: AVec<u8, ConstAlign<ALIGN_BYTES>> =
+        AVec::with_capacity(ALIGN_BYTES, buf_size_bytes as _);
+
+    // Deliberately only fill filesize_bytes (not buf_size_bytes) so we return a filesize_bytes
+    // vector to the user, even though we actually read buf_size_bytes!
+    // This loop is SLOW, though!
+    for _ in 0..filesize_bytes {
+        vec.push(0);
     }
     let _ = *buffer.insert(Ok(vec));
 
@@ -186,7 +195,7 @@ fn create_sq_entry_for_get_op(
         path_ptr,
     )
     .file_index(Some(file_index))
-    .flags(libc::O_RDONLY | libc::O_DIRECT) // TODO: Re-enable O_DIRECT.
+    .flags(libc::O_RDONLY | libc::O_DIRECT)
     .build()
     .flags(squeue::Flags::IO_LINK)
     .user_data(0); // TODO: user_data should refer to the Operation. See issue #54.
@@ -195,10 +204,10 @@ fn create_sq_entry_for_get_op(
     let read_op = opcode::Read::new(
         types::Fixed(fixed_fd),
         buffer.as_mut().unwrap().as_mut().unwrap().as_mut_ptr(),
-        filesize_bytes as _,
+        buf_size_bytes as _,
     )
     .build()
-    .flags(squeue::Flags::IO_LINK)
+    .flags(squeue::Flags::IO_HARDLINK)
     .user_data(Box::into_raw(op_with_callback) as _);
 
     // Prepare the "close" opcode:
