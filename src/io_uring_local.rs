@@ -5,9 +5,6 @@ use io_uring::types;
 use io_uring::IoUring;
 use nix::sys::stat::stat;
 use nix::NixPath;
-use std::ffi::CStr;
-use std::ffi::CString;
-use std::os::unix::ffi::OsStrExt;
 use std::sync::mpsc::TryRecvError;
 use std::sync::mpsc::{Receiver, RecvError};
 
@@ -49,7 +46,7 @@ pub(crate) fn worker_thread_func(rx: Receiver<Box<OperationWithCallback>>) {
                     Ok(s) => s,
                     Err(RecvError) => break 'outer, // The caller hung up.
                 },
-                MAX_ENTRIES_BEFORE_BREAKING_LOOP => {
+                MAX_ENTRIES_BEFORE_BREAKING_LOOP.. => {
                     // The SQ is full!
                     rx_might_have_more_data_waiting = true;
                     break 'inner;
@@ -68,9 +65,9 @@ pub(crate) fn worker_thread_func(rx: Receiver<Box<OperationWithCallback>>) {
             let entries = create_sq_entries_for_op(op_with_callback, fixed_fd);
             for entry in entries {
                 unsafe {
-                    ring.submission()
-                        .push(&entry)
-                        .expect("submission queue is full");
+                    ring.submission().push(&entry).unwrap_or_else(|err| {
+                        panic!("submission queue is full {err} {n_tasks_in_flight_in_io_uring}")
+                    });
                 }
                 n_tasks_in_flight_in_io_uring += 1;
             }
