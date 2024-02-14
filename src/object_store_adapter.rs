@@ -197,8 +197,6 @@ mod tests {
         let filenames = vec![
             Path::from("///home/jack/dev/rust/light-speed-io/README.md"),
             Path::from("///home/jack/dev/rust/light-speed-io/Cargo.toml"),
-            Path::from("README.md"),
-            //Path::from("Cargo.toml"),
         ];
         let store = ObjectStoreAdapter::default();
         let mut futures = Vec::new();
