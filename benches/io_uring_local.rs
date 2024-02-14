@@ -47,7 +47,7 @@ async fn load_files_with_local_file_system(filenames: &Vec<ObjectStorePath>) {
 }
 
 fn bench(c: &mut Criterion) {
-    const N_FILES: usize = 1000;
+    const N_FILES: usize = 14;
 
     // Configure group:
     let mut group = c.benchmark_group(format!("load_{N_FILES}_files"));

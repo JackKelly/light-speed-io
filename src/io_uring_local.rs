@@ -25,8 +25,10 @@ pub(crate) fn worker_thread_func(rx: Receiver<Box<OperationWithCallback>>) {
     // TODO: Only register enough FDs for the files in flight in io_uring. We should re-use SQ_RING_SIZE FDs! See issue #54.
     let _ = ring.submitter().unregister_files(); // Cleanup all fixed files (if any)
     ring.submitter()
-        .register_files_sparse(1000) // TODO: Only register enough direct FDs for the ops in flight!
+        .register_files_sparse(16) // TODO: Only register enough direct FDs for the ops in flight!
         .expect("Failed to register files!");
+    // io_uring supports a max of 16 registered ring descriptors. See:
+    // https://manpages.debian.org/unstable/liburing-dev/io_uring_register.2.en.html#IORING_REGISTER_RING_FDS
 
     // Counters
     let mut n_tasks_in_flight_in_io_uring: u32 = 0;
@@ -95,7 +97,9 @@ pub(crate) fn worker_thread_func(rx: Receiver<Box<OperationWithCallback>>) {
                 println!("Error from CQE: {:?}. user_data = {}", err, cqe.user_data());
                 // TODO: This error needs to be sent to the user and, ideally, associated with a filename.
                 // Something like: `Err(err.into())`. See issue #45.
-            };
+            } else {
+                //println!("Happy CQE!. user_data = {}", cqe.user_data());
+            }
 
             if cqe.user_data() == 0 || cqe.user_data() == 1 {
                 // This is an `open` or `close` operation. For now, we ignore these.
