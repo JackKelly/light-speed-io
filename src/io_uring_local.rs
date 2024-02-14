@@ -207,6 +207,8 @@ fn create_sq_entry_for_get_op(
         buf_size_bytes as _,
     )
     .build()
+    // We need a HARDLINK because read will complain that we're reading more data than
+    // exists on disk, because we need to align the read length to ALIGN_BYTES to use O_DIRECT.
     .flags(squeue::Flags::IO_HARDLINK)
     .user_data(Box::into_raw(op_with_callback) as _);
 
