@@ -1,8 +1,10 @@
 use bytes::Bytes;
 use object_store::{path::Path, Result};
 use snafu::{ensure, Snafu};
+use std::ffi::CString;
 use std::future::Future;
 use std::io;
+use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::{mpsc, Arc};
@@ -155,12 +157,10 @@ impl ObjectStoreAdapter {
     //       But I'm keeping things simple for now!
     pub fn get(&self, location: &Path) -> Pin<Box<dyn Future<Output = Result<Bytes>>>> {
         let path = self.config.path_to_filesystem(location).unwrap();
+        let path = CString::new(path.as_os_str().as_bytes())
+            .expect("Failed to convert path '{path}' to CString.");
 
-        let operation = Operation::Get {
-            location: path,
-            buffer: None,
-            fd: None,
-        };
+        let operation = Operation::Get { path, buffer: None };
 
         let (op_future, op_with_output) = OperationFuture::new(operation);
         self.worker_thread.send(op_with_output);
