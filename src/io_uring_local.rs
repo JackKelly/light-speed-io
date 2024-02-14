@@ -171,11 +171,8 @@ fn create_sq_entry_for_get_op(
     // This code block is adapted from:
     // https://github.com/tokio-rs/io-uring/blob/e3fa23ad338af1d051ac82e18688453a9b3d8376/io-uring-test/src/tests/fs.rs#L288-L295
     let path_ptr = path.as_ptr();
-
-    println!("path = {:?}", path);
     let file_index = types::DestinationSlot::try_from_slot_target(fixed_fd)
         .expect("Could not allocate target slot. fixed_fd={fixed_fd}");
-
     let open_op = opcode::OpenAt::new(
         types::Fd(-1), // dirfd is ignored if the pathname is absolute. See the "openat()" section in https://man7.org/linux/man-pages/man2/openat.2.html
         path_ptr,
