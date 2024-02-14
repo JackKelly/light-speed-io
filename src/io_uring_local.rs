@@ -4,6 +4,8 @@ use io_uring::squeue;
 use io_uring::types;
 use io_uring::IoUring;
 use nix::sys::stat::stat;
+use nix::NixPath;
+use std::ffi::CStr;
 use std::ffi::CString;
 use std::os::unix::ffi::OsStrExt;
 use std::sync::mpsc::TryRecvError;
@@ -124,8 +126,11 @@ fn submit_sq_entries_for_op(
     }
 }
 
-fn get_filesize_bytes(location: &std::path::Path) -> i64 {
-    stat(location).expect("Failed to get filesize!").st_size
+fn get_filesize_bytes<P>(path: &P) -> i64
+where
+    P: ?Sized + NixPath,
+{
+    stat(path).expect("Failed to get filesize!").st_size
 }
 
 fn create_sq_entry_for_get_op(
@@ -140,7 +145,9 @@ fn create_sq_entry_for_get_op(
 
     let (path, buffer) = match op_with_callback.get_mut_operation().as_mut().unwrap() {
         Operation::Get {
-            location, buffer, ..
+            path: location,
+            buffer,
+            ..
         } => (location, buffer),
     };
 
@@ -148,7 +155,7 @@ fn create_sq_entry_for_get_op(
     // https://github.com/JackKelly/light-speed-io/issues/1#issuecomment-1939244204
 
     // Get filesize: TODO: Use io_uring to get filesize; see issue #41.
-    let filesize_bytes = get_filesize_bytes(path);
+    let filesize_bytes = get_filesize_bytes(path.as_c_str());
 
     // Allocate vector:
     // TODO: Don't initialise to all-zeros. Issue #46.
@@ -158,8 +165,6 @@ fn create_sq_entry_for_get_op(
     // Prepare the "open" opcode:
     // This code block is adapted from:
     // https://github.com/tokio-rs/io-uring/blob/e3fa23ad338af1d051ac82e18688453a9b3d8376/io-uring-test/src/tests/fs.rs#L288-L295
-    let path = CString::new(path.as_os_str().as_bytes())
-        .expect("Could not convert path '{path}' to CString.");
     let path_ptr = path.as_ptr();
 
     println!("path = {:?}", path);
@@ -205,11 +210,6 @@ fn create_sq_entry_for_get_op(
             .push(&close_op)
             .expect("submission queue is full");
     }
-
-    // TODO: Don't submit_and_wait() here! This is just to get something working for now!
-    ring.submit_and_wait(1).unwrap();
-
-    println!("{path:?}, {path_ptr:?}");
 
     3
 }
