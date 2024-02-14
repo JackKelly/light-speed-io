@@ -65,8 +65,15 @@ pub(crate) fn worker_thread_func(rx: Receiver<Box<OperationWithCallback>>) {
             };
 
             // Convert `Operation` to one or more `squeue::Entry`, and submit to io_uring.
-            n_tasks_in_flight_in_io_uring +=
-                submit_sq_entries_for_op(&mut ring, op_with_callback, fixed_fd);
+            let entries = create_sq_entries_for_op(op_with_callback, fixed_fd);
+            for entry in entries {
+                unsafe {
+                    ring.submission()
+                        .push(&entry)
+                        .expect("submission queue is full");
+                }
+                n_tasks_in_flight_in_io_uring += 1;
+            }
 
             // Increment counter:
             n_ops_received_from_user += 1;
@@ -115,14 +122,13 @@ pub(crate) fn worker_thread_func(rx: Receiver<Box<OperationWithCallback>>) {
     assert_eq!(n_ops_received_from_user, n_user_ops_completed);
 }
 
-fn submit_sq_entries_for_op(
-    ring: &mut IoUring,
+fn create_sq_entries_for_op(
     mut op_with_callback: Box<OperationWithCallback>,
     fixed_fd: u32,
-) -> u32 {
+) -> [squeue::Entry; 3] {
     let op = op_with_callback.get_mut_operation().as_ref().unwrap();
     match op {
-        Operation::Get { .. } => create_sq_entry_for_get_op(ring, op_with_callback, fixed_fd),
+        Operation::Get { .. } => create_sq_entry_for_get_op(op_with_callback, fixed_fd),
     }
 }
 
@@ -134,10 +140,9 @@ where
 }
 
 fn create_sq_entry_for_get_op(
-    ring: &mut IoUring,
     mut op_with_callback: Box<OperationWithCallback>,
     fixed_fd: u32,
-) -> u32 {
+) -> [squeue::Entry; 3] {
     // TODO: Test for these:
     // - opcode::OpenAt2::CODE
     // - opcode::Close::CODE
@@ -180,11 +185,6 @@ fn create_sq_entry_for_get_op(
     .build()
     .flags(squeue::Flags::IO_LINK)
     .user_data(0); // TODO: user_data should refer to the Operation. See issue #54.
-    unsafe {
-        ring.submission()
-            .push(&open_op)
-            .expect("submission queue is full");
-    }
 
     // Prepare the "read" opcode:
     let read_op = opcode::Read::new(
@@ -195,21 +195,11 @@ fn create_sq_entry_for_get_op(
     .build()
     .flags(squeue::Flags::IO_LINK)
     .user_data(Box::into_raw(op_with_callback) as _);
-    unsafe {
-        ring.submission()
-            .push(&read_op)
-            .expect("submission queue is full");
-    }
 
     // Prepare the "close" opcode:
     let close_op = opcode::Close::new(types::Fixed(fixed_fd))
         .build()
         .user_data(1); // TODO: user_data should refer to the Operation. See issue #54.
-    unsafe {
-        ring.submission()
-            .push(&close_op)
-            .expect("submission queue is full");
-    }
 
-    3
+    [open_op, read_op, close_op]
 }
