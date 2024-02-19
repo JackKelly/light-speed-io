@@ -12,13 +12,13 @@ use std::sync::mpsc::{Receiver, RecvError};
 use crate::operation::{Operation, OperationWithCallback};
 
 struct OpTracker<const N: usize> {
-    ops_in_flight: [Option<*mut OperationWithCallback>; N],
+    ops_in_flight: [Option<OperationWithCallback>; N],
     next_index: VecDeque<usize>,
 }
 
 impl<const N: usize> OpTracker<N> {
     fn new() -> Self {
-        const ARRAY_REPEAT_VALUE: Option<*mut OperationWithCallback> = None;
+        const ARRAY_REPEAT_VALUE: Option<OperationWithCallback> = None;
         Self {
             ops_in_flight: [ARRAY_REPEAT_VALUE; N],
             next_index: (0..N).collect(),
@@ -31,19 +31,15 @@ impl<const N: usize> OpTracker<N> {
             .expect("next_index should not be empty!")
     }
 
-    /// Store an OperationWithCallback and return the index into which that
-    /// OperationWithCallback has been stored.
     fn put(&mut self, index: usize, op: OperationWithCallback) {
-        let op = Box::new(op);
-        self.ops_in_flight[index].replace(Box::into_raw(op));
+        self.ops_in_flight[index].replace(op);
     }
 
     fn remove(&mut self, index: usize) -> OperationWithCallback {
         self.next_index.push_back(index);
-        let ptr = self.ops_in_flight[index]
+        self.ops_in_flight[index]
             .take()
-            .expect("No Operation found at index {index}!");
-        unsafe { *Box::from_raw(ptr) }
+            .expect("No Operation found at index {index}!")
     }
 }
 
