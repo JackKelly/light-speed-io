@@ -195,8 +195,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn test_get_with_io_uring_local() {
         let filenames = vec![
-            Path::from("///home/jack/dev/rust/light-speed-io/README.md"),
-            Path::from("///home/jack/dev/rust/light-speed-io/Cargo.toml"),
+            Path::from("/home/jack/dev/rust/light-speed-io/README.md"),
+            Path::from("/home/jack/dev/rust/light-speed-io/Cargo.toml"),
         ];
         let store = ObjectStoreAdapter::default();
         let mut futures = Vec::new();
