@@ -107,17 +107,17 @@ impl Config {
 #[derive(Debug)]
 struct WorkerThread {
     handle: thread::JoinHandle<()>,
-    sender: mpsc::Sender<OperationWithCallback>, // Channel to send ops to the worker thread
+    sender: mpsc::Sender<Box<OperationWithCallback>>, // Channel to send ops to the worker thread
 }
 
 impl WorkerThread {
-    pub fn new(worker_thread_func: fn(mpsc::Receiver<OperationWithCallback>)) -> Self {
+    pub fn new(worker_thread_func: fn(mpsc::Receiver<Box<OperationWithCallback>>)) -> Self {
         let (sender, rx) = mpsc::channel();
         let handle = thread::spawn(move || worker_thread_func(rx));
         Self { handle, sender }
     }
 
-    pub fn send(&self, op_with_output: OperationWithCallback) {
+    pub fn send(&self, op_with_output: Box<OperationWithCallback>) {
         self.sender
             .send(op_with_output)
             .expect("Failed to send message to worker thread!");
@@ -138,7 +138,7 @@ impl Default for ObjectStoreAdapter {
 
 impl ObjectStoreAdapter {
     /// Create new filesystem storage with no prefix
-    pub fn new(func_for_get_thread: fn(mpsc::Receiver<OperationWithCallback>)) -> Self {
+    pub fn new(func_for_get_thread: fn(mpsc::Receiver<Box<OperationWithCallback>>)) -> Self {
         Self {
             config: Arc::new(Config {
                 root: Url::parse("file:///").unwrap(),

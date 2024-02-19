@@ -15,7 +15,7 @@ pub(crate) struct OperationFuture {
 }
 
 impl OperationFuture {
-    pub(crate) fn new(operation: Operation) -> (Self, OperationWithCallback) {
+    pub(crate) fn new(operation: Operation) -> (Self, Box<OperationWithCallback>) {
         let waker_and_op = Arc::new(Mutex::new(WakerAndOperation::new()));
 
         // When the operation completes, we want to call `wake()` to wake the async executor.
@@ -28,7 +28,7 @@ impl OperationFuture {
 
         (
             Self { waker_and_op },
-            OperationWithCallback::new(operation, callback),
+            Box::new(OperationWithCallback::new(operation, callback)),
         )
     }
 }
