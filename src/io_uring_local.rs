@@ -5,14 +5,16 @@ use io_uring::types;
 use io_uring::IoUring;
 use nix::sys::stat::stat;
 use nix::NixPath;
+use std::collections::VecDeque;
 use std::sync::mpsc::TryRecvError;
 use std::sync::mpsc::{Receiver, RecvError};
 
 use crate::{operation::Operation, operation::OperationWithCallback, tracker::Tracker};
 
 pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
-    const SQ_RING_SIZE: usize = 48; // TODO: Allow the user to configure SQ_RING_SIZE.
+    const MAX_FILES_IN_FLIGHT: usize = 16;
     const MAX_ENTRIES_PER_CHAIN: usize = 3; // Maximum number of io_uring entries per io_uring chain.
+    const SQ_RING_SIZE: usize = MAX_FILES_IN_FLIGHT * MAX_ENTRIES_PER_CHAIN; // TODO: Allow the user to configure SQ_RING_SIZE.
     assert!(MAX_ENTRIES_PER_CHAIN < SQ_RING_SIZE);
     const MAX_ENTRIES_BEFORE_BREAKING_LOOP: usize = SQ_RING_SIZE - MAX_ENTRIES_PER_CHAIN;
     let mut ring: IoUring<squeue::Entry, cqueue::Entry> = io_uring::IoUring::builder()
@@ -25,17 +27,17 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
     // TODO: Only register enough FDs for the files in flight in io_uring. We should re-use SQ_RING_SIZE FDs! See issue #54.
     let _ = ring.submitter().unregister_files(); // Cleanup all fixed files (if any)
     ring.submitter()
-        .register_files_sparse(16) // TODO: Only register enough direct FDs for the ops in flight!
+        .register_files_sparse(MAX_FILES_IN_FLIGHT as _) // TODO: Only register enough direct FDs for the ops in flight!
         .expect("Failed to register files!");
     // io_uring supports a max of 16 registered ring descriptors. See:
     // https://manpages.debian.org/unstable/liburing-dev/io_uring_register.2.en.html#IORING_REGISTER_RING_FDS
+    let mut next_file_descriptor: VecDeque<u32> = (0..MAX_FILES_IN_FLIGHT as u32).collect();
 
     // Counters
     let mut n_tasks_in_flight_in_io_uring: usize = 0;
     let mut n_ops_received_from_user: u32 = 0;
     let mut n_user_ops_completed: u32 = 0;
     let mut rx_might_have_more_data_waiting: bool;
-    let mut fixed_fd: u32 = 0;
 
     // Track ops in flight
     let mut op_tracker = Tracker::new(SQ_RING_SIZE);
@@ -44,32 +46,41 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
         // Keep io_uring's submission queue topped up:
         // TODO: Extract this inner loop into a separate function!
         'inner: loop {
-            let mut op_with_callback = match n_tasks_in_flight_in_io_uring {
-                0 => match rx.recv() {
+            let (mut op_with_callback, fd) = match (
+                n_tasks_in_flight_in_io_uring,
+                next_file_descriptor.pop_front(),
+            ) {
+                (0, Some(fd)) => match rx.recv() {
                     // There are no tasks in flight in io_uring, so all that's
                     // left to do is to wait for more `Operations` from the user.
-                    Ok(s) => s,
+                    Ok(s) => (s, fd),
                     Err(RecvError) => break 'outer, // The caller hung up.
                 },
-                MAX_ENTRIES_BEFORE_BREAKING_LOOP.. => {
+                (MAX_ENTRIES_BEFORE_BREAKING_LOOP.., _) => {
                     // The SQ is full!
                     rx_might_have_more_data_waiting = true;
                     break 'inner;
                 }
-                _ => match rx.try_recv() {
-                    Ok(s) => s,
+                (_, Some(fd)) => match rx.try_recv() {
+                    Ok(s) => (s, fd),
                     Err(TryRecvError::Empty) => {
                         rx_might_have_more_data_waiting = false;
                         break 'inner;
                     }
                     Err(TryRecvError::Disconnected) => break 'outer,
                 },
+                (_, None) => {
+                    // We can't handle any more files right now!
+                    rx_might_have_more_data_waiting = true;
+                    break 'inner;
+                }
             };
 
             let index_of_op = op_tracker.get_next_index().unwrap();
+            op_with_callback.fd = Some(fd);
 
             // Convert `Operation` to one or more `squeue::Entry`, and submit to io_uring.
-            let entries = create_sq_entries_for_op(&mut op_with_callback, index_of_op, fixed_fd);
+            let entries = create_sq_entries_for_op(&mut op_with_callback, index_of_op);
             op_tracker.put(index_of_op, op_with_callback);
             for entry in entries {
                 unsafe {
@@ -82,7 +93,6 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
 
             // Increment counter:
             n_ops_received_from_user += 1;
-            fixed_fd += 1;
         }
 
         assert_ne!(n_tasks_in_flight_in_io_uring, 0);
@@ -123,6 +133,7 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
 
             // Get the associated `OperationWithCallback` and call `execute_callback()`!
             let mut op_with_callback = op_tracker.remove(index_of_op).unwrap();
+            next_file_descriptor.push_back(op_with_callback.fd.unwrap());
             op_with_callback.execute_callback();
 
             if rx_might_have_more_data_waiting && i > (SQ_RING_SIZE / 2) as _ {
@@ -137,13 +148,10 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
 fn create_sq_entries_for_op(
     op_with_callback: &mut OperationWithCallback,
     index_of_op: usize,
-    fixed_fd: u32,
 ) -> [squeue::Entry; 3] {
     let op = op_with_callback.get_mut_operation().as_ref().unwrap();
     match op {
-        Operation::Get { .. } => {
-            create_sq_entry_for_get_op(op_with_callback, index_of_op, fixed_fd)
-        }
+        Operation::Get { .. } => create_sq_entry_for_get_op(op_with_callback, index_of_op),
     }
 }
 
@@ -157,13 +165,13 @@ where
 fn create_sq_entry_for_get_op(
     op_with_callback: &mut OperationWithCallback,
     index_of_op: usize,
-    fixed_fd: u32,
 ) -> [squeue::Entry; 3] {
     // TODO: Test for these:
     // - opcode::OpenAt2::CODE
     // - opcode::Close::CODE
     // - opcode::Socket::CODE // to ensure fixed table support
 
+    let fixed_fd = op_with_callback.fd.unwrap();
     let (path, buffer) = match op_with_callback.get_mut_operation().as_mut().unwrap() {
         Operation::Get {
             path: location,

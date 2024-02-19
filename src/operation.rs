@@ -6,6 +6,8 @@ pub struct OperationWithCallback {
     // This is a `Option` so we can `take` it.
     operation: Option<Operation>,
 
+    pub fd: Option<u32>,
+
     // The callback function will be called when the operation completes.
     // The callback function can be an empty closure.
     // This is an `Option` so we can `take` it.
@@ -19,6 +21,7 @@ impl OperationWithCallback {
     {
         Self {
             operation: Some(operation),
+            fd: None,
             callback: Some(Box::new(callback)),
         }
     }
