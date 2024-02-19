@@ -7,9 +7,11 @@ use tokio::runtime::Runtime;
 const FILE_SIZE_BYTES: usize = 262_144;
 const DATA_PATH: &str = "/home/jack/temp/fio/";
 
-async fn load_files_with_io_uring_local(filenames: &Vec<ObjectStorePath>) {
+async fn load_files_with_io_uring_local(
+    store: ObjectStoreAdapter,
+    filenames: &Vec<ObjectStorePath>,
+) {
     // Start reading async:
-    let store = ObjectStoreAdapter::default();
     let mut futures = Vec::with_capacity(filenames.len());
     for filename in filenames {
         futures.push(store.get(filename));
@@ -22,14 +24,16 @@ async fn load_files_with_io_uring_local(filenames: &Vec<ObjectStorePath>) {
     }
 }
 
-async fn load_files_with_local_file_system(filenames: &Vec<ObjectStorePath>) {
+async fn load_files_with_local_file_system(
+    store: object_store::local::LocalFileSystem,
+    filenames: &Vec<ObjectStorePath>,
+) {
     // Unfortunately, I can't find a better way to share code between `load_files_with_io_uring_local`
     // and `load_files_with_local_file_system` because `ObjectStoreAdapter` doesn't yet `impl ObjectStore`.
     // And `ObjectStoreAdapter::get` and `LocalFileSystem::get` return slightly different types.
     // TODO: Reduce duplication if/when `ObjectStoreAdapter` implements `ObjectStore`.
 
     // Start reading async:
-    let store = object_store::local::LocalFileSystem::default();
     let mut futures = Vec::with_capacity(filenames.len());
     for filename in filenames {
         futures.push(store.get(filename));
@@ -68,9 +72,9 @@ fn bench(c: &mut Criterion) {
         b.to_async(Runtime::new().unwrap()).iter_batched(
             || {
                 clear_page_cache();
-                &filenames
+                (ObjectStoreAdapter::default(), &filenames)
             },
-            |filenames| async { load_files_with_io_uring_local(filenames).await },
+            |(store, filenames)| async { load_files_with_io_uring_local(store, filenames).await },
             criterion::BatchSize::SmallInput,
         );
     });
@@ -82,9 +86,11 @@ fn bench(c: &mut Criterion) {
         b.to_async(Runtime::new().unwrap()).iter_batched(
             || {
                 clear_page_cache();
-                &filenames
+                (object_store::local::LocalFileSystem::default(), &filenames)
             },
-            |filenames| async { load_files_with_local_file_system(filenames).await },
+            |(store, filenames)| async {
+                load_files_with_local_file_system(store, filenames).await
+            },
             criterion::BatchSize::SmallInput,
         );
     });
