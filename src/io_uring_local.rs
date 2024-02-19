@@ -12,7 +12,8 @@ use std::sync::mpsc::{Receiver, RecvError};
 use crate::operation::{Operation, OperationWithCallback};
 
 struct OpTracker {
-    ops_in_flight: Vec<Option<OperationWithCallback>>,
+    // TODO: Try removing this Box, after #43 is implemented.
+    ops_in_flight: Vec<Option<Box<OperationWithCallback>>>,
     next_index: VecDeque<usize>,
 }
 
@@ -31,12 +32,13 @@ impl OpTracker {
     }
 
     fn put(&mut self, index: usize, op: OperationWithCallback) {
+        let op = Box::new(op);
         self.ops_in_flight[index].replace(op);
     }
 
     fn remove(&mut self, index: usize) -> OperationWithCallback {
         self.next_index.push_back(index);
-        self.ops_in_flight[index]
+        *self.ops_in_flight[index]
             .take()
             .expect("No Operation found at index {index}!")
     }
