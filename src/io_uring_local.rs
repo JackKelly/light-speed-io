@@ -6,19 +6,20 @@ use io_uring::IoUring;
 use nix::sys::stat::stat;
 use nix::NixPath;
 use std::collections::VecDeque;
+use std::mem::ManuallyDrop;
 use std::sync::mpsc::TryRecvError;
 use std::sync::mpsc::{Receiver, RecvError};
 
 use crate::operation::{Operation, OperationWithCallback};
 
 struct OpTracker<const N: usize> {
-    ops_in_flight: [Option<Box<OperationWithCallback>>; N],
+    ops_in_flight: [Option<ManuallyDrop<OperationWithCallback>>; N],
     next_index: VecDeque<usize>,
 }
 
 impl<const N: usize> OpTracker<N> {
     fn new() -> Self {
-        const ARRAY_REPEAT_VALUE: Option<Box<OperationWithCallback>> = None;
+        const ARRAY_REPEAT_VALUE: Option<ManuallyDrop<OperationWithCallback>> = None;
         Self {
             ops_in_flight: [ARRAY_REPEAT_VALUE; N],
             next_index: (0..N).collect(),
@@ -32,15 +33,15 @@ impl<const N: usize> OpTracker<N> {
     }
 
     fn put(&mut self, index: usize, op: OperationWithCallback) {
-        let op = Box::new(op);
-        self.ops_in_flight[index].replace(op);
+        self.ops_in_flight[index].replace(ManuallyDrop::new(op));
     }
 
     fn remove(&mut self, index: usize) -> OperationWithCallback {
         self.next_index.push_back(index);
-        *self.ops_in_flight[index]
+        let ptr = self.ops_in_flight[index]
             .take()
-            .expect("No Operation found at index {index}!")
+            .expect("No Operation found at index {index}!");
+        ManuallyDrop::into_inner(ptr)
     }
 }
 
