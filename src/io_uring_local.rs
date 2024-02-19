@@ -218,7 +218,7 @@ fn create_sq_entry_for_get_op(
     // Allocate vector:
     // TODO: Don't initialise to all-zeros. Issue #46.
     // See https://doc.rust-lang.org/std/mem/union.MaybeUninit.html#initializing-an-array-element-by-element
-    let mut buf = vec![0; filesize_bytes as _];
+    let mut buf = Vec::with_capacity(filesize_bytes as _);
 
     // Convert the index_of_op into a u64, and bit-shift it left.
     // We do this so the u64 io_uring user_data represents the index_of_op in the left-most 32 bits,
@@ -251,6 +251,9 @@ fn create_sq_entry_for_get_op(
     .flags(squeue::Flags::IO_LINK)
     .user_data(index_of_op | (opcode::Read::CODE as u64));
 
+    unsafe {
+        buf.set_len(filesize_bytes as _);
+    }
     let _ = *buffer.insert(Ok(buf));
 
     // Prepare the "close" opcode:
