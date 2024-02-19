@@ -6,14 +6,13 @@ use io_uring::IoUring;
 use nix::sys::stat::stat;
 use nix::NixPath;
 use std::collections::VecDeque;
-use std::pin::Pin;
 use std::sync::mpsc::TryRecvError;
 use std::sync::mpsc::{Receiver, RecvError};
 
 use crate::operation::{Operation, OperationWithCallback};
 
 struct OpTracker {
-    ops_in_flight: Vec<Option<Pin<Box<OperationWithCallback>>>>,
+    ops_in_flight: Vec<Option<OperationWithCallback>>,
     next_index: VecDeque<usize>,
 }
 
@@ -31,11 +30,11 @@ impl OpTracker {
             .expect("next_index should not be empty!")
     }
 
-    fn put(&mut self, index: usize, op: Pin<Box<OperationWithCallback>>) {
+    fn put(&mut self, index: usize, op: OperationWithCallback) {
         self.ops_in_flight[index].replace(op);
     }
 
-    fn remove(&mut self, index: usize) -> Pin<Box<OperationWithCallback>> {
+    fn remove(&mut self, index: usize) -> OperationWithCallback {
         self.next_index.push_back(index);
         self.ops_in_flight[index]
             .take()
@@ -43,7 +42,7 @@ impl OpTracker {
     }
 }
 
-pub(crate) fn worker_thread_func(rx: Receiver<Pin<Box<OperationWithCallback>>>) {
+pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
     const SQ_RING_SIZE: usize = 48; // TODO: Allow the user to configure SQ_RING_SIZE.
     const MAX_ENTRIES_PER_CHAIN: usize = 3; // Maximum number of io_uring entries per io_uring chain.
     assert!(MAX_ENTRIES_PER_CHAIN < SQ_RING_SIZE);
