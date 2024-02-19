@@ -12,13 +12,13 @@ use std::sync::mpsc::{Receiver, RecvError};
 use crate::operation::{Operation, OperationWithCallback};
 
 struct OpTracker<const N: usize> {
-    ops_in_flight: [Option<Box<OperationWithCallback>>; N],
+    ops_in_flight: [Option<OperationWithCallback>; N],
     next_index: VecDeque<usize>,
 }
 
 impl<const N: usize> OpTracker<N> {
     fn new() -> Self {
-        const ARRAY_REPEAT_VALUE: Option<Box<OperationWithCallback>> = None;
+        const ARRAY_REPEAT_VALUE: Option<OperationWithCallback> = None;
         Self {
             ops_in_flight: [ARRAY_REPEAT_VALUE; N],
             next_index: (0..N).collect(),
@@ -33,17 +33,17 @@ impl<const N: usize> OpTracker<N> {
 
     /// Store an OperationWithCallback and return the index into which that
     /// OperationWithCallback has been stored.
-    fn put(&mut self, index: usize, op: Box<OperationWithCallback>) {
+    fn put(&mut self, index: usize, op: OperationWithCallback) {
         let index = self.ops_in_flight[index].replace(op);
     }
 
-    fn get_mut(&mut self, index: usize) -> &mut Box<OperationWithCallback> {
+    fn get_mut(&mut self, index: usize) -> &mut OperationWithCallback {
         self.ops_in_flight[index]
             .as_mut()
             .expect("No Operation found at index {index}!")
     }
 
-    fn remove(&mut self, index: usize) -> Box<OperationWithCallback> {
+    fn remove(&mut self, index: usize) -> OperationWithCallback {
         self.next_index.push_back(index);
         self.ops_in_flight[index]
             .take()
@@ -51,7 +51,7 @@ impl<const N: usize> OpTracker<N> {
     }
 }
 
-pub(crate) fn worker_thread_func(rx: Receiver<Box<OperationWithCallback>>) {
+pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
     const SQ_RING_SIZE: usize = 48; // TODO: Allow the user to configure SQ_RING_SIZE.
     const MAX_ENTRIES_PER_CHAIN: usize = 3; // Maximum number of io_uring entries per io_uring chain.
     assert!(MAX_ENTRIES_PER_CHAIN < SQ_RING_SIZE);
