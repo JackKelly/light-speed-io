@@ -140,8 +140,9 @@ pub(crate) fn worker_thread_func(rx: Receiver<Box<OperationWithCallback>>) {
 
             // user_data holds the io_uring opcode in the lower 32 bits,
             // and holds the index_of_op in the upper 32 bits.
-            let uring_opcode = (cqe.user_data() & 0xFFFFFFFF) as u8;
-            let index_of_op = (cqe.user_data() >> 32) as usize;
+            let user_data = cqe.user_data();
+            let uring_opcode = (user_data & 0xFFFFFFFF) as u8;
+            let index_of_op = (user_data >> 32) as usize;
 
             // Handle errors reported by io_uring:
             if cqe.result() < 0 {
