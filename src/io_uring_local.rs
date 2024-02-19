@@ -5,20 +5,60 @@ use io_uring::types;
 use io_uring::IoUring;
 use nix::sys::stat::stat;
 use nix::NixPath;
+use std::collections::VecDeque;
 use std::sync::mpsc::TryRecvError;
 use std::sync::mpsc::{Receiver, RecvError};
 
 use crate::operation::{Operation, OperationWithCallback};
 
-pub(crate) fn worker_thread_func(rx: Receiver<Box<OperationWithCallback>>) {
-    const SQ_RING_SIZE: u32 = 48; // TODO: Allow the user to configure SQ_RING_SIZE.
-    const MAX_ENTRIES_PER_CHAIN: u32 = 3; // Maximum number of io_uring entries per io_uring chain.
+struct OpTracker<const N: usize> {
+    ops_in_flight: [Option<OperationWithCallback>; N],
+    next_index: VecDeque<usize>,
+}
+
+impl<const N: usize> OpTracker<N> {
+    fn new() -> Self {
+        const ARRAY_REPEAT_VALUE: Option<OperationWithCallback> = None;
+        Self {
+            ops_in_flight: [ARRAY_REPEAT_VALUE; N],
+            next_index: (0..N).collect(),
+        }
+    }
+
+    /// Store an OperationWithCallback and return the index into which that
+    /// OperationWithCallback has been stored.
+    fn push(&mut self, op: OperationWithCallback) -> usize {
+        let index = self
+            .next_index
+            .pop_front()
+            .expect("next_index should not be empty!");
+        self.ops_in_flight[index] = Some(op);
+        index
+    }
+
+    fn get_mut(&self, index: usize) -> &mut OperationWithCallback {
+        self.ops_in_flight[index]
+            .as_mut()
+            .expect("No Operation found at index {index}")
+    }
+
+    fn remove(&mut self, index: usize) -> OperationWithCallback {
+        self.next_index.push_back(index);
+        self.ops_in_flight[index]
+            .take()
+            .expect("No Operation found at index {index}!")
+    }
+}
+
+pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
+    const SQ_RING_SIZE: usize = 48; // TODO: Allow the user to configure SQ_RING_SIZE.
+    const MAX_ENTRIES_PER_CHAIN: usize = 3; // Maximum number of io_uring entries per io_uring chain.
     assert!(MAX_ENTRIES_PER_CHAIN < SQ_RING_SIZE);
-    const MAX_ENTRIES_BEFORE_BREAKING_LOOP: u32 = SQ_RING_SIZE - MAX_ENTRIES_PER_CHAIN;
+    const MAX_ENTRIES_BEFORE_BREAKING_LOOP: usize = SQ_RING_SIZE - MAX_ENTRIES_PER_CHAIN;
     let mut ring: IoUring<squeue::Entry, cqueue::Entry> = io_uring::IoUring::builder()
         .setup_sqpoll(1000) // The kernel sqpoll thread will sleep after this many milliseconds.
         // TODO: Allow the user to decide whether sqpoll is used.
-        .build(SQ_RING_SIZE)
+        .build(SQ_RING_SIZE as _)
         .expect("Failed to initialise io_uring.");
 
     // Register "fixed" file descriptors, for use in chaining open, read, close:
@@ -31,11 +71,14 @@ pub(crate) fn worker_thread_func(rx: Receiver<Box<OperationWithCallback>>) {
     // https://manpages.debian.org/unstable/liburing-dev/io_uring_register.2.en.html#IORING_REGISTER_RING_FDS
 
     // Counters
-    let mut n_tasks_in_flight_in_io_uring: u32 = 0;
+    let mut n_tasks_in_flight_in_io_uring: usize = 0;
     let mut n_ops_received_from_user: u32 = 0;
     let mut n_user_ops_completed: u32 = 0;
     let mut rx_might_have_more_data_waiting: bool;
     let mut fixed_fd: u32 = 0;
+
+    // Track ops in flight
+    let op_tracker = OpTracker::<SQ_RING_SIZE>::new();
 
     'outer: loop {
         // Keep io_uring's submission queue topped up:
@@ -63,8 +106,11 @@ pub(crate) fn worker_thread_func(rx: Receiver<Box<OperationWithCallback>>) {
                 },
             };
 
+            let index_of_op = op_tracker.push(op_with_callback);
+
             // Convert `Operation` to one or more `squeue::Entry`, and submit to io_uring.
-            let entries = create_sq_entries_for_op(op_with_callback, fixed_fd);
+            let entries =
+                create_sq_entries_for_op(op_tracker.get_mut(index_of_op), index_of_op, fixed_fd);
             for entry in entries {
                 unsafe {
                     ring.submission().push(&entry).unwrap_or_else(|err| {
@@ -124,12 +170,15 @@ pub(crate) fn worker_thread_func(rx: Receiver<Box<OperationWithCallback>>) {
 }
 
 fn create_sq_entries_for_op(
-    mut op_with_callback: Box<OperationWithCallback>,
+    op_with_callback: &mut OperationWithCallback,
+    index_of_op: usize,
     fixed_fd: u32,
 ) -> [squeue::Entry; 3] {
     let op = op_with_callback.get_mut_operation().as_ref().unwrap();
     match op {
-        Operation::Get { .. } => create_sq_entry_for_get_op(op_with_callback, fixed_fd),
+        Operation::Get { .. } => {
+            create_sq_entry_for_get_op(op_with_callback, index_of_op, fixed_fd)
+        }
     }
 }
 
@@ -141,7 +190,8 @@ where
 }
 
 fn create_sq_entry_for_get_op(
-    mut op_with_callback: Box<OperationWithCallback>,
+    op_with_callback: &mut OperationWithCallback,
+    index_of_op: usize,
     fixed_fd: u32,
 ) -> [squeue::Entry; 3] {
     // TODO: Test for these:
@@ -192,7 +242,7 @@ fn create_sq_entry_for_get_op(
     )
     .build()
     .flags(squeue::Flags::IO_LINK)
-    .user_data(Box::into_raw(op_with_callback) as _);
+    .user_data(index_of_op as _); // TODO: Also include the OPCODE.
 
     // Prepare the "close" opcode:
     let close_op = opcode::Close::new(types::Fixed(fixed_fd))
