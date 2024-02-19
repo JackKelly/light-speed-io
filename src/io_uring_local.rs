@@ -5,11 +5,10 @@ use io_uring::types;
 use io_uring::IoUring;
 use nix::sys::stat::stat;
 use nix::NixPath;
-use std::collections::VecDeque;
 use std::sync::mpsc::TryRecvError;
 use std::sync::mpsc::{Receiver, RecvError};
 
-use crate::{operation::Operation, operation::OperationWithCallback, optracker::OpTracker};
+use crate::{operation::Operation, operation::OperationWithCallback, tracker::Tracker};
 
 pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
     const SQ_RING_SIZE: usize = 48; // TODO: Allow the user to configure SQ_RING_SIZE.
@@ -39,7 +38,7 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
     let mut fixed_fd: u32 = 0;
 
     // Track ops in flight
-    let mut op_tracker = OpTracker::new(SQ_RING_SIZE);
+    let mut op_tracker = Tracker::new(SQ_RING_SIZE);
 
     'outer: loop {
         // Keep io_uring's submission queue topped up:
@@ -67,7 +66,7 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
                 },
             };
 
-            let index_of_op = op_tracker.get_next_index();
+            let index_of_op = op_tracker.get_next_index().unwrap();
 
             // Convert `Operation` to one or more `squeue::Entry`, and submit to io_uring.
             let entries = create_sq_entries_for_op(&mut op_with_callback, index_of_op, fixed_fd);
@@ -123,7 +122,7 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
             n_user_ops_completed += 1;
 
             // Get the associated `OperationWithCallback` and call `execute_callback()`!
-            let mut op_with_callback = op_tracker.remove(index_of_op);
+            let mut op_with_callback = op_tracker.remove(index_of_op).unwrap();
             op_with_callback.execute_callback();
 
             if rx_might_have_more_data_waiting && i > (SQ_RING_SIZE / 2) as _ {
