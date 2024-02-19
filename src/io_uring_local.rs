@@ -32,7 +32,7 @@ impl<const N: usize> OpTracker<N> {
             .next_index
             .pop_front()
             .expect("next_index should not be empty!");
-        self.ops_in_flight[index] = Some(op);
+        self.ops_in_flight[index].replace(op);
         index
     }
 
