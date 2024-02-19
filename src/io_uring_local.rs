@@ -25,15 +25,16 @@ impl<const N: usize> OpTracker<N> {
         }
     }
 
+    fn get_next_index(&mut self) -> usize {
+        self.next_index
+            .pop_front()
+            .expect("next_index should not be empty!")
+    }
+
     /// Store an OperationWithCallback and return the index into which that
     /// OperationWithCallback has been stored.
-    fn push(&mut self, op: Box<OperationWithCallback>) -> usize {
-        let index = self
-            .next_index
-            .pop_front()
-            .expect("next_index should not be empty!");
-        self.ops_in_flight[index].replace(op);
-        index
+    fn put(&mut self, index: usize, op: Box<OperationWithCallback>) {
+        let index = self.ops_in_flight[index].replace(op);
     }
 
     fn get_mut(&mut self, index: usize) -> &mut Box<OperationWithCallback> {
@@ -84,7 +85,7 @@ pub(crate) fn worker_thread_func(rx: Receiver<Box<OperationWithCallback>>) {
         // Keep io_uring's submission queue topped up:
         // TODO: Extract this inner loop into a separate function!
         'inner: loop {
-            let op_with_callback = match n_tasks_in_flight_in_io_uring {
+            let mut op_with_callback = match n_tasks_in_flight_in_io_uring {
                 0 => match rx.recv() {
                     // There are no tasks in flight in io_uring, so all that's
                     // left to do is to wait for more `Operations` from the user.
@@ -106,11 +107,11 @@ pub(crate) fn worker_thread_func(rx: Receiver<Box<OperationWithCallback>>) {
                 },
             };
 
-            let index_of_op = op_tracker.push(op_with_callback);
+            let index_of_op = op_tracker.get_next_index();
 
             // Convert `Operation` to one or more `squeue::Entry`, and submit to io_uring.
-            let entries =
-                create_sq_entries_for_op(op_tracker.get_mut(index_of_op), index_of_op, fixed_fd);
+            let entries = create_sq_entries_for_op(&mut op_with_callback, index_of_op, fixed_fd);
+            op_tracker.put(index_of_op, op_with_callback);
             for entry in entries {
                 unsafe {
                     ring.submission().push(&entry).unwrap_or_else(|err| {
