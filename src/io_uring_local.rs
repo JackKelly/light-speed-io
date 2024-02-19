@@ -36,10 +36,10 @@ impl<const N: usize> OpTracker<N> {
         index
     }
 
-    fn get_mut(&self, index: usize) -> &mut OperationWithCallback {
+    fn get_mut(&mut self, index: usize) -> &mut OperationWithCallback {
         self.ops_in_flight[index]
             .as_mut()
-            .expect("No Operation found at index {index}")
+            .expect("No Operation found at index {index}!")
     }
 
     fn remove(&mut self, index: usize) -> OperationWithCallback {
@@ -78,7 +78,7 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
     let mut fixed_fd: u32 = 0;
 
     // Track ops in flight
-    let op_tracker = OpTracker::<SQ_RING_SIZE>::new();
+    let mut op_tracker = OpTracker::<SQ_RING_SIZE>::new();
 
     'outer: loop {
         // Keep io_uring's submission queue topped up:
@@ -137,17 +137,22 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
         for (i, cqe) in ring.completion().enumerate() {
             n_tasks_in_flight_in_io_uring -= 1;
 
+            // user_data holds the io_uring opcode in the lower 32 bits,
+            // and holds the index_of_op in the upper 32 bits.
+            let uring_opcode = (cqe.user_data() & 0xFFFFFFFF) as u8;
+            let index_of_op = (cqe.user_data() >> 32) as usize;
+
             // Handle errors reported by io_uring:
             if cqe.result() < 0 {
                 let err = nix::Error::from_i32(-cqe.result());
-                println!("Error from CQE: {:?}. user_data = {}", err, cqe.user_data());
+                println!(
+                    "Error from CQE: {err:?}. opcode={uring_opcode}; index_of_op={index_of_op}"
+                );
                 // TODO: This error needs to be sent to the user and, ideally, associated with a filename.
                 // Something like: `Err(err.into())`. See issue #45.
-            } else {
-                //println!("Happy CQE!. user_data = {}", cqe.user_data());
             }
 
-            if cqe.user_data() == 0 || cqe.user_data() == 1 {
+            if uring_opcode == opcode::OpenAt::CODE || uring_opcode == opcode::Close::CODE {
                 // This is an `open` or `close` operation. For now, we ignore these.
                 // TODO: Keep track of `open` and `close` operations. See issue #54.
                 continue;
@@ -156,8 +161,7 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
             n_user_ops_completed += 1;
 
             // Get the associated `OperationWithCallback` and call `execute_callback()`!
-            let mut op_with_callback =
-                unsafe { Box::from_raw(cqe.user_data() as *mut OperationWithCallback) };
+            let mut op_with_callback = op_tracker.remove(index_of_op);
             op_with_callback.execute_callback();
 
             if rx_might_have_more_data_waiting && i > (SQ_RING_SIZE / 2) as _ {
@@ -218,6 +222,11 @@ fn create_sq_entry_for_get_op(
     // See https://doc.rust-lang.org/std/mem/union.MaybeUninit.html#initializing-an-array-element-by-element
     let _ = *buffer.insert(Ok(vec![0; filesize_bytes as _]));
 
+    // Convert the index_of_op into a u64, and bit-shift it left.
+    // We do this so the u64 io_uring user_data represents the index_of_op in the left-most 32 bits,
+    // and represents the io_uring opcode CODE in the right-most 32 bits.
+    let index_of_op: u64 = (index_of_op as u64) << 32;
+
     // Prepare the "open" opcode:
     // This code block is adapted from:
     // https://github.com/tokio-rs/io-uring/blob/e3fa23ad338af1d051ac82e18688453a9b3d8376/io-uring-test/src/tests/fs.rs#L288-L295
@@ -232,7 +241,7 @@ fn create_sq_entry_for_get_op(
     .flags(libc::O_RDONLY) // | libc::O_DIRECT) // TODO: Re-enable O_DIRECT.
     .build()
     .flags(squeue::Flags::IO_LINK)
-    .user_data(0); // TODO: user_data should refer to the Operation. See issue #54.
+    .user_data(index_of_op | (opcode::OpenAt::CODE as u64));
 
     // Prepare the "read" opcode:
     let read_op = opcode::Read::new(
@@ -242,12 +251,12 @@ fn create_sq_entry_for_get_op(
     )
     .build()
     .flags(squeue::Flags::IO_LINK)
-    .user_data(index_of_op as _); // TODO: Also include the OPCODE.
+    .user_data(index_of_op | (opcode::Read::CODE as u64));
 
     // Prepare the "close" opcode:
     let close_op = opcode::Close::new(types::Fixed(fixed_fd))
         .build()
-        .user_data(1); // TODO: user_data should refer to the Operation. See issue #54.
+        .user_data(index_of_op | (opcode::Close::CODE as u64));
 
     [open_op, read_op, close_op]
 }
