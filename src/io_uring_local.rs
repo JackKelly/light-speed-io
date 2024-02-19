@@ -12,7 +12,7 @@ use std::sync::mpsc::{Receiver, RecvError};
 use crate::{operation::Operation, operation::OperationWithCallback, tracker::Tracker};
 
 pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
-    const MAX_FILES_IN_FLIGHT: usize = 16;
+    const MAX_FILES_IN_FLIGHT: usize = 14;
     const MAX_ENTRIES_PER_CHAIN: usize = 3; // Maximum number of io_uring entries per io_uring chain.
     const SQ_RING_SIZE: usize = MAX_FILES_IN_FLIGHT * MAX_ENTRIES_PER_CHAIN; // TODO: Allow the user to configure SQ_RING_SIZE.
     assert!(MAX_ENTRIES_PER_CHAIN < SQ_RING_SIZE);
@@ -27,11 +27,12 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
     // TODO: Only register enough FDs for the files in flight in io_uring. We should re-use SQ_RING_SIZE FDs! See issue #54.
     let _ = ring.submitter().unregister_files(); // Cleanup all fixed files (if any)
     ring.submitter()
-        .register_files_sparse(MAX_FILES_IN_FLIGHT as _) // TODO: Only register enough direct FDs for the ops in flight!
+        .register_files_sparse(16) // TODO: Only register enough direct FDs for the ops in flight!
         .expect("Failed to register files!");
     // io_uring supports a max of 16 registered ring descriptors. See:
     // https://manpages.debian.org/unstable/liburing-dev/io_uring_register.2.en.html#IORING_REGISTER_RING_FDS
     let mut next_file_descriptor: VecDeque<u32> = (0..MAX_FILES_IN_FLIGHT as u32).collect();
+    let mut fds_to_unregister = Vec::new();
 
     // Counters
     let mut n_tasks_in_flight_in_io_uring: usize = 0;
@@ -77,6 +78,7 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
             };
 
             let index_of_op = op_tracker.get_next_index().unwrap();
+            println!("Using {fd}");
             op_with_callback.fd = Some(fd);
 
             // Convert `Operation` to one or more `squeue::Entry`, and submit to io_uring.
@@ -117,30 +119,43 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
             if cqe.result() < 0 {
                 let err = nix::Error::from_i32(-cqe.result());
                 println!(
-                    "Error from CQE: {err:?}. opcode={uring_opcode}; index_of_op={index_of_op}"
+                    "Error from CQE: {err:?}. opcode={uring_opcode}; index_of_op={index_of_op}; fd={:?}",
+                    op_tracker.as_ref(index_of_op).unwrap().fd,
                 );
                 // TODO: This error needs to be sent to the user and, ideally, associated with a filename.
                 // Something like: `Err(err.into())`. See issue #45.
             }
 
-            if uring_opcode == opcode::OpenAt::CODE || uring_opcode == opcode::Close::CODE {
-                // This is an `open` or `close` operation. For now, we ignore these.
-                // TODO: Keep track of `open` and `close` operations. See issue #54.
-                continue;
-            }
+            match uring_opcode {
+                opcode::OpenAt::CODE => (), // Ignore OpenAt for now.
+                opcode::Read::CODE => {
+                    //let op_with_callback = op_tracker.as_mut(index_of_op).unwrap();
+                    //op_with_callback.execute_callback();
+                }
+                opcode::Close::CODE => {
+                    let mut op_with_callback = op_tracker.remove(index_of_op).unwrap();
+                    let fd = op_with_callback.fd.unwrap();
+                    next_file_descriptor.push_back(fd);
+                    fds_to_unregister.push(fd);
+                    op_with_callback.execute_callback();
+                    n_user_ops_completed += 1;
+                }
+                _ => panic!("Unrecognised opcode!"),
+            };
 
-            n_user_ops_completed += 1;
-
-            // Get the associated `OperationWithCallback` and call `execute_callback()`!
-            let mut op_with_callback = op_tracker.remove(index_of_op).unwrap();
-            next_file_descriptor.push_back(op_with_callback.fd.unwrap());
-            op_with_callback.execute_callback();
-
-            if rx_might_have_more_data_waiting && i > (SQ_RING_SIZE / 2) as _ {
-                // Break, to keep the SQ topped up.
-                break;
-            }
+            // if rx_might_have_more_data_waiting && i > (SQ_RING_SIZE / 2) as _ {
+            //     // Break, to keep the SQ topped up.
+            //     break;
+            // }
         }
+
+        for fd in &fds_to_unregister {
+            println!("Unregistering {}", *fd);
+            let n_updates = ring.submitter().register_files_update(*fd, &[-1]).unwrap();
+            assert_eq!(n_updates, 1);
+        }
+        ring.submit().unwrap();
+        fds_to_unregister.clear();
     }
     assert_eq!(n_ops_received_from_user, n_user_ops_completed);
 }
@@ -202,6 +217,7 @@ fn create_sq_entry_for_get_op(
     let path_ptr = path.as_ptr();
     let file_index = types::DestinationSlot::try_from_slot_target(fixed_fd)
         .expect("Could not allocate target slot. fixed_fd={fixed_fd}");
+    dbg!(file_index);
     let open_op = opcode::OpenAt::new(
         types::Fd(-1), // dirfd is ignored if the pathname is absolute. See the "openat()" section in https://man7.org/linux/man-pages/man2/openat.2.html
         path_ptr,
