@@ -12,6 +12,11 @@ use std::sync::mpsc::{Receiver, RecvError};
 use crate::operation::{Operation, OperationWithCallback};
 
 struct OpTracker {
+    // The original intention was for `ops_in_flight` to be a `Vec<Option<OperationWithCallback>>`
+    // but that was surprisingly slow (about 830 MiB/s on Jack's Intel NUC, and about 15,000 page faults per sec).
+    // Using a `Vec<Option<Box>>` was the fastest option I tried: about 1.3 GiB/s, and only 8 k page faults per sec.
+    // That's the same bandwidth, but about twice the number of page faults as just passing the pointer
+    // returned by `Box::into_raw` to `user_data()`. I tried lots of options (see PR #63).
     // TODO: Try removing this Box, after #43 is implemented.
     ops_in_flight: Vec<Option<Box<OperationWithCallback>>>,
     next_index: VecDeque<usize>,
