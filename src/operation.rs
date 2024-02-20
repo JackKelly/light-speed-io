@@ -1,12 +1,13 @@
 use std::ffi::CString;
 
+use io_uring::types;
 use object_store::Result;
 
 pub struct OperationWithCallback {
     // This is a `Option` so we can `take` it.
     operation: Option<Operation>,
 
-    pub fd: Option<u32>,
+    pub fixed_fd: Option<types::Fixed>,
 
     // The callback function will be called when the operation completes.
     // The callback function can be an empty closure.
@@ -21,7 +22,7 @@ impl OperationWithCallback {
     {
         Self {
             operation: Some(operation),
-            fd: None,
+            fixed_fd: None,
             callback: Some(Box::new(callback)),
         }
     }
@@ -29,6 +30,10 @@ impl OperationWithCallback {
     pub(crate) fn execute_callback(&mut self) {
         let callback = self.callback.take().unwrap();
         callback(self.operation.take().unwrap());
+    }
+
+    pub(crate) fn get_operation(&self) -> &Option<Operation> {
+        &self.operation
     }
 
     pub(crate) fn get_mut_operation(&mut self) -> &mut Option<Operation> {
