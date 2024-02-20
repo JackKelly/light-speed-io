@@ -58,9 +58,13 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
                     }
 
                     unsafe {
-                        ring.submission().push_multiple(entries.as_slice()).unwrap_or_else(|err| {
-                            panic!("submission queue is full {err} {n_sqes_in_flight_in_io_uring}")
-                        });
+                        ring.submission()
+                            .push_multiple(entries.as_slice())
+                            .unwrap_or_else(|err| {
+                                panic!(
+                                    "submission queue is full {err} {n_sqes_in_flight_in_io_uring}"
+                                )
+                            });
                     }
                     n_sqes_in_flight_in_io_uring += entries.len();
                 }
@@ -94,14 +98,14 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
             let index_of_op = user_tasks_in_flight.get_next_index().unwrap();
             let entries = create_sq_entries_for_op(&mut op_with_callback, index_of_op);
             user_tasks_in_flight.put(index_of_op, op_with_callback);
-            for entry in entries {
-                unsafe {
-                    ring.submission().push(&entry).unwrap_or_else(|err| {
+            unsafe {
+                ring.submission()
+                    .push_multiple(entries.as_slice())
+                    .unwrap_or_else(|err| {
                         panic!("submission queue is full {err} {n_sqes_in_flight_in_io_uring}")
                     });
-                }
-                n_sqes_in_flight_in_io_uring += 1;
             }
+            n_sqes_in_flight_in_io_uring += entries.len();
             n_ops_received_from_user += 1;
             n_files_registered += 1; // TODO: When we support more `Operations` than just `get`,
                                      // we'll need a way to only increment this when appropriate.
@@ -117,7 +121,6 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
         }
 
         for cqe in ring.completion() {
-
             n_sqes_in_flight_in_io_uring -= 1;
 
             // user_data holds the io_uring opcode in the lower 32 bits,
@@ -144,14 +147,13 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
                         create_sq_entries_for_read_and_close(op_with_callback, index_of_op);
                     internal_op_queue.push_back(entries);
                 }
-                opcode::Read::CODE => {}
-                opcode::Close::CODE => {
-                    let mut op_with_callback = user_tasks_in_flight.remove(index_of_op).unwrap();
+                opcode::Read::CODE => {
+                    let op_with_callback = user_tasks_in_flight.as_mut(index_of_op).unwrap();
                     op_with_callback.execute_callback();
-                    n_user_tasks_completed += 1;
                 }
-                opcode::FilesUpdate::CODE => {
-                    // TODO: Use FilesUpdate!
+                opcode::Close::CODE => {
+                    user_tasks_in_flight.remove(index_of_op).unwrap();
+                    n_user_tasks_completed += 1;
                     n_files_registered -= 1;
                 }
                 _ => panic!("Unrecognised opcode!"),
