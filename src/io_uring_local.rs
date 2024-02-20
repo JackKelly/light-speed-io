@@ -39,7 +39,8 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
     // These are the `squeue::Entry`s generated within this thread.
     // Each inner `Vec<Entry>` will be submitted in one go. Each chain of linked entries
     // must be in its own inner `Vec<Entry>`.
-    let mut internal_op_queue: VecDeque<Vec<squeue::Entry>> = VecDeque::with_capacity(SQ_RING_SIZE);
+    let mut internal_op_queue: VecDeque<Vec<Box<squeue::Entry>>> =
+        VecDeque::with_capacity(SQ_RING_SIZE);
 
     // These are the tasks that the user submits via `rx`.
     let mut user_tasks_in_flight = Tracker::new(SQ_RING_SIZE);
@@ -57,9 +58,12 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
                         break 'inner;
                     }
 
+                    // Unbox the entries.
+                    let entries: [squeue::Entry; 2] = [*entries[0].clone(), *entries[1].clone()];
+
                     unsafe {
                         ring.submission()
-                            .push_multiple(entries.as_slice())
+                            .push_multiple(&entries)
                             .unwrap_or_else(|err| {
                                 panic!(
                                     "submission queue is full {err} {n_sqes_in_flight_in_io_uring}"
@@ -218,7 +222,7 @@ fn create_sq_entry_for_get_op(
 fn create_sq_entries_for_read_and_close(
     op_with_callback: &mut OperationWithCallback,
     index_of_op: usize,
-) -> Vec<squeue::Entry> {
+) -> Vec<Box<squeue::Entry>> {
     let fixed_fd = op_with_callback.fixed_fd.unwrap();
     let (path, buffer) = match op_with_callback.get_mut_operation().as_mut().unwrap() {
         Operation::Get {
@@ -257,5 +261,5 @@ fn create_sq_entries_for_read_and_close(
         .build()
         .user_data(index_of_op | (opcode::Close::CODE as u64));
 
-    vec![read_op, close_op]
+    vec![Box::new(read_op), Box::new(close_op)]
 }
