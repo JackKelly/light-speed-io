@@ -37,8 +37,9 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
     let mut n_ops_received_from_user: u32 = 0;
 
     // These are the `squeue::Entry`s generated within this thread.
-    // Each inner `Vec<Entry>` will be submitted in one go. Each chain of linked entries
-    // must be in its own inner `Vec<Entry>`.
+    // Each inner `Vec<Box<Entry>>` will be submitted in one go. Each chain of linked entries
+    // must be in its own inner `Vec<Box<Entry>>`. Yes, it _should_ not be necessary to `Box` entries in
+    // a `Vec`. But it reduces page-faults from 15 K/s to 5 K/s, and increase bandwidth from 1 GiB/s to 1.3 GiB/s.
     let mut internal_op_queue: VecDeque<Vec<Box<squeue::Entry>>> =
         VecDeque::with_capacity(SQ_RING_SIZE);
 
