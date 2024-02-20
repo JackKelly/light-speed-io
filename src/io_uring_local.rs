@@ -1,6 +1,5 @@
 use io_uring::cqueue;
 use io_uring::opcode;
-use io_uring::register::SKIP_FILE;
 use io_uring::squeue;
 use io_uring::types;
 use io_uring::IoUring;
@@ -23,14 +22,10 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
         .build(SQ_RING_SIZE as _)
         .expect("Failed to initialise io_uring.");
 
-    ring.submit().unwrap();
-    let _ = ring.submitter().unregister_files();
-    ring.submit().unwrap();
     // Register "fixed" file descriptors, for use in chaining SQ entries:
     ring.submitter()
         .register_files_sparse(16)
         .expect("Failed to register files!");
-    ring.submit().unwrap();
 
     // io_uring supports a max of 16 registered ring descriptors. See:
     // https://manpages.debian.org/unstable/liburing-dev/io_uring_register.2.en.html#IORING_REGISTER_RING_FDS
@@ -42,7 +37,9 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
     let mut n_ops_received_from_user: u32 = 0;
 
     // These are the `squeue::Entry`s generated within this thread.
-    let mut internal_op_queue: VecDeque<squeue::Entry> = VecDeque::with_capacity(SQ_RING_SIZE);
+    // Each inner `Vec<Entry>` will be submitted in one go. Each chain of linked entries
+    // must be in its own inner `Vec<Entry>`.
+    let mut internal_op_queue: VecDeque<Vec<squeue::Entry>> = VecDeque::with_capacity(SQ_RING_SIZE);
 
     // These are the tasks that the user submits via `rx`.
     let mut user_tasks_in_flight = Tracker::new(SQ_RING_SIZE);
@@ -54,17 +51,22 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
         'inner: while n_sqes_in_flight_in_io_uring < SQ_RING_SIZE {
             match internal_op_queue.pop_front() {
                 None => break 'inner,
-                Some(entry) => {
+                Some(entries) => {
+                    if (entries.len() + n_sqes_in_flight_in_io_uring) > SQ_RING_SIZE {
+                        internal_op_queue.push_front(entries);
+                        break 'inner;
+                    }
 
                     unsafe {
-                        ring.submission().push(&entry).unwrap_or_else(|err| {
+                        ring.submission().push_multiple(entries.as_slice()).unwrap_or_else(|err| {
                             panic!("submission queue is full {err} {n_sqes_in_flight_in_io_uring}")
                         });
                     }
-                    n_sqes_in_flight_in_io_uring += 1;
+                    n_sqes_in_flight_in_io_uring += entries.len();
                 }
             }
         }
+        ring.submission().sync();
 
         // Keep io_uring's submission queue topped up with tasks from the user:
         // TODO: Extract this inner loop into a separate function!
@@ -115,6 +117,7 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
         }
 
         for cqe in ring.completion() {
+
             n_sqes_in_flight_in_io_uring -= 1;
 
             // user_data holds the io_uring opcode in the lower 32 bits,
@@ -126,9 +129,8 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
             if cqe.result() < 0 {
                 let err = nix::Error::from_i32(-cqe.result());
                 println!(
-                    "Error from CQE: {err:?}. opcode={uring_opcode}; index_of_op={index_of_op}; fd=TODO",
-        
-                    //user_tasks_in_flight.as_ref(index_of_op).unwrap().fixed_fd,
+                    "Error from CQE: {err:?}. opcode={uring_opcode}; index_of_op={index_of_op}; fd={:?}",
+                    user_tasks_in_flight.as_ref(index_of_op).unwrap().fixed_fd,
                 );
                 // TODO: This error needs to be sent to the user and, ideally, associated with a filename.
                 // Something like: `Err(err.into())`. See issue #45.
@@ -137,13 +139,10 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
             match uring_opcode {
                 opcode::OpenAt::CODE => {
                     let op_with_callback = user_tasks_in_flight.as_mut(index_of_op).unwrap();
-                    //dbg!(cqe.result());
                     op_with_callback.fixed_fd = Some(types::Fixed(cqe.result() as u32));
                     let entries =
                         create_sq_entries_for_read_and_close(op_with_callback, index_of_op);
-                    for entry in entries {
-                        internal_op_queue.push_back(entry);
-                    }
+                    internal_op_queue.push_back(entries);
                 }
                 opcode::Read::CODE => {}
                 opcode::Close::CODE => {
@@ -243,8 +242,8 @@ fn create_sq_entries_for_read_and_close(
     // Prepare the "read" opcode:
     let read_op = opcode::Read::new(fixed_fd, buf.as_mut_ptr(), filesize_bytes as u32)
         .build()
-        .flags(squeue::Flags::IO_LINK)
-        .user_data(index_of_op | (opcode::Read::CODE as u64));
+        .user_data(index_of_op | (opcode::Read::CODE as u64))
+        .flags(squeue::Flags::IO_LINK);
 
     unsafe {
         buf.set_len(filesize_bytes as _);
