@@ -1,11 +1,13 @@
 use io_uring::cqueue;
 use io_uring::opcode;
+use io_uring::register::SKIP_FILE;
 use io_uring::squeue;
 use io_uring::types;
 use io_uring::IoUring;
 use nix::sys::stat::stat;
 use nix::NixPath;
 use std::collections::VecDeque;
+use std::os::fd::RawFd;
 use std::sync::mpsc::TryRecvError;
 use std::sync::mpsc::{Receiver, RecvError};
 
@@ -13,6 +15,8 @@ use crate::{operation::Operation, operation::OperationWithCallback, tracker::Tra
 
 pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
     const MAX_FILES_IN_FLIGHT: usize = 14;
+    const N_FILES_TO_REGISTER: usize = 16;
+    assert!(N_FILES_TO_REGISTER >= MAX_FILES_IN_FLIGHT);
     const MAX_ENTRIES_PER_CHAIN: usize = 3; // Maximum number of io_uring entries per io_uring chain.
     const SQ_RING_SIZE: usize = MAX_FILES_IN_FLIGHT * MAX_ENTRIES_PER_CHAIN; // TODO: Allow the user to configure SQ_RING_SIZE.
     assert!(MAX_ENTRIES_PER_CHAIN < SQ_RING_SIZE);
@@ -27,7 +31,7 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
     // TODO: Only register enough FDs for the files in flight in io_uring. We should re-use SQ_RING_SIZE FDs! See issue #54.
     let _ = ring.submitter().unregister_files(); // Cleanup all fixed files (if any)
     ring.submitter()
-        .register_files_sparse(16) // TODO: Only register enough direct FDs for the ops in flight!
+        .register_files_sparse(N_FILES_TO_REGISTER as _) // TODO: Only register enough direct FDs for the ops in flight!
         .expect("Failed to register files!");
     // io_uring supports a max of 16 registered ring descriptors. See:
     // https://manpages.debian.org/unstable/liburing-dev/io_uring_register.2.en.html#IORING_REGISTER_RING_FDS
@@ -149,12 +153,19 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
             // }
         }
 
-        for fd in &fds_to_unregister {
-            println!("Unregistering {}", *fd);
-            let n_updates = ring.submitter().register_files_update(*fd, &[-1]).unwrap();
-            assert_eq!(n_updates, 1);
+        if !fds_to_unregister.is_empty() {
+            let mut file_descriptors_to_update = [SKIP_FILE; N_FILES_TO_REGISTER];
+            for fd in &fds_to_unregister {
+                println!("Unregistering {}", *fd);
+                file_descriptors_to_update[*fd as usize] = -1;
+            }
+            let n_updates = ring
+                .submitter()
+                .register_files_update(0, &file_descriptors_to_update)
+                .unwrap();
+            assert_eq!(n_updates, N_FILES_TO_REGISTER);
         }
-        ring.submit().unwrap();
+        ring.submission().sync();
         fds_to_unregister.clear();
     }
     assert_eq!(n_ops_received_from_user, n_user_ops_completed);
@@ -217,7 +228,6 @@ fn create_sq_entry_for_get_op(
     let path_ptr = path.as_ptr();
     let file_index = types::DestinationSlot::try_from_slot_target(fixed_fd)
         .expect("Could not allocate target slot. fixed_fd={fixed_fd}");
-    dbg!(file_index);
     let open_op = opcode::OpenAt::new(
         types::Fd(-1), // dirfd is ignored if the pathname is absolute. See the "openat()" section in https://man7.org/linux/man-pages/man2/openat.2.html
         path_ptr,
