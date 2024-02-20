@@ -59,7 +59,7 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
                     }
 
                     // Unbox the entries.
-                    let entries: [squeue::Entry; 2] = [*entries[0].clone(), *entries[1].clone()];
+                    let entries = [*entries[0].clone(), *entries[1].clone()];
 
                     unsafe {
                         ring.submission()
