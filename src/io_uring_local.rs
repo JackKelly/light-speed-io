@@ -12,7 +12,6 @@ use std::sync::mpsc::{Receiver, RecvError};
 use crate::{operation::Operation, operation::OperationWithCallback, tracker::Tracker};
 
 type VecEntries = Vec<Box<squeue::Entry>>;
-//type VecEntries = Vec<squeue::Entry>;
 
 pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
     const MAX_FILES_TO_REGISTER: usize = 14;
@@ -30,7 +29,7 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
         .register_files_sparse(16)
         .expect("Failed to register files!");
 
-    // io_uring supports a max of 16 registered ring descriptors.  See:
+    // io_uring supports a max of 16 registered ring descriptors. See:
     // https://manpages.debian.org/unstable/liburing-dev/io_uring_register.2.en.html#IORING_REGISTER_RING_FDS
 
     // Counters
@@ -265,5 +264,4 @@ fn create_sq_entries_for_read_and_close(
         .user_data(index_of_op | (opcode::Close::CODE as u64));
 
     vec![Box::new(read_op), Box::new(close_op)]
-    //vec![read_op, close_op]
 }
