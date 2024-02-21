@@ -11,8 +11,8 @@ use std::sync::mpsc::{Receiver, RecvError};
 
 use crate::{operation::Operation, operation::OperationWithCallback, tracker::Tracker};
 
-type VecEntries = Vec<Box<squeue::Entry>>;
-//type VecEntries = Vec<squeue::Entry>;
+//type VecEntries = Vec<Box<squeue::Entry>>;
+type VecEntries = Vec<squeue::Entry>;
 
 pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
     const MAX_FILES_TO_REGISTER: usize = 14;
@@ -62,11 +62,11 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
                     }
 
                     // Unbox the entries.
-                    let entries: [squeue::Entry; 2] = [*entries[0].clone(), *entries[1].clone()];
+                    //let entries: [squeue::Entry; 2] = [entries[0].clone(), entries[1].clone()];
 
                     unsafe {
                         ring.submission()
-                            .push_multiple(&entries)
+                            .push_multiple(entries.as_slice())
                             .unwrap_or_else(|err| {
                                 panic!(
                                     "submission queue is full {err} {n_sqes_in_flight_in_io_uring}"
@@ -264,6 +264,6 @@ fn create_sq_entries_for_read_and_close(
         .build()
         .user_data(index_of_op | (opcode::Close::CODE as u64));
 
-    vec![Box::new(read_op), Box::new(close_op)]
-    //vec![read_op, close_op]
+    //vec![Box::new(read_op), Box::new(close_op)]
+    vec![read_op, close_op]
 }

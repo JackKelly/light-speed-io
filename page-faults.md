@@ -141,6 +141,34 @@ Benchmarking load_14_files/io_uring_local: Complete (Analysis Disabled)
 
        0.402250000 seconds user
        3.658198000 seconds sys
+
+$ perf stat target/release/deps/io_uring_local-d557319dd99ba2ea io_uring_local --bench
+Benchmarking load_14_files/io_uring_local: Collecting 10 samples in estimated 6.9796 s (110 iter
+load_14_files/io_uring_local
+                        time:   [2.5406 ms 2.7436 ms 3.2384 ms]
+                        thrpt:  [1.0554 GiB/s 1.2458 GiB/s 1.3453 GiB/s]
+                 change:
+                        time:   [-15.861% +1.9243% +23.414%] (p = 0.86 > 0.05)
+                        thrpt:  [-18.972% -1.8880% +18.851%]
+                        No change in performance detected.
+
+
+ Performance counter stats for 'target/release/deps/io_uring_local-d557319dd99ba2ea io_uring_local --bench':
+
+         16,302.86 msec task-clock                       #    3.287 CPUs utilized             
+             8,114      context-switches                 #  497.704 /sec                      
+               672      cpu-migrations                   #   41.220 /sec                      
+            61,357      page-faults                      #    3.764 K/sec                     
+    58,055,980,262      cycles                           #    3.561 GHz                       
+    74,460,121,896      instructions                     #    1.28  insn per cycle            
+    14,483,128,071      branches                         #  888.379 M/sec                     
+       159,545,804      branch-misses                    #    1.10% of all branches           
+
+       4.959796534 seconds time elapsed
+
+       9.736623000 seconds user
+       6.529195000 seconds sys
+
 ```
 
 ## Without Box
@@ -198,4 +226,31 @@ Benchmarking load_14_files/io_uring_local: Complete (Analysis Disabled)
 
        0.378301000 seconds user
        3.342780000 seconds sys
+
+$ perf stat target/release/deps/io_uring_local-d557319dd99ba2ea io_uring_local --bench
+Benchmarking load_14_files/io_uring_local: Collecting 10 samples in estimated 7.0158 s (110 iter
+load_14_files/io_uring_local
+                        time:   [3.1616 ms 3.4601 ms 3.8322 ms]
+                        thrpt:  [913.31 MiB/s 1011.5 MiB/s 1.0811 GiB/s]
+                 change:
+                        time:   [-5.8614% +9.3418% +26.838%] (p = 0.26 > 0.05)
+                        thrpt:  [-21.159% -8.5436% +6.2263%]
+                        No change in performance detected.
+
+
+ Performance counter stats for 'target/release/deps/io_uring_local-d557319dd99ba2ea io_uring_local --bench':
+
+         17,448.78 msec task-clock                       #    3.402 CPUs utilized             
+             6,796      context-switches                 #  389.483 /sec                      
+               560      cpu-migrations                   #   32.094 /sec                      
+           139,743      page-faults                      #    8.009 K/sec                     
+    58,212,193,060      cycles                           #    3.336 GHz                       
+    74,080,876,538      instructions                     #    1.27  insn per cycle            
+    14,308,349,752      branches                         #  820.020 M/sec                     
+       163,963,630      branch-misses                    #    1.15% of all branches           
+
+       5.128500679 seconds time elapsed
+
+      10.718327000 seconds user
+       6.660812000 seconds sys
 ```
