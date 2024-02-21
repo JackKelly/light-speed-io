@@ -117,6 +117,13 @@ fn clear_page_cache() {
         .arg(DATA_PATH)
         .output()
         .expect("vmtouch failed to start");
+
+    // let _ = Command::new("sudo")
+    //     .arg("sysctl")
+    //     .arg("-w")
+    //     .arg("vm.drop_caches=3")
+    //     .output()
+    //     .expect("sudo sysctl failed to start");
 }
 
 fn get_filenames(n: usize) -> Vec<ObjectStorePath> {
