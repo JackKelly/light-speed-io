@@ -11,6 +11,9 @@ use std::sync::mpsc::{Receiver, RecvError};
 
 use crate::{operation::Operation, operation::OperationWithCallback, tracker::Tracker};
 
+type VecEntries = Vec<Box<squeue::Entry>>;
+//type VecEntries = Vec<squeue::Entry>;
+
 pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
     const MAX_FILES_TO_REGISTER: usize = 14;
     const MAX_ENTRIES_PER_CHAIN: usize = 3; // Maximum number of io_uring entries per io_uring chain.
@@ -40,8 +43,7 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
     // Each inner `Vec<Box<Entry>>` will be submitted in one go. Each chain of linked entries
     // must be in its own inner `Vec<Box<Entry>>`. Yes, it _should_ not be necessary to `Box` entries in
     // a `Vec`. But it reduces page-faults from 15 K/s to 5 K/s, and increase bandwidth from 1 GiB/s to 1.3 GiB/s.
-    let mut internal_op_queue: VecDeque<Vec<Box<squeue::Entry>>> =
-        VecDeque::with_capacity(SQ_RING_SIZE);
+    let mut internal_op_queue: VecDeque<VecEntries> = VecDeque::with_capacity(SQ_RING_SIZE);
 
     // These are the tasks that the user submits via `rx`.
     let mut user_tasks_in_flight = Tracker::new(SQ_RING_SIZE);
@@ -60,7 +62,7 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
                     }
 
                     // Unbox the entries.
-                    let entries = [*entries[0].clone(), *entries[1].clone()];
+                    let entries: [squeue::Entry; 2] = [*entries[0].clone(), *entries[1].clone()];
 
                     unsafe {
                         ring.submission()
@@ -223,7 +225,7 @@ fn create_sq_entry_for_get_op(
 fn create_sq_entries_for_read_and_close(
     op_with_callback: &mut OperationWithCallback,
     index_of_op: usize,
-) -> Vec<Box<squeue::Entry>> {
+) -> VecEntries {
     let fixed_fd = op_with_callback.fixed_fd.unwrap();
     let (path, buffer) = match op_with_callback.get_mut_operation().as_mut().unwrap() {
         Operation::Get {
@@ -263,4 +265,5 @@ fn create_sq_entries_for_read_and_close(
         .user_data(index_of_op | (opcode::Close::CODE as u64));
 
     vec![Box::new(read_op), Box::new(close_op)]
+    //vec![read_op, close_op]
 }
