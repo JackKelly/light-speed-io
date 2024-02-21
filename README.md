@@ -11,5 +11,5 @@ My first use-case for light-speed-io is to help to speed up reading [Zarr](https
 
 ```shell
 cargo bench
-perf stat target/release/deps/io_uring_local-<HASH PRINTED BY CARGO BENCH> io_uring_local --bench --profile-time 2
+perf stat target/release/deps/io_uring_local-<HASH PRINTED BY CARGO BENCH> io_uring_local --bench --profile-time 5
 ```
