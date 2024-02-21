@@ -49,26 +49,25 @@ async fn load_files_with_local_file_system(
     let mut total_time = Duration::ZERO;
     for _ in 0..n_iterations {
         // Setup (not timed):
-        let store = object_store::local::LocalFileSystem::default();
         clear_page_cache();
-        let mut futures = Vec::with_capacity(filenames.len());
-        let mut results = Vec::with_capacity(filenames.len());
+        let mut handles = Vec::with_capacity(filenames.len());
 
         // Timed code:
         let start_of_iter = Instant::now();
         for filename in filenames {
-            futures.push(store.get(filename));
+            let filename = filename.clone();
+            handles.push(tokio::spawn(async move {
+                let store = object_store::local::LocalFileSystem::default();
+                let result = store.get(&filename).await.unwrap();
+                result.bytes().await
+            }));
         }
 
-        for f in futures {
-            let get_result = f.await.expect("At least one GetResult was an Error");
-            results.push(get_result);
+        for h in handles {
+            let bytes = h.await.unwrap().unwrap();
+            assert_eq!(bytes.len(), FILE_SIZE_BYTES);
         }
 
-        for get_result in results {
-            let b = get_result.bytes().await.unwrap();
-            assert!(b.len() == FILE_SIZE_BYTES);
-        }
         total_time += start_of_iter.elapsed();
     }
     total_time
