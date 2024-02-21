@@ -1,13 +1,7 @@
 use std::collections::VecDeque;
 
 pub(crate) struct Tracker<T> {
-    // The original intention was for `ops_in_flight` to be a `Vec<Option<T>>`
-    // but that was surprisingly slow (about 830 MiB/s on Jack's Intel NUC, and about 15,000 page faults per sec).
-    // Using a `Vec<Option<Box>>` was the fastest option I tried: about 1.3 GiB/s, and only 8 k page faults per sec.
-    // That's the same bandwidth, but about twice the number of page faults as just passing the pointer
-    // returned by `Box::into_raw` to `user_data()`. I tried lots of options (see PR #63).
-    // TODO: Try removing this Box, after #43 is implemented.
-    pub(crate) ops_in_flight: Vec<Option<Box<T>>>,
+    pub(crate) ops_in_flight: Vec<Option<T>>,
     pub(crate) next_index: VecDeque<usize>,
 }
 
@@ -24,22 +18,21 @@ impl<T> Tracker<T> {
     }
 
     pub(crate) fn put(&mut self, index: usize, op: T) {
-        let op = Box::new(op);
         self.ops_in_flight[index].replace(op);
     }
 
     pub(crate) fn as_mut(&mut self, index: usize) -> Option<&mut T> {
-        self.ops_in_flight[index].as_mut().map(|t| t.as_mut())
+        self.ops_in_flight[index].as_mut()
     }
 
     pub(crate) fn as_ref(&self, index: usize) -> Option<&T> {
-        self.ops_in_flight[index].as_ref().map(|t| t.as_ref())
+        self.ops_in_flight[index].as_ref()
     }
 
     pub(crate) fn remove(&mut self, index: usize) -> Option<T> {
         self.ops_in_flight[index].take().map(|t| {
             self.next_index.push_back(index);
-            *t
+            t
         })
     }
 }
