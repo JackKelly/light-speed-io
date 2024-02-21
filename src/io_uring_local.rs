@@ -11,7 +11,7 @@ use std::sync::mpsc::{Receiver, RecvError};
 
 use crate::{operation::Operation, operation::OperationWithCallback, tracker::Tracker};
 
-type VecEntries = Vec<Box<squeue::Entry>>;
+type VecEntries = Vec<squeue::Entry>;
 
 pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
     const MAX_FILES_TO_REGISTER: usize = 14;
@@ -39,9 +39,8 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
     let mut n_ops_received_from_user: u32 = 0;
 
     // These are the `squeue::Entry`s generated within this thread.
-    // Each inner `Vec<Box<Entry>>` will be submitted in one go. Each chain of linked entries
-    // must be in its own inner `Vec<Box<Entry>>`. Yes, it _should_ not be necessary to `Box` entries in
-    // a `Vec`. But it reduces page-faults from 15 K/s to 5 K/s, and increase bandwidth from 1 GiB/s to 1.3 GiB/s.
+    // Each inner `Vec<Entry>` will be submitted in one go. Each chain of linked entries
+    // must be in its own inner `Vec<Entry>`.
     let mut internal_op_queue: VecDeque<VecEntries> = VecDeque::with_capacity(SQ_RING_SIZE);
 
     // These are the tasks that the user submits via `rx`.
@@ -60,12 +59,9 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
                         break 'inner;
                     }
 
-                    // Unbox the entries.
-                    let entries: [squeue::Entry; 2] = [*entries[0].clone(), *entries[1].clone()];
-
                     unsafe {
                         ring.submission()
-                            .push_multiple(&entries)
+                            .push_multiple(entries.as_slice())
                             .unwrap_or_else(|err| {
                                 panic!(
                                     "submission queue is full {err} {n_sqes_in_flight_in_io_uring}"
@@ -172,7 +168,7 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
 fn create_sq_entries_for_op(
     op_with_callback: &mut OperationWithCallback,
     index_of_op: usize,
-) -> Vec<squeue::Entry> {
+) -> VecEntries {
     let op = op_with_callback.get_mut_operation().as_ref().unwrap();
     match op {
         Operation::Get { .. } => create_sq_entry_for_get_op(op_with_callback, index_of_op),
@@ -189,7 +185,7 @@ where
 fn create_sq_entry_for_get_op(
     op_with_callback: &OperationWithCallback,
     index_of_op: usize,
-) -> Vec<squeue::Entry> {
+) -> VecEntries {
     // TODO: Test for these:
     // - opcode::OpenAt2::CODE
     // - opcode::Close::CODE
@@ -263,5 +259,5 @@ fn create_sq_entries_for_read_and_close(
         .build()
         .user_data(index_of_op | (opcode::Close::CODE as u64));
 
-    vec![Box::new(read_op), Box::new(close_op)]
+    vec![read_op, close_op]
 }
