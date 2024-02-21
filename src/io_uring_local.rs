@@ -27,7 +27,7 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
         .register_files_sparse(16)
         .expect("Failed to register files!");
 
-    // io_uring supports a max of 16 registered ring descriptors. See:
+    // io_uring supports a max of 16 registered ring descriptors.  See:
     // https://manpages.debian.org/unstable/liburing-dev/io_uring_register.2.en.html#IORING_REGISTER_RING_FDS
 
     // Counters
