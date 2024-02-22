@@ -55,6 +55,8 @@ async fn load_files_with_local_file_system(
         for filename in filenames {
             let filename = filename.clone();
             handles.push(tokio::spawn(async move {
+                // We can't create the `store` outside of `spawn` and move it into `spawn`.
+                // So we have to create the `store` _inside_ this `async` block.
                 let store = object_store::local::LocalFileSystem::default();
                 let result = store.get(&filename).await.unwrap();
                 result.bytes().await
