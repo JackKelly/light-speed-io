@@ -14,7 +14,7 @@ use crate::{operation::Operation, operation::OperationWithCallback, tracker::Tra
 type VecEntries = Vec<squeue::Entry>;
 
 pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
-    const MAX_FILES_TO_REGISTER: usize = 14;
+    const MAX_FILES_TO_REGISTER: usize = 16;
     const MAX_ENTRIES_PER_CHAIN: usize = 3; // Maximum number of io_uring entries per io_uring chain.
     const SQ_RING_SIZE: usize = MAX_FILES_TO_REGISTER * MAX_ENTRIES_PER_CHAIN; // TODO: Allow the user to configure SQ_RING_SIZE.
     assert!(MAX_ENTRIES_PER_CHAIN < SQ_RING_SIZE);
@@ -26,7 +26,7 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
 
     // Register "fixed" file descriptors, for use in chaining SQ entries:
     ring.submitter()
-        .register_files_sparse(16)
+        .register_files_sparse(MAX_FILES_TO_REGISTER as _)
         .expect("Failed to register files!");
 
     // io_uring supports a max of 16 registered ring descriptors. See:
