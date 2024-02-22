@@ -10,7 +10,13 @@ My first use-case for light-speed-io is to help to speed up reading [Zarr](https
 ## Benchmarking & profiling
 
 ```shell
-sudo sysctl -w vm.drop_caches=3  // Clear all caches
+// Enable perf counters:
+sudo echo "0" | sudo tee '/proc/sys/kernel/yama/ptrace_scope' | sudo tee '/proc/sys/kernel/perf_event_paranoid' | sudo tee '/proc/sys/kernel/kptr_restrict'
+
+// Clear all caches:
+sudo sysctl -w vm.drop_caches=3
+
 cargo bench
+
 perf stat target/release/deps/io_uring_local-<HASH PRINTED BY CARGO BENCH> io_uring_local --bench --profile-time 5
 ```

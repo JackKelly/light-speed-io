@@ -20,7 +20,6 @@ async fn load_files_with_io_uring_local(
         let store = ObjectStoreAdapter::default();
         clear_page_cache();
         let mut futures = Vec::with_capacity(filenames.len());
-        let mut results = Vec::with_capacity(filenames.len());
 
         // Timed code:
         let start_of_iter = Instant::now();
@@ -30,7 +29,6 @@ async fn load_files_with_io_uring_local(
         for f in futures {
             let b = f.await.expect("At least one Result was an Error");
             assert_eq!(b.len(), FILE_SIZE_BYTES);
-            results.push(b);
         }
         total_time += start_of_iter.elapsed();
     }
