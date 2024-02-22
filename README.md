@@ -19,4 +19,7 @@ sudo sysctl -w vm.drop_caches=3
 cargo bench
 
 perf stat target/release/deps/io_uring_local-<HASH PRINTED BY CARGO BENCH> io_uring_local --bench --profile-time 5
+
+// Monitor IO performance. The average queue size is the aqu-sz column.
+iostat -xmt 1
 ```
