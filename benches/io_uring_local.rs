@@ -20,6 +20,7 @@ async fn load_files_with_io_uring_local(
         let store = ObjectStoreAdapter::default();
         clear_page_cache();
         let mut futures = Vec::with_capacity(filenames.len());
+        let mut handles = Vec::with_capacity(filenames.len());
 
         // Timed code:
         let start_of_iter = Instant::now();
@@ -27,8 +28,14 @@ async fn load_files_with_io_uring_local(
             futures.push(store.get(filename));
         }
         for f in futures {
-            let b = f.await.expect("At least one Result was an Error");
-            assert_eq!(b.len(), FILE_SIZE_BYTES);
+            let handle = tokio::spawn(async move {
+                let b = f.await.expect("At least one Result was an Error");
+                assert_eq!(b.len(), FILE_SIZE_BYTES);
+            });
+            handles.push(handle);
+        }
+        for h in handles {
+            h.await.unwrap();
         }
         total_time += start_of_iter.elapsed();
     }
