@@ -155,7 +155,10 @@ impl ObjectStoreAdapter {
     // TODO: `ObjectStoreAdapter` shouldn't implement `get` because `ObjectStore::get` has a default impl.
     //       Instead, `ObjectStoreAdapter` should impl `get_opts` which returns a `Result<GetResult>`.
     //       But I'm keeping things simple for now!
-    pub fn get(&self, location: &Path) -> Pin<Box<dyn Future<Output = Result<Bytes>>>> {
+    pub fn get(
+        &self,
+        location: &Path,
+    ) -> Pin<Box<dyn Future<Output = Result<Bytes>> + Send + Sync>> {
         let path = self.config.path_to_filesystem(location).unwrap();
         let path = CString::new(path.as_os_str().as_bytes())
             .expect("Failed to convert path '{path}' to CString.");
