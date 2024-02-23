@@ -191,6 +191,8 @@ fn is_valid_file_path(path: &ObjectStorePath) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use nix::errno::Errno;
+
     use super::*;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -198,6 +200,7 @@ mod tests {
         let filenames = vec![
             ObjectStorePath::from("/home/jack/dev/rust/light-speed-io/README.md"),
             ObjectStorePath::from("/home/jack/dev/rust/light-speed-io/Cargo.toml"),
+            ObjectStorePath::from("/this/path/does/not/exist"),
         ];
         let store = ObjectStoreAdapter::default();
         let mut futures = Vec::new();
@@ -205,10 +208,19 @@ mod tests {
             futures.push(store.get(filename));
         }
 
-        for future in futures {
-            let b = future.await.unwrap();
-            println!("Loaded {} bytes", b.len());
-            println!("{:?}", std::str::from_utf8(&b[..]).unwrap());
+        for (i, future) in futures.into_iter().enumerate() {
+            let result = future.await;
+            if i < 2 {
+                let b = result.unwrap();
+                println!("Loaded {} bytes", b.len());
+                println!("{:?}", std::str::from_utf8(&b[..]).unwrap());
+            } else {
+                let err = result.unwrap_err();
+                dbg!(&err);
+                println!("err={err}. err.root_cause()={}", err.root_cause());
+                assert!(err.is::<nix::Error>());
+                assert_eq!(err.downcast_ref::<Errno>().unwrap(), &Errno::ENOENT);
+            }
         }
     }
 }

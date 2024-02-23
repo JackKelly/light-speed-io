@@ -137,11 +137,12 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithChannel>) {
 
             // Handle errors reported by io_uring:
             if cqe.result() < 0 {
-                let err = nix::Error::from_i32(-cqe.result());
-                println!(
-                    "Error from CQE: {err:?}. opcode={uring_opcode}; index_of_op={index_of_op}; op={op_with_chan:?}"
-                );
-                op_with_chan.send_error(err.into());
+                let nix_err = nix::Error::from_i32(-cqe.result());
+
+                let err = anyhow::Error::new(nix_err).context(format!(
+                    "{nix_err} (reported by io_uring completion queue entry (CQE) for opcode={uring_opcode})"
+                ));
+                op_with_chan.send_error(err);
             }
 
             let error_has_occurred = op_with_chan.error_has_occurred();

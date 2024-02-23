@@ -64,14 +64,17 @@ impl OperationWithChannel {
 
     pub(crate) fn send_error(&mut self, error: anyhow::Error) {
         if self.error_has_occurred {
-            println!("Error has already occurred! New error: {error}");
+            eprintln!("The output_channel has already been consumed (probably by a previous error)! But a new error has been reported: {error}");
             return;
         }
         self.error_has_occurred = true;
+
+        let error = error.context(format!("Operation = {:?}", self.operation));
+
         self.output_channel
             .take()
             .unwrap()
-            .send(Err(error).into())
+            .send(Err(error))
             .unwrap();
     }
 }
