@@ -12,7 +12,7 @@ use std::thread;
 use url::Url;
 
 use crate::io_uring_local;
-use crate::operation::{Operation, OperationWithChannel};
+use crate::operation::{Operation, OperationWithOutput, Output};
 
 /// A specialized `Error` for filesystem object store-related errors
 /// From `object_store::local`
@@ -106,17 +106,17 @@ impl Config {
 #[derive(Debug)]
 struct WorkerThread {
     handle: thread::JoinHandle<()>,
-    sender: mpsc::Sender<OperationWithChannel>, // Channel to send ops to the worker thread
+    sender: mpsc::Sender<OperationWithOutput>, // Channel to send ops to the worker thread
 }
 
 impl WorkerThread {
-    pub fn new(worker_thread_func: fn(mpsc::Receiver<OperationWithChannel>)) -> Self {
+    pub fn new(worker_thread_func: fn(mpsc::Receiver<OperationWithOutput>)) -> Self {
         let (sender, rx) = mpsc::channel();
         let handle = thread::spawn(move || worker_thread_func(rx));
         Self { handle, sender }
     }
 
-    pub fn send(&self, op_with_chan: OperationWithChannel) {
+    pub fn send(&self, op_with_chan: OperationWithOutput) {
         self.sender
             .send(op_with_chan)
             .expect("Failed to send message to worker thread!");
@@ -137,7 +137,7 @@ impl Default for ObjectStoreAdapter {
 
 impl ObjectStoreAdapter {
     /// Create new filesystem storage with no prefix
-    pub fn new(func_for_get_thread: fn(mpsc::Receiver<OperationWithChannel>)) -> Self {
+    pub fn new(func_for_get_thread: fn(mpsc::Receiver<OperationWithOutput>)) -> Self {
         Self {
             config: Arc::new(Config {
                 root: Url::parse("file:///").unwrap(),
@@ -164,14 +164,19 @@ impl ObjectStoreAdapter {
 
         let operation = Operation::Get {
             path,
-            buffer: None,
             fixed_fd: None,
         };
 
-        let (op_with_chan, rx) = OperationWithChannel::new(operation);
+        let (op_with_chan, rx) = OperationWithOutput::new(operation);
 
         self.worker_thread.send(op_with_chan);
-        Box::pin(async { rx.await.unwrap().map(Bytes::from) })
+
+        Box::pin(async {
+            rx.await.unwrap().map(|o| {
+                let Output::Get { buffer } = o;
+                Bytes::from(buffer)
+            })
+        })
     }
 }
 

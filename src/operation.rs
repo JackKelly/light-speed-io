@@ -16,29 +16,40 @@ pub(crate) enum Operation {
         // We need to ensure the CString is valid until the completion queue entry arrives.
         // So we keep the CString here, in the `Operation`.
         path: CString,
-
-        // This is an `Option` for two reasons: 1) `buffer` will start life
-        // _without_ an actual buffer! 2) So we can `take` the buffer.
-        buffer: Option<anyhow::Result<Vec<u8>>>,
         fixed_fd: Option<types::Fixed>,
     },
 }
 
 #[derive(Debug)]
-pub(crate) struct OperationWithChannel {
-    pub(crate) operation: Operation,
+pub(crate) enum Output {
+    Get { buffer: Vec<u8> },
+}
+
+impl Operation {
+    fn matches(&self, output: &Output) -> bool {
+        match self {
+            Operation::Get { .. } => matches!(output, Output::Get { .. }),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct OperationWithOutput {
+    operation: Operation,
+    output: Option<Output>,
     // `output_channel` is an `Option` because `send` consumes itself,
     // so we need to `output_channel.take().unwrap().send(Some(buffer))`.
-    output_channel: Option<oneshot::Sender<anyhow::Result<Vec<u8>>>>,
+    output_channel: Option<oneshot::Sender<anyhow::Result<Output>>>,
     error_has_occurred: bool,
 }
 
-impl OperationWithChannel {
-    pub(crate) fn new(operation: Operation) -> (Self, oneshot::Receiver<anyhow::Result<Vec<u8>>>) {
+impl OperationWithOutput {
+    pub(crate) fn new(operation: Operation) -> (Self, oneshot::Receiver<anyhow::Result<Output>>) {
         let (output_channel, rx) = oneshot::channel();
         (
             Self {
                 operation,
+                output: None,
                 output_channel: Some(output_channel),
                 error_has_occurred: false,
             },
@@ -46,16 +57,26 @@ impl OperationWithChannel {
         )
     }
 
-    pub(crate) fn send_result(&mut self) {
-        match self.operation {
-            Operation::Get { ref mut buffer, .. } => {
-                self.output_channel
-                    .take()
-                    .unwrap()
-                    .send(buffer.take().unwrap())
-                    .unwrap();
-            }
-        }
+    pub(crate) fn operation(&self) -> &Operation {
+        &self.operation
+    }
+
+    pub(crate) fn operation_mut(&mut self) -> &mut Operation {
+        &mut self.operation
+    }
+
+    pub(crate) fn set_output(&mut self, output: Output) {
+        // Sanity check that the output is the correct variant:
+        assert!(&self.operation.matches(&output));
+        self.output = Some(output);
+    }
+
+    pub(crate) fn send_output(&mut self) {
+        self.output_channel
+            .take()
+            .unwrap()
+            .send(Ok(self.output.take().unwrap()))
+            .unwrap();
     }
 
     pub(crate) fn error_has_occurred(&self) -> bool {

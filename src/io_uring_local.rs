@@ -10,12 +10,13 @@ use std::ffi::CString;
 use std::sync::mpsc::TryRecvError;
 use std::sync::mpsc::{Receiver, RecvError};
 
-use crate::operation::OperationWithChannel;
+use crate::operation::OperationWithOutput;
+use crate::operation::Output;
 use crate::{operation::Operation, tracker::Tracker};
 
 type VecEntries = Vec<squeue::Entry>;
 
-pub(crate) fn worker_thread_func(rx: Receiver<OperationWithChannel>) {
+pub(crate) fn worker_thread_func(rx: Receiver<OperationWithOutput>) {
     const MAX_FILES_TO_REGISTER: usize = 16;
     const MAX_ENTRIES_PER_CHAIN: usize = 3; // Maximum number of io_uring entries per io_uring chain.
     const SQ_RING_SIZE: usize = MAX_FILES_TO_REGISTER * MAX_ENTRIES_PER_CHAIN; // TODO: Allow the user to configure SQ_RING_SIZE.
@@ -81,7 +82,7 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithChannel>) {
         'inner: while n_files_registered < MAX_FILES_TO_REGISTER
             && n_sqes_in_flight_in_io_uring < (SQ_RING_SIZE - MAX_ENTRIES_PER_CHAIN)
         {
-            let op_with_chan = if n_sqes_in_flight_in_io_uring == 0 {
+            let op = if n_sqes_in_flight_in_io_uring == 0 {
                 // There are no tasks in flight in io_uring, so all that's
                 // left to do is to wait for more `Operations` from the user.
                 match rx.recv() {
@@ -100,10 +101,10 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithChannel>) {
 
             // Convert `Operation` to one or more `squeue::Entry`, and submit to io_uring.
             let index_of_op = user_tasks_in_flight.get_next_index().unwrap();
-            let entries = match &op_with_chan.operation {
+            let entries = match op.operation() {
                 Operation::Get { path, .. } => create_openat_sqe(path, index_of_op),
             };
-            user_tasks_in_flight.put(index_of_op, op_with_chan);
+            user_tasks_in_flight.put(index_of_op, op);
             unsafe {
                 ring.submission()
                     .push_multiple(entries.as_slice())
@@ -133,7 +134,7 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithChannel>) {
             // and holds the index_of_op in the upper 32 bits.
             let uring_opcode = (cqe.user_data() & 0xFFFFFFFF) as u8;
             let index_of_op = (cqe.user_data() >> 32) as usize;
-            let op_with_chan = user_tasks_in_flight.as_mut(index_of_op).unwrap();
+            let op = user_tasks_in_flight.as_mut(index_of_op).unwrap();
 
             // Handle errors reported by io_uring:
             if cqe.result() < 0 {
@@ -142,37 +143,32 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithChannel>) {
                     "{nix_err} (reported by io_uring completion queue entry (CQE) for opcode = {uring_opcode}, opname = {})",
                     opcode_to_opname(uring_opcode),
                 ));
-                op_with_chan.send_error(err);
+                op.send_error(err);
             }
 
-            let error_has_occurred = op_with_chan.error_has_occurred();
+            let error_has_occurred = op.error_has_occurred();
 
-            match &mut op_with_chan.operation {
-                Operation::Get {
-                    path,
-                    buffer,
-                    fixed_fd,
-                    ..
-                } => 'get: {
+            match op.operation_mut() {
+                Operation::Get { path, fixed_fd, .. } => 'get: {
                     match uring_opcode {
                         opcode::OpenAt::CODE => {
                             if error_has_occurred {
                                 break 'get;
                             };
                             *fixed_fd = Some(types::Fixed(cqe.result() as u32));
-                            let entries = create_linked_read_close_sqes(
+                            let (entries, buffer) = create_linked_read_close_sqes(
                                 path,
-                                buffer,
                                 fixed_fd.as_ref().unwrap(),
                                 index_of_op,
                             );
+                            op.set_output(buffer);
                             internal_op_queue.push_back(entries);
                         }
                         opcode::Read::CODE => {
                             if error_has_occurred {
                                 break 'get;
                             };
-                            op_with_chan.send_result();
+                            op.send_output();
                         }
                         opcode::Close::CODE => {
                             user_tasks_in_flight.remove(index_of_op).unwrap();
@@ -225,10 +221,9 @@ fn create_openat_sqe(path: &CString, index_of_op: usize) -> VecEntries {
 
 fn create_linked_read_close_sqes(
     path: &CString,
-    buffer: &mut Option<anyhow::Result<Vec<u8>>>,
     fixed_fd: &types::Fixed,
     index_of_op: usize,
-) -> VecEntries {
+) -> (VecEntries, Output) {
     // Convert the index_of_op into a u64, and bit-shift it left.
     // We do this so the u64 io_uring user_data represents the index_of_op in the left-most 32 bits,
     // and represents the io_uring opcode CODE in the right-most 32 bits.
@@ -240,25 +235,24 @@ fn create_linked_read_close_sqes(
     // Allocate vector:
     // TODO: Don't initialise to all-zeros. Issue #46.
     // See https://doc.rust-lang.org/std/mem/union.MaybeUninit.html#initializing-an-array-element-by-element
-    let mut buf = Vec::with_capacity(filesize_bytes as _);
+    let mut buffer = Vec::with_capacity(filesize_bytes as _);
 
     // Prepare the "read" opcode:
-    let read_op = opcode::Read::new(*fixed_fd, buf.as_mut_ptr(), filesize_bytes as u32)
+    let read_op = opcode::Read::new(*fixed_fd, buffer.as_mut_ptr(), filesize_bytes as u32)
         .build()
         .user_data(index_of_op | (opcode::Read::CODE as u64))
         .flags(squeue::Flags::IO_LINK);
 
     unsafe {
-        buf.set_len(filesize_bytes as _);
+        buffer.set_len(filesize_bytes as _);
     }
-    let _ = *buffer.insert(Ok(buf));
 
     // Prepare the "close" opcode:
     let close_op = opcode::Close::new(*fixed_fd)
         .build()
         .user_data(index_of_op | (opcode::Close::CODE as u64));
 
-    vec![read_op, close_op]
+    (vec![read_op, close_op], Output::Get { buffer })
 }
 
 fn opcode_to_opname(opcode: u8) -> &'static str {
