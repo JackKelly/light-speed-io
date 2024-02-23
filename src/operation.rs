@@ -34,7 +34,7 @@ impl Operation {
 }
 
 #[derive(Debug)]
-pub(crate) struct OperationWithChannel {
+pub(crate) struct OperationWithOutput {
     operation: Operation,
     output: Option<Output>,
     // `output_channel` is an `Option` because `send` consumes itself,
@@ -43,7 +43,7 @@ pub(crate) struct OperationWithChannel {
     error_has_occurred: bool,
 }
 
-impl OperationWithChannel {
+impl OperationWithOutput {
     pub(crate) fn new(operation: Operation) -> (Self, oneshot::Receiver<anyhow::Result<Output>>) {
         let (output_channel, rx) = oneshot::channel();
         (
