@@ -24,7 +24,7 @@ sudo sysctl -w vm.drop_caches=3
 OPTIONAL: Monitor IO performance. Run [`iostat`](https://man7.org/linux/man-pages/man1/iostat.1.html) in a new terminal.
 The average queue size is the `aqu-sz` column.
 ```shell
-iostat -xmt 1 -p <device>
+iostat -xm --pretty 1 -p <device>
 ```
 
 Compile and run all benchmarks:
