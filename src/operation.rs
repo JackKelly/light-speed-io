@@ -2,44 +2,7 @@ use std::ffi::CString;
 
 use io_uring::types;
 use object_store::Result;
-
-pub struct OperationWithCallback {
-    // This is a `Option` so we can `take` it.
-    operation: Option<Operation>,
-
-    pub fixed_fd: Option<types::Fixed>,
-
-    // The callback function will be called when the operation completes.
-    // The callback function can be an empty closure.
-    // This is an `Option` so we can `take` it.
-    callback: Option<Box<dyn FnOnce(Operation) + Send + Sync>>,
-}
-
-impl OperationWithCallback {
-    pub(crate) fn new<F>(operation: Operation, callback: F) -> Self
-    where
-        F: FnOnce(Operation) + Send + Sync + 'static,
-    {
-        Self {
-            operation: Some(operation),
-            fixed_fd: None,
-            callback: Some(Box::new(callback)),
-        }
-    }
-
-    pub(crate) fn execute_callback(&mut self) {
-        let callback = self.callback.take().unwrap();
-        callback(self.operation.take().unwrap());
-    }
-
-    pub(crate) fn get_operation(&self) -> &Option<Operation> {
-        &self.operation
-    }
-
-    pub(crate) fn get_mut_operation(&mut self) -> &mut Option<Operation> {
-        &mut self.operation
-    }
-}
+use tokio::sync::oneshot;
 
 /// `Operation` is used to communicate the user's instructions
 /// to the backend. The intention is that there will be
@@ -58,5 +21,10 @@ pub(crate) enum Operation {
         // This is an `Option` for two reasons: 1) `buffer` will start life
         // _without_ an actual buffer! 2) So we can `take` the buffer.
         buffer: Option<Result<Vec<u8>>>,
+        fixed_fd: Option<types::Fixed>,
+
+        // `output_channel` is an `Option` because `send` consumes itself,
+        // so we need to `output_channel.take().unwrap().send(Some(buffer))`.
+        output_channel: Option<oneshot::Sender<Result<Vec<u8>>>>,
     },
 }

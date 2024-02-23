@@ -5,15 +5,17 @@ use io_uring::types;
 use io_uring::IoUring;
 use nix::sys::stat::stat;
 use nix::NixPath;
+use object_store::Result;
 use std::collections::VecDeque;
+use std::ffi::CString;
 use std::sync::mpsc::TryRecvError;
 use std::sync::mpsc::{Receiver, RecvError};
 
-use crate::{operation::Operation, operation::OperationWithCallback, tracker::Tracker};
+use crate::{operation::Operation, tracker::Tracker};
 
 type VecEntries = Vec<squeue::Entry>;
 
-pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
+pub(crate) fn worker_thread_func(rx: Receiver<Operation>) {
     const MAX_FILES_TO_REGISTER: usize = 16;
     const MAX_ENTRIES_PER_CHAIN: usize = 3; // Maximum number of io_uring entries per io_uring chain.
     const SQ_RING_SIZE: usize = MAX_FILES_TO_REGISTER * MAX_ENTRIES_PER_CHAIN; // TODO: Allow the user to configure SQ_RING_SIZE.
@@ -79,7 +81,7 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
         'inner: while n_files_registered < MAX_FILES_TO_REGISTER
             && n_sqes_in_flight_in_io_uring < (SQ_RING_SIZE - MAX_ENTRIES_PER_CHAIN)
         {
-            let mut op_with_callback = if n_sqes_in_flight_in_io_uring == 0 {
+            let mut operation = if n_sqes_in_flight_in_io_uring == 0 {
                 // There are no tasks in flight in io_uring, so all that's
                 // left to do is to wait for more `Operations` from the user.
                 match rx.recv() {
@@ -98,8 +100,10 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
 
             // Convert `Operation` to one or more `squeue::Entry`, and submit to io_uring.
             let index_of_op = user_tasks_in_flight.get_next_index().unwrap();
-            let entries = create_sq_entries_for_op(&mut op_with_callback, index_of_op);
-            user_tasks_in_flight.put(index_of_op, op_with_callback);
+            let entries = match &operation {
+                Operation::Get { path, .. } => create_openat_sqe(path, index_of_op),
+            };
+            user_tasks_in_flight.put(index_of_op, operation);
             unsafe {
                 ring.submission()
                     .push_multiple(entries.as_slice())
@@ -129,50 +133,56 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithCallback>) {
             // and holds the index_of_op in the upper 32 bits.
             let uring_opcode = (cqe.user_data() & 0xFFFFFFFF) as u8;
             let index_of_op = (cqe.user_data() >> 32) as usize;
+            let operation = user_tasks_in_flight.as_mut(index_of_op).unwrap();
 
             // Handle errors reported by io_uring:
             if cqe.result() < 0 {
                 let err = nix::Error::from_i32(-cqe.result());
                 println!(
-                    "Error from CQE: {err:?}. opcode={uring_opcode}; index_of_op={index_of_op}; fd={:?}",
-                    user_tasks_in_flight.as_ref(index_of_op).unwrap().fixed_fd,
+                    "Error from CQE: {err:?}. opcode={uring_opcode}; index_of_op={index_of_op}"
                 );
                 // TODO: This error needs to be sent to the user and, ideally, associated with a filename.
-                // Something like: `Err(err.into())`. See issue #45.
+                // Something like: `output_channel(Err(err.into()))`. See issue #45.
             }
 
-            match uring_opcode {
-                opcode::OpenAt::CODE => {
-                    let op_with_callback = user_tasks_in_flight.as_mut(index_of_op).unwrap();
-                    op_with_callback.fixed_fd = Some(types::Fixed(cqe.result() as u32));
-                    let entries =
-                        create_sq_entries_for_read_and_close(op_with_callback, index_of_op);
-                    internal_op_queue.push_back(entries);
+            match operation {
+                Operation::Get {
+                    path,
+                    buffer,
+                    fixed_fd,
+                    output_channel,
+                    ..
+                } => {
+                    match uring_opcode {
+                        opcode::OpenAt::CODE => {
+                            *fixed_fd = Some(types::Fixed(cqe.result() as u32));
+                            let entries = create_linked_read_close_sqes(
+                                path,
+                                buffer,
+                                fixed_fd.as_ref().unwrap(),
+                                index_of_op,
+                            );
+                            internal_op_queue.push_back(entries);
+                        }
+                        opcode::Read::CODE => {
+                            output_channel
+                                .take()
+                                .unwrap()
+                                .send(buffer.take().unwrap())
+                                .unwrap();
+                        }
+                        opcode::Close::CODE => {
+                            user_tasks_in_flight.remove(index_of_op).unwrap();
+                            n_user_tasks_completed += 1;
+                            n_files_registered -= 1;
+                        }
+                        _ => panic!("Unrecognised opcode!"),
+                    };
                 }
-                opcode::Read::CODE => {
-                    let op_with_callback = user_tasks_in_flight.as_mut(index_of_op).unwrap();
-                    op_with_callback.execute_callback();
-                }
-                opcode::Close::CODE => {
-                    user_tasks_in_flight.remove(index_of_op).unwrap();
-                    n_user_tasks_completed += 1;
-                    n_files_registered -= 1;
-                }
-                _ => panic!("Unrecognised opcode!"),
-            };
+            }
         }
     }
     assert_eq!(n_ops_received_from_user, n_user_tasks_completed);
-}
-
-fn create_sq_entries_for_op(
-    op_with_callback: &mut OperationWithCallback,
-    index_of_op: usize,
-) -> VecEntries {
-    let op = op_with_callback.get_mut_operation().as_ref().unwrap();
-    match op {
-        Operation::Get { .. } => create_sq_entry_for_get_op(op_with_callback, index_of_op),
-    }
 }
 
 fn get_filesize_bytes<P>(path: &P) -> i64
@@ -182,18 +192,11 @@ where
     stat(path).expect("Failed to get filesize!").st_size
 }
 
-fn create_sq_entry_for_get_op(
-    op_with_callback: &OperationWithCallback,
-    index_of_op: usize,
-) -> VecEntries {
+fn create_openat_sqe(path: &CString, index_of_op: usize) -> VecEntries {
     // TODO: Test for these:
     // - opcode::OpenAt2::CODE
     // - opcode::Close::CODE
     // - opcode::Socket::CODE // to ensure fixed table support
-
-    let path = match op_with_callback.get_operation().as_ref().unwrap() {
-        Operation::Get { path: location, .. } => location,
-    };
 
     // Convert the index_of_op into a u64, and bit-shift it left.
     // We do this so the u64 io_uring user_data represents the index_of_op in the left-most 32 bits,
@@ -217,19 +220,12 @@ fn create_sq_entry_for_get_op(
     vec![open_op]
 }
 
-fn create_sq_entries_for_read_and_close(
-    op_with_callback: &mut OperationWithCallback,
+fn create_linked_read_close_sqes(
+    path: &CString,
+    buffer: &mut Option<Result<Vec<u8>>>,
+    fixed_fd: &types::Fixed,
     index_of_op: usize,
 ) -> VecEntries {
-    let fixed_fd = op_with_callback.fixed_fd.unwrap();
-    let (path, buffer) = match op_with_callback.get_mut_operation().as_mut().unwrap() {
-        Operation::Get {
-            path: location,
-            buffer,
-            ..
-        } => (location, buffer),
-    };
-
     // Convert the index_of_op into a u64, and bit-shift it left.
     // We do this so the u64 io_uring user_data represents the index_of_op in the left-most 32 bits,
     // and represents the io_uring opcode CODE in the right-most 32 bits.
@@ -244,7 +240,7 @@ fn create_sq_entries_for_read_and_close(
     let mut buf = Vec::with_capacity(filesize_bytes as _);
 
     // Prepare the "read" opcode:
-    let read_op = opcode::Read::new(fixed_fd, buf.as_mut_ptr(), filesize_bytes as u32)
+    let read_op = opcode::Read::new(*fixed_fd, buf.as_mut_ptr(), filesize_bytes as u32)
         .build()
         .user_data(index_of_op | (opcode::Read::CODE as u64))
         .flags(squeue::Flags::IO_LINK);
@@ -255,7 +251,7 @@ fn create_sq_entries_for_read_and_close(
     let _ = *buffer.insert(Ok(buf));
 
     // Prepare the "close" opcode:
-    let close_op = opcode::Close::new(fixed_fd)
+    let close_op = opcode::Close::new(*fixed_fd)
         .build()
         .user_data(index_of_op | (opcode::Close::CODE as u64));
 

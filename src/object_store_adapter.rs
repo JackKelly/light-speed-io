@@ -9,11 +9,11 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::{mpsc, Arc};
 use std::thread;
+use tokio::sync::oneshot;
 use url::Url;
 
 use crate::io_uring_local;
-use crate::operation::{Operation, OperationWithCallback};
-use crate::operation_future::OperationFuture;
+use crate::operation::Operation;
 
 /// A specialized `Error` for filesystem object store-related errors
 /// From `object_store::local`
@@ -107,19 +107,19 @@ impl Config {
 #[derive(Debug)]
 struct WorkerThread {
     handle: thread::JoinHandle<()>,
-    sender: mpsc::Sender<OperationWithCallback>, // Channel to send ops to the worker thread
+    sender: mpsc::Sender<Operation>, // Channel to send ops to the worker thread
 }
 
 impl WorkerThread {
-    pub fn new(worker_thread_func: fn(mpsc::Receiver<OperationWithCallback>)) -> Self {
+    pub fn new(worker_thread_func: fn(mpsc::Receiver<Operation>)) -> Self {
         let (sender, rx) = mpsc::channel();
         let handle = thread::spawn(move || worker_thread_func(rx));
         Self { handle, sender }
     }
 
-    pub fn send(&self, op_with_output: OperationWithCallback) {
+    pub fn send(&self, operation: Operation) {
         self.sender
-            .send(op_with_output)
+            .send(operation)
             .expect("Failed to send message to worker thread!");
     }
 }
@@ -138,7 +138,7 @@ impl Default for ObjectStoreAdapter {
 
 impl ObjectStoreAdapter {
     /// Create new filesystem storage with no prefix
-    pub fn new(func_for_get_thread: fn(mpsc::Receiver<OperationWithCallback>)) -> Self {
+    pub fn new(func_for_get_thread: fn(mpsc::Receiver<Operation>)) -> Self {
         Self {
             config: Arc::new(Config {
                 root: Url::parse("file:///").unwrap(),
@@ -163,17 +163,17 @@ impl ObjectStoreAdapter {
         let path = CString::new(path.as_os_str().as_bytes())
             .expect("Failed to convert path '{path}' to CString.");
 
-        let operation = Operation::Get { path, buffer: None };
+        let (output_channel, rx) = oneshot::channel();
 
-        let (op_future, op_with_output) = OperationFuture::new(operation);
-        self.worker_thread.send(op_with_output);
-        Box::pin(async {
-            match op_future.await {
-                Operation::Get { buffer, .. } => {
-                    buffer.expect("Buffer should not be None!").map(Bytes::from)
-                }
-            }
-        })
+        let operation = Operation::Get {
+            path,
+            buffer: None,
+            fixed_fd: None,
+            output_channel: Some(output_channel),
+        };
+
+        self.worker_thread.send(operation);
+        Box::pin(async { rx.await.unwrap().map(Bytes::from) })
     }
 }
 
