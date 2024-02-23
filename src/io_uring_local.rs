@@ -138,9 +138,9 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithChannel>) {
             // Handle errors reported by io_uring:
             if cqe.result() < 0 {
                 let nix_err = nix::Error::from_i32(-cqe.result());
-
                 let err = anyhow::Error::new(nix_err).context(format!(
-                    "{nix_err} (reported by io_uring completion queue entry (CQE) for opcode={uring_opcode})"
+                    "{nix_err} (reported by io_uring completion queue entry (CQE) for opcode = {uring_opcode}, opname = {})",
+                    opcode_to_opname(uring_opcode),
                 ));
                 op_with_chan.send_error(err);
             }
@@ -259,4 +259,13 @@ fn create_linked_read_close_sqes(
         .user_data(index_of_op | (opcode::Close::CODE as u64));
 
     vec![read_op, close_op]
+}
+
+fn opcode_to_opname(opcode: u8) -> &'static str {
+    match opcode {
+        opcode::OpenAt::CODE => "openat",
+        opcode::Read::CODE => "read",
+        opcode::Close::CODE => "close",
+        _ => "Un-recognised opcode",
+    }
 }
