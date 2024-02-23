@@ -8,7 +8,7 @@ use std::{
 use tokio::runtime::Runtime;
 
 const FILE_SIZE_BYTES: usize = 262_144;
-const DATA_PATH: &str = "/home/jack/temp/fio/";
+const DATA_PATH: &str = "/tmp/fio/";
 
 async fn load_files_with_io_uring_local(
     filenames: &Vec<ObjectStorePath>,
