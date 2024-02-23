@@ -12,7 +12,7 @@ use std::thread;
 use url::Url;
 
 use crate::io_uring_local;
-use crate::operation::{Operation, OperationWithChannel};
+use crate::operation::{Operation, OperationWithChannel, Output};
 
 /// A specialized `Error` for filesystem object store-related errors
 /// From `object_store::local`
@@ -164,14 +164,19 @@ impl ObjectStoreAdapter {
 
         let operation = Operation::Get {
             path,
-            buffer: None,
             fixed_fd: None,
         };
 
         let (op_with_chan, rx) = OperationWithChannel::new(operation);
 
         self.worker_thread.send(op_with_chan);
-        Box::pin(async { rx.await.unwrap().map(Bytes::from) })
+
+        Box::pin(async {
+            rx.await.unwrap().map(|o| {
+                let Output::Get { buffer } = o;
+                Bytes::from(buffer)
+            })
+        })
     }
 }
 
