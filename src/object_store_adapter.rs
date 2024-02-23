@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use object_store::{path::Path, Result};
+use object_store::path::Path as ObjectStorePath;
 use snafu::{ensure, Snafu};
 use std::ffi::CString;
 use std::future::Future;
@@ -9,11 +9,10 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::{mpsc, Arc};
 use std::thread;
-use tokio::sync::oneshot;
 use url::Url;
 
 use crate::io_uring_local;
-use crate::operation::Operation;
+use crate::operation::{Operation, OperationWithChannel};
 
 /// A specialized `Error` for filesystem object store-related errors
 /// From `object_store::local`
@@ -79,7 +78,7 @@ struct Config {
 // From `object_store::local`
 impl Config {
     /// Return an absolute filesystem path of the given file location
-    fn path_to_filesystem(&self, location: &Path) -> Result<PathBuf> {
+    fn path_to_filesystem(&self, location: &ObjectStorePath) -> anyhow::Result<PathBuf> {
         ensure!(
             is_valid_file_path(location),
             InvalidPathSnafu {
@@ -90,7 +89,7 @@ impl Config {
     }
 
     /// Return an absolute filesystem path of the given location
-    fn prefix_to_filesystem(&self, location: &Path) -> Result<PathBuf> {
+    fn prefix_to_filesystem(&self, location: &ObjectStorePath) -> anyhow::Result<PathBuf> {
         let mut url = self.root.clone();
         url.path_segments_mut()
             .expect("url path")
@@ -107,19 +106,19 @@ impl Config {
 #[derive(Debug)]
 struct WorkerThread {
     handle: thread::JoinHandle<()>,
-    sender: mpsc::Sender<Operation>, // Channel to send ops to the worker thread
+    sender: mpsc::Sender<OperationWithChannel>, // Channel to send ops to the worker thread
 }
 
 impl WorkerThread {
-    pub fn new(worker_thread_func: fn(mpsc::Receiver<Operation>)) -> Self {
+    pub fn new(worker_thread_func: fn(mpsc::Receiver<OperationWithChannel>)) -> Self {
         let (sender, rx) = mpsc::channel();
         let handle = thread::spawn(move || worker_thread_func(rx));
         Self { handle, sender }
     }
 
-    pub fn send(&self, operation: Operation) {
+    pub fn send(&self, op_with_chan: OperationWithChannel) {
         self.sender
-            .send(operation)
+            .send(op_with_chan)
             .expect("Failed to send message to worker thread!");
     }
 }
@@ -138,7 +137,7 @@ impl Default for ObjectStoreAdapter {
 
 impl ObjectStoreAdapter {
     /// Create new filesystem storage with no prefix
-    pub fn new(func_for_get_thread: fn(mpsc::Receiver<Operation>)) -> Self {
+    pub fn new(func_for_get_thread: fn(mpsc::Receiver<OperationWithChannel>)) -> Self {
         Self {
             config: Arc::new(Config {
                 root: Url::parse("file:///").unwrap(),
@@ -157,28 +156,27 @@ impl ObjectStoreAdapter {
     //       But I'm keeping things simple for now!
     pub fn get(
         &self,
-        location: &Path,
-    ) -> Pin<Box<dyn Future<Output = Result<Bytes>> + Send + Sync>> {
+        location: &ObjectStorePath,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Bytes>> + Send + Sync>> {
         let path = self.config.path_to_filesystem(location).unwrap();
         let path = CString::new(path.as_os_str().as_bytes())
             .expect("Failed to convert path '{path}' to CString.");
-
-        let (output_channel, rx) = oneshot::channel();
 
         let operation = Operation::Get {
             path,
             buffer: None,
             fixed_fd: None,
-            output_channel: Some(output_channel),
         };
 
-        self.worker_thread.send(operation);
+        let (op_with_chan, rx) = OperationWithChannel::new(operation);
+
+        self.worker_thread.send(op_with_chan);
         Box::pin(async { rx.await.unwrap().map(Bytes::from) })
     }
 }
 
 // From `object_store::local`
-fn is_valid_file_path(path: &Path) -> bool {
+fn is_valid_file_path(path: &ObjectStorePath) -> bool {
     match path.filename() {
         Some(p) => match p.split_once('#') {
             Some((_, suffix)) if !suffix.is_empty() => {
@@ -193,13 +191,16 @@ fn is_valid_file_path(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use nix::errno::Errno;
+
     use super::*;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn test_get_with_io_uring_local() {
         let filenames = vec![
-            Path::from("/home/jack/dev/rust/light-speed-io/README.md"),
-            Path::from("/home/jack/dev/rust/light-speed-io/Cargo.toml"),
+            ObjectStorePath::from("/home/jack/dev/rust/light-speed-io/README.md"),
+            ObjectStorePath::from("/home/jack/dev/rust/light-speed-io/Cargo.toml"),
+            ObjectStorePath::from("/this/path/does/not/exist"),
         ];
         let store = ObjectStoreAdapter::default();
         let mut futures = Vec::new();
@@ -207,10 +208,19 @@ mod tests {
             futures.push(store.get(filename));
         }
 
-        for future in futures {
-            let b = future.await.unwrap();
-            println!("Loaded {} bytes", b.len());
-            println!("{:?}", std::str::from_utf8(&b[..]).unwrap());
+        for (i, future) in futures.into_iter().enumerate() {
+            let result = future.await;
+            if i < 2 {
+                let b = result.unwrap();
+                println!("Loaded {} bytes", b.len());
+                println!("{:?}", std::str::from_utf8(&b[..]).unwrap());
+            } else {
+                let err = result.unwrap_err();
+                dbg!(&err);
+                println!("err={err}. err.root_cause()={}", err.root_cause());
+                assert!(err.is::<nix::Error>());
+                assert_eq!(err.downcast_ref::<Errno>().unwrap(), &Errno::ENOENT);
+            }
         }
     }
 }

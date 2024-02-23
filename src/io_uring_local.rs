@@ -5,17 +5,17 @@ use io_uring::types;
 use io_uring::IoUring;
 use nix::sys::stat::stat;
 use nix::NixPath;
-use object_store::Result;
 use std::collections::VecDeque;
 use std::ffi::CString;
 use std::sync::mpsc::TryRecvError;
 use std::sync::mpsc::{Receiver, RecvError};
 
+use crate::operation::OperationWithChannel;
 use crate::{operation::Operation, tracker::Tracker};
 
 type VecEntries = Vec<squeue::Entry>;
 
-pub(crate) fn worker_thread_func(rx: Receiver<Operation>) {
+pub(crate) fn worker_thread_func(rx: Receiver<OperationWithChannel>) {
     const MAX_FILES_TO_REGISTER: usize = 16;
     const MAX_ENTRIES_PER_CHAIN: usize = 3; // Maximum number of io_uring entries per io_uring chain.
     const SQ_RING_SIZE: usize = MAX_FILES_TO_REGISTER * MAX_ENTRIES_PER_CHAIN; // TODO: Allow the user to configure SQ_RING_SIZE.
@@ -81,7 +81,7 @@ pub(crate) fn worker_thread_func(rx: Receiver<Operation>) {
         'inner: while n_files_registered < MAX_FILES_TO_REGISTER
             && n_sqes_in_flight_in_io_uring < (SQ_RING_SIZE - MAX_ENTRIES_PER_CHAIN)
         {
-            let mut operation = if n_sqes_in_flight_in_io_uring == 0 {
+            let op_with_chan = if n_sqes_in_flight_in_io_uring == 0 {
                 // There are no tasks in flight in io_uring, so all that's
                 // left to do is to wait for more `Operations` from the user.
                 match rx.recv() {
@@ -100,10 +100,10 @@ pub(crate) fn worker_thread_func(rx: Receiver<Operation>) {
 
             // Convert `Operation` to one or more `squeue::Entry`, and submit to io_uring.
             let index_of_op = user_tasks_in_flight.get_next_index().unwrap();
-            let entries = match &operation {
+            let entries = match &op_with_chan.operation {
                 Operation::Get { path, .. } => create_openat_sqe(path, index_of_op),
             };
-            user_tasks_in_flight.put(index_of_op, operation);
+            user_tasks_in_flight.put(index_of_op, op_with_chan);
             unsafe {
                 ring.submission()
                     .push_multiple(entries.as_slice())
@@ -133,28 +133,32 @@ pub(crate) fn worker_thread_func(rx: Receiver<Operation>) {
             // and holds the index_of_op in the upper 32 bits.
             let uring_opcode = (cqe.user_data() & 0xFFFFFFFF) as u8;
             let index_of_op = (cqe.user_data() >> 32) as usize;
-            let operation = user_tasks_in_flight.as_mut(index_of_op).unwrap();
+            let op_with_chan = user_tasks_in_flight.as_mut(index_of_op).unwrap();
 
             // Handle errors reported by io_uring:
             if cqe.result() < 0 {
-                let err = nix::Error::from_i32(-cqe.result());
-                println!(
-                    "Error from CQE: {err:?}. opcode={uring_opcode}; index_of_op={index_of_op}"
-                );
-                // TODO: This error needs to be sent to the user and, ideally, associated with a filename.
-                // Something like: `output_channel(Err(err.into()))`. See issue #45.
+                let nix_err = nix::Error::from_i32(-cqe.result());
+
+                let err = anyhow::Error::new(nix_err).context(format!(
+                    "{nix_err} (reported by io_uring completion queue entry (CQE) for opcode={uring_opcode})"
+                ));
+                op_with_chan.send_error(err);
             }
 
-            match operation {
+            let error_has_occurred = op_with_chan.error_has_occurred();
+
+            match &mut op_with_chan.operation {
                 Operation::Get {
                     path,
                     buffer,
                     fixed_fd,
-                    output_channel,
                     ..
-                } => {
+                } => 'get: {
                     match uring_opcode {
                         opcode::OpenAt::CODE => {
+                            if error_has_occurred {
+                                break 'get;
+                            };
                             *fixed_fd = Some(types::Fixed(cqe.result() as u32));
                             let entries = create_linked_read_close_sqes(
                                 path,
@@ -165,11 +169,10 @@ pub(crate) fn worker_thread_func(rx: Receiver<Operation>) {
                             internal_op_queue.push_back(entries);
                         }
                         opcode::Read::CODE => {
-                            output_channel
-                                .take()
-                                .unwrap()
-                                .send(buffer.take().unwrap())
-                                .unwrap();
+                            if error_has_occurred {
+                                break 'get;
+                            };
+                            op_with_chan.send_result();
                         }
                         opcode::Close::CODE => {
                             user_tasks_in_flight.remove(index_of_op).unwrap();
@@ -222,7 +225,7 @@ fn create_openat_sqe(path: &CString, index_of_op: usize) -> VecEntries {
 
 fn create_linked_read_close_sqes(
     path: &CString,
-    buffer: &mut Option<Result<Vec<u8>>>,
+    buffer: &mut Option<anyhow::Result<Vec<u8>>>,
     fixed_fd: &types::Fixed,
     index_of_op: usize,
 ) -> VecEntries {
