@@ -59,18 +59,11 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithOutput>) {
         // TODO: Extract this inner loop into a separate function!
         'inner: while ring.submission().len() < SQ_RING_SIZE - MAX_ENTRIES_PER_CHAIN
             && !ring.completion().is_full()
-            && !ring.submission().cq_overflow()
         {
             match internal_op_queue.pop_front() {
                 None => break 'inner,
                 Some(entries) => {
-                    let push_result =
-                        unsafe { ring.submission().push_multiple(entries.as_slice()) };
-                    if push_result.is_err() {
-                        panic!("SQ is full!");
-                        internal_op_queue.push_front(entries);
-                        break 'inner;
-                    }
+                    unsafe { ring.submission().push_multiple(entries.as_slice()).unwrap() };
                 }
             }
         }
@@ -82,14 +75,8 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithOutput>) {
         'inner: while ring.submission().len() < SQ_RING_SIZE - MAX_ENTRIES_PER_CHAIN
             && n_files_registered < MAX_FILES_TO_REGISTER
             && !ring.completion().is_full()
-            && !ring.submission().cq_overflow()
         {
-            ring.submission().sync();
-            ring.completion().sync();
-            let op = if user_tasks_in_flight.is_empty()
-                && ring.submission().is_empty()
-                && ring.completion().is_empty()
-            {
+            let op = if user_tasks_in_flight.is_empty() {
                 // There are no tasks in flight in io_uring, so all that's
                 // left to do is to block and wait for more `Operations` from the user.
                 match rx.recv() {
@@ -114,12 +101,7 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithOutput>) {
                 Operation::Get { path, .. } => create_openat_sqe(path, index_of_op),
             };
             user_tasks_in_flight.put(index_of_op, op);
-            let push_result = unsafe { ring.submission().push_multiple(entries.as_slice()) };
-            if push_result.is_err() {
-                panic!("SQ is full!");
-                internal_op_queue.push_back(entries);
-                break 'inner;
-            }
+            unsafe { ring.submission().push_multiple(entries.as_slice()).unwrap() };
             n_files_registered += 1; // TODO: When we support more `Operations` than just `get`,
                                      // we'll need a way to only increment this when appropriate.
         }
