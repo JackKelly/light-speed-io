@@ -57,9 +57,9 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithOutput>) {
         // Keep io_uring's submission queue topped up from this thread's internal queue.
         // The internal queue always takes precedence over tasks from the user.
         // TODO: Extract this inner loop into a separate function!
-        'inner: while !(ring.submission().is_full()
-            || ring.completion().is_full()
-            || ring.submission().cq_overflow())
+        'inner: while ring.submission().len() < SQ_RING_SIZE - MAX_ENTRIES_PER_CHAIN
+            && !ring.completion().is_full()
+            && !ring.submission().cq_overflow()
         {
             match internal_op_queue.pop_front() {
                 None => break 'inner,
@@ -67,6 +67,7 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithOutput>) {
                     let push_result =
                         unsafe { ring.submission().push_multiple(entries.as_slice()) };
                     if push_result.is_err() {
+                        panic!("SQ is full!");
                         internal_op_queue.push_front(entries);
                         break 'inner;
                     }
@@ -78,14 +79,17 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithOutput>) {
         // TODO: Extract this inner loop into a separate function!
         // TODO: The `n_files_registered < MAX_FILES_TO_REGISTER` check is only appropriate while
         // Operations are only every `get` Operations.
-        'inner: while !(ring.submission().is_full()
-            || ring.completion().is_full()
-            || ring.submission().cq_overflow())
+        'inner: while ring.submission().len() < SQ_RING_SIZE - MAX_ENTRIES_PER_CHAIN
             && n_files_registered < MAX_FILES_TO_REGISTER
+            && !ring.completion().is_full()
+            && !ring.submission().cq_overflow()
         {
+            ring.submission().sync();
+            ring.completion().sync();
             let op = if ring.submission().is_empty() && ring.completion().is_empty() {
                 // There are no tasks in flight in io_uring, so all that's
                 // left to do is to block and wait for more `Operations` from the user.
+                println!("Waiting for input...");
                 match rx.recv() {
                     Ok(s) => s,
                     Err(RecvError) => break 'outer, // The caller hung up.
@@ -99,6 +103,7 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithOutput>) {
                     Err(TryRecvError::Disconnected) => break 'outer,
                 }
             };
+            println!("Got input");
 
             n_ops_received_from_user += 1;
 
@@ -110,6 +115,7 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithOutput>) {
             user_tasks_in_flight.put(index_of_op, op);
             let push_result = unsafe { ring.submission().push_multiple(entries.as_slice()) };
             if push_result.is_err() {
+                panic!("SQ is full!");
                 internal_op_queue.push_back(entries);
                 break 'inner;
             }
