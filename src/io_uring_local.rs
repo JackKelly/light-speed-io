@@ -41,7 +41,6 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithOutput>) {
     // https://manpages.debian.org/unstable/liburing-dev/io_uring_register.2.en.html#IORING_REGISTER_RING_FDS
 
     // Counters
-    let mut n_sqes_in_flight_in_io_uring: usize = 0;
     let mut n_user_tasks_completed: u32 = 0;
     let mut n_files_registered: usize = 0;
     let mut n_ops_received_from_user: u32 = 0;
@@ -58,38 +57,35 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithOutput>) {
         // Keep io_uring's submission queue topped up from this thread's internal queue.
         // The internal queue always takes precedence over tasks from the user.
         // TODO: Extract this inner loop into a separate function!
-        'inner: while n_sqes_in_flight_in_io_uring < SQ_RING_SIZE {
+        'inner: while !(ring.submission().is_full()
+            || ring.completion().is_full()
+            || ring.submission().cq_overflow())
+        {
             match internal_op_queue.pop_front() {
                 None => break 'inner,
                 Some(entries) => {
-                    if (entries.len() + n_sqes_in_flight_in_io_uring) > SQ_RING_SIZE {
+                    let push_result =
+                        unsafe { ring.submission().push_multiple(entries.as_slice()) };
+                    if push_result.is_err() {
                         internal_op_queue.push_front(entries);
                         break 'inner;
                     }
-
-                    unsafe {
-                        ring.submission()
-                            .push_multiple(entries.as_slice())
-                            .unwrap_or_else(|err| {
-                                panic!(
-                                    "submission queue is full {err} {n_sqes_in_flight_in_io_uring}"
-                                )
-                            });
-                    }
-                    n_sqes_in_flight_in_io_uring += entries.len();
                 }
             }
         }
-        ring.submission().sync();
 
         // Keep io_uring's submission queue topped up with tasks from the user:
         // TODO: Extract this inner loop into a separate function!
-        'inner: while n_files_registered < MAX_FILES_TO_REGISTER
-            && n_sqes_in_flight_in_io_uring < (SQ_RING_SIZE - MAX_ENTRIES_PER_CHAIN)
+        // TODO: The `n_files_registered < MAX_FILES_TO_REGISTER` check is only appropriate while
+        // Operations are only every `get` Operations.
+        'inner: while !(ring.submission().is_full()
+            || ring.completion().is_full()
+            || ring.submission().cq_overflow())
+            && n_files_registered < MAX_FILES_TO_REGISTER
         {
-            let op = if n_sqes_in_flight_in_io_uring == 0 {
+            let op = if ring.submission().is_empty() && ring.completion().is_empty() {
                 // There are no tasks in flight in io_uring, so all that's
-                // left to do is to wait for more `Operations` from the user.
+                // left to do is to block and wait for more `Operations` from the user.
                 match rx.recv() {
                     Ok(s) => s,
                     Err(RecvError) => break 'outer, // The caller hung up.
@@ -104,37 +100,33 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithOutput>) {
                 }
             };
 
+            n_ops_received_from_user += 1;
+
             // Convert `Operation` to one or more `squeue::Entry`, and submit to io_uring.
             let index_of_op = user_tasks_in_flight.get_next_index().unwrap();
             let entries = match op.operation() {
                 Operation::Get { path, .. } => create_openat_sqe(path, index_of_op),
             };
             user_tasks_in_flight.put(index_of_op, op);
-            unsafe {
-                ring.submission()
-                    .push_multiple(entries.as_slice())
-                    .unwrap_or_else(|err| {
-                        panic!("submission queue is full {err} {n_sqes_in_flight_in_io_uring}")
-                    });
+            let push_result = unsafe { ring.submission().push_multiple(entries.as_slice()) };
+            if push_result.is_err() {
+                internal_op_queue.push_back(entries);
+                break 'inner;
             }
-            n_sqes_in_flight_in_io_uring += entries.len();
-            n_ops_received_from_user += 1;
             n_files_registered += 1; // TODO: When we support more `Operations` than just `get`,
                                      // we'll need a way to only increment this when appropriate.
         }
 
-        assert_ne!(n_sqes_in_flight_in_io_uring, 0);
-
-        if ring.completion().is_empty() {
+        if ring.completion().is_empty() && !ring.submission().is_empty() {
             ring.submit_and_wait(1).unwrap();
         } else {
+            // We need to call `ring.submit()` the first time we submit. And, if sqpoll is enabled, then
+            // we also need to call `ring.submit()` to waken the kernel polling thread.
             // `ring.submit()` is basically a no-op if the kernel's sqpoll thread is still awake.
             ring.submit().unwrap();
         }
 
         for cqe in ring.completion() {
-            n_sqes_in_flight_in_io_uring -= 1;
-
             // user_data holds the io_uring opcode in the lower 32 bits,
             // and holds the index_of_op in the upper 32 bits.
             let uring_opcode = (cqe.user_data() & 0xFFFFFFFF) as u8;
