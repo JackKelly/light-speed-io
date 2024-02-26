@@ -11,7 +11,7 @@ use std::sync::{mpsc, Arc};
 use std::thread;
 use url::Url;
 
-use crate::io_uring_local;
+use crate::io_uring_local::IoUringLocal;
 use crate::operation::{Operation, OperationWithOutput, Output};
 
 /// A specialized `Error` for filesystem object store-related errors
@@ -110,7 +110,10 @@ struct WorkerThread {
 }
 
 impl WorkerThread {
-    pub fn new(worker_thread_func: fn(mpsc::Receiver<OperationWithOutput>)) -> Self {
+    pub fn new<F>(mut worker_thread_func: F) -> Self
+    where
+        F: FnMut(mpsc::Receiver<OperationWithOutput>) + Send + Sync + 'static,
+    {
         let (sender, rx) = mpsc::channel();
         let handle = thread::spawn(move || worker_thread_func(rx));
         Self { handle, sender }
@@ -131,13 +134,17 @@ impl std::fmt::Display for ObjectStoreAdapter {
 
 impl Default for ObjectStoreAdapter {
     fn default() -> Self {
-        Self::new(io_uring_local::worker_thread_func)
+        let mut io_uring_local = IoUringLocal::new();
+        Self::new(move |rx| IoUringLocal::worker_thread_func(&mut io_uring_local, rx))
     }
 }
 
 impl ObjectStoreAdapter {
     /// Create new filesystem storage with no prefix
-    pub fn new(func_for_get_thread: fn(mpsc::Receiver<OperationWithOutput>)) -> Self {
+    pub fn new<F>(func_for_get_thread: F) -> Self
+    where
+        F: FnMut(mpsc::Receiver<OperationWithOutput>) + Send + Sync + 'static,
+    {
         Self {
             config: Arc::new(Config {
                 root: Url::parse("file:///").unwrap(),
