@@ -16,112 +16,149 @@ use crate::{operation::Operation, tracker::Tracker};
 
 type VecEntries = Vec<squeue::Entry>;
 
-pub(crate) fn worker_thread_func(rx: Receiver<OperationWithOutput>) {
-    const MAX_FILES_TO_REGISTER: usize = 16;
-    const MAX_ENTRIES_PER_CHAIN: usize = 2; // Maximum number of io_uring entries per io_uring chain.
-    const SQ_RING_SIZE: usize = MAX_FILES_TO_REGISTER * MAX_ENTRIES_PER_CHAIN; // TODO: Allow the user to configure SQ_RING_SIZE.
-    assert!(MAX_ENTRIES_PER_CHAIN < SQ_RING_SIZE);
-    let mut ring: IoUring<squeue::Entry, cqueue::Entry> = io_uring::IoUring::builder()
-        .setup_sqpoll(1000) // The kernel sqpoll thread will sleep after this many milliseconds.
-        // TODO: Allow the user to decide whether sqpoll is used.
-        .build(SQ_RING_SIZE as _)
-        .expect("Failed to initialise io_uring.");
+const MAX_FILES_TO_REGISTER: usize = 16;
+const MAX_ENTRIES_PER_CHAIN: usize = 2; // Maximum number of io_uring entries per io_uring chain.
+const SQ_RING_SIZE: usize = MAX_FILES_TO_REGISTER * MAX_ENTRIES_PER_CHAIN; // TODO: Allow the user to configure SQ_RING_SIZE.
 
-    // Check that io_uring is set up to apply back-pressure to the submission queue, to stop the
-    // completion queue overflowing. See issue #66.
-    assert!(ring.params().is_feature_nodrop());
-    assert_eq!(ring.params().cq_entries(), ring.params().sq_entries() * 2);
-
-    // Register "fixed" file descriptors, for use in chaining SQ entries:
-    ring.submitter()
-        .register_files_sparse(MAX_FILES_TO_REGISTER as _)
-        .expect("Failed to register files!");
-
-    // io_uring supports a max of 16 registered ring descriptors. See:
-    // https://manpages.debian.org/unstable/liburing-dev/io_uring_register.2.en.html#IORING_REGISTER_RING_FDS
-
-    // Counters
-    let mut n_files_registered: usize = 0;
+pub struct IoUringLocal {
+    ring: IoUring,
+    n_files_registered: usize,
 
     // These are the `squeue::Entry`s generated within this thread.
     // Each inner `Vec<Entry>` will be submitted in one go. Each chain of linked entries
     // must be in its own inner `Vec<Entry>`.
-    let mut internal_op_queue: VecDeque<VecEntries> = VecDeque::with_capacity(SQ_RING_SIZE);
+    internal_op_queue: VecDeque<VecEntries>,
 
     // These are the tasks that the user submits via `rx`.
-    let mut user_tasks_in_flight = Tracker::new(SQ_RING_SIZE);
+    user_tasks_in_flight: Tracker<OperationWithOutput>,
+}
 
-    'outer: loop {
-        // Keep io_uring's submission queue topped up from this thread's internal queue.
-        // The internal queue always takes precedence over tasks from the user.
-        // TODO: Extract this inner loop into a separate function!
-        // TODO: Extract this sq_len_plus_cq_len into a separate function.
-        let mut sq_len_plus_cq_len = ring.submission().len();
-        sq_len_plus_cq_len += ring.completion().len();
-        'inner: while sq_len_plus_cq_len < SQ_RING_SIZE - MAX_ENTRIES_PER_CHAIN {
-            match internal_op_queue.pop_front() {
-                None => break 'inner,
+impl IoUringLocal {
+    pub fn new() -> Self {
+        assert!(MAX_ENTRIES_PER_CHAIN < SQ_RING_SIZE);
+
+        let ring: IoUring<squeue::Entry, cqueue::Entry> = io_uring::IoUring::builder()
+            .setup_sqpoll(1000) // The kernel sqpoll thread will sleep after this many milliseconds.
+            // TODO: Allow the user to decide whether sqpoll is used.
+            .build(SQ_RING_SIZE as _)
+            .expect("Failed to initialise io_uring.");
+
+        // Check that io_uring is set up to apply back-pressure to the submission queue, to stop the
+        // completion queue overflowing. See issue #66.
+        assert!(ring.params().is_feature_nodrop());
+        assert_eq!(ring.params().cq_entries(), ring.params().sq_entries() * 2);
+
+        // Register "fixed" file descriptors, for use in chaining SQ entries:
+        ring.submitter()
+            .register_files_sparse(MAX_FILES_TO_REGISTER as _)
+            .expect("Failed to register files!");
+
+        // io_uring supports a max of 16 registered ring descriptors. See:
+        // https://manpages.debian.org/unstable/liburing-dev/io_uring_register.2.en.html#IORING_REGISTER_RING_FDS
+
+        Self {
+            ring,
+            n_files_registered: 0,
+            internal_op_queue: VecDeque::with_capacity(SQ_RING_SIZE),
+            user_tasks_in_flight: Tracker::new(SQ_RING_SIZE),
+        }
+    }
+
+    pub(crate) fn worker_thread_func(&mut self, mut rx: Receiver<OperationWithOutput>) {
+        loop {
+            self.move_entries_from_internal_queue_to_uring_sq();
+
+            if self
+                .move_entries_from_injector_queue_to_uring_sq(&mut rx)
+                .is_err()
+            {
+                break;
+            }
+
+            self.submit_and_maybe_wait();
+
+            self.process_uring_cq();
+        }
+        assert!(self.user_tasks_in_flight.is_empty());
+    }
+
+    /// Keep io_uring's submission queue topped up from this thread's internal queue.
+    /// The internal queue always takes precedence over tasks from the user.
+    fn move_entries_from_internal_queue_to_uring_sq(&mut self) {
+        while !self.uring_is_full() {
+            match self.internal_op_queue.pop_front() {
+                None => break,
                 Some(entries) => {
-                    unsafe { ring.submission().push_multiple(entries.as_slice()).unwrap() };
+                    unsafe {
+                        self.ring
+                            .submission()
+                            .push_multiple(entries.as_slice())
+                            .unwrap()
+                    };
                 }
             }
-            sq_len_plus_cq_len = ring.submission().len();
-            sq_len_plus_cq_len += ring.completion().len();
         }
+    }
 
-        // Keep io_uring's submission queue topped up with tasks from the user:
-        // TODO: Extract this inner loop into a separate function!
+    /// Keep io_uring's submission queue topped up with tasks from the user/
+    fn move_entries_from_injector_queue_to_uring_sq(
+        &mut self,
+        rx: &mut Receiver<OperationWithOutput>,
+    ) -> Result<(), RecvError> {
         // TODO: The `n_files_registered < MAX_FILES_TO_REGISTER` check is only appropriate while
         // Operations are only every `get` Operations.
-        'inner: while sq_len_plus_cq_len < SQ_RING_SIZE - MAX_ENTRIES_PER_CHAIN
-            && n_files_registered < MAX_FILES_TO_REGISTER
-        {
-            let op = if user_tasks_in_flight.is_empty() {
+        while !self.uring_is_full() && self.n_files_registered < MAX_FILES_TO_REGISTER {
+            let op = if self.user_tasks_in_flight.is_empty() {
                 // There are no tasks in flight in io_uring, so all that's
                 // left to do is to block and wait for more `Operations` from the user.
                 match rx.recv() {
                     Ok(s) => s,
-                    Err(RecvError) => break 'outer, // The caller hung up.
+                    Err(RecvError) => return Err(RecvError), // The caller hung up.
                 }
             } else {
                 match rx.try_recv() {
                     Ok(s) => s,
-                    Err(TryRecvError::Empty) => {
-                        break 'inner;
-                    }
-                    Err(TryRecvError::Disconnected) => break 'outer,
+                    Err(TryRecvError::Empty) => return Ok(()),
+                    Err(TryRecvError::Disconnected) => return Err(RecvError), // The caller hung up.
                 }
             };
 
             // Convert `Operation` to one or more `squeue::Entry`, and submit to io_uring.
-            let index_of_op = user_tasks_in_flight.get_next_index().unwrap();
+            let index_of_op = self.user_tasks_in_flight.get_next_index().unwrap();
             let entries = match op.operation() {
                 Operation::Get { path, .. } => create_openat_sqe(path, index_of_op),
             };
-            user_tasks_in_flight.put(index_of_op, op);
-            unsafe { ring.submission().push_multiple(entries.as_slice()).unwrap() };
-            n_files_registered += 1; // TODO: When we support more `Operations` than just `get`,
-                                     // we'll need a way to only increment this when appropriate.
-
-            sq_len_plus_cq_len = ring.submission().len();
-            sq_len_plus_cq_len += ring.completion().len();
+            self.user_tasks_in_flight.put(index_of_op, op);
+            unsafe {
+                self.ring
+                    .submission()
+                    .push_multiple(entries.as_slice())
+                    .unwrap()
+            };
+            self.n_files_registered += 1; // TODO: When we support more `Operations` than just `get`,
+                                          // we'll need a way to only increment this when appropriate.
         }
+        Ok(())
+    }
 
-        if ring.completion().is_empty() {
-            ring.submit_and_wait(1).unwrap();
+    fn submit_and_maybe_wait(&mut self) {
+        if self.ring.completion().is_empty() {
+            self.ring.submit_and_wait(1).unwrap();
         } else {
             // We need to call `ring.submit()` the first time we submit. And, if sqpoll is enabled, then
             // we also need to call `ring.submit()` to waken the kernel polling thread.
             // `ring.submit()` is basically a no-op if the kernel's sqpoll thread is still awake.
-            ring.submit().unwrap();
+            self.ring.submit().unwrap();
         }
+    }
 
-        for cqe in ring.completion() {
+    fn process_uring_cq(&mut self) {
+        for cqe in self.ring.completion() {
             // user_data holds the io_uring opcode in the lower 32 bits,
             // and holds the index_of_op in the upper 32 bits.
             let uring_opcode = (cqe.user_data() & 0xFFFFFFFF) as u8;
             let index_of_op = (cqe.user_data() >> 32) as usize;
-            let op = user_tasks_in_flight.as_mut(index_of_op).unwrap();
+            let op = self.user_tasks_in_flight.as_mut(index_of_op).unwrap();
 
             // Handle errors reported by io_uring:
             if cqe.result() < 0 {
@@ -149,7 +186,7 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithOutput>) {
                                 index_of_op,
                             );
                             op.set_output(buffer);
-                            internal_op_queue.push_back(entries);
+                            self.internal_op_queue.push_back(entries);
                         }
                         opcode::Read::CODE => {
                             if error_has_occurred {
@@ -158,8 +195,8 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithOutput>) {
                             op.send_output();
                         }
                         opcode::Close::CODE => {
-                            user_tasks_in_flight.remove(index_of_op).unwrap();
-                            n_files_registered -= 1;
+                            self.user_tasks_in_flight.remove(index_of_op).unwrap();
+                            self.n_files_registered -= 1;
                         }
                         _ => panic!("Unrecognised opcode!"),
                     };
@@ -167,9 +204,15 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithOutput>) {
             }
         }
     }
-    assert!(user_tasks_in_flight.is_empty());
-}
 
+    fn sq_len_plus_cq_len(&self) -> usize {
+        unsafe { self.ring.submission_shared().len() + self.ring.completion_shared().len() }
+    }
+
+    fn uring_is_full(&self) -> bool {
+        self.sq_len_plus_cq_len() >= SQ_RING_SIZE - MAX_ENTRIES_PER_CHAIN
+    }
+}
 fn get_filesize_bytes<P>(path: &P) -> i64
 where
     P: ?Sized + NixPath,
@@ -219,8 +262,6 @@ fn create_linked_read_close_sqes(
     let filesize_bytes = get_filesize_bytes(path.as_c_str());
 
     // Allocate vector:
-    // TODO: Don't initialise to all-zeros. Issue #46.
-    // See https://doc.rust-lang.org/std/mem/union.MaybeUninit.html#initializing-an-array-element-by-element
     let mut buffer = Vec::with_capacity(filesize_bytes as _);
 
     // Prepare the "read" opcode:
