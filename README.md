@@ -12,7 +12,7 @@ My first use-case for light-speed-io is to help to speed up reading [Zarr](https
 LSIO reads 1,000 small files during benchmarking. First, create these files using [`fio`](https://fio.readthedocs.io/en/latest/fio_doc.html). `fio` will also give one estimate of how fast you should expect your drive to go:
 ```shell
 sudo mkdir /tmp/fio
-chmod a+rw /tmp/fio
+sudo chmod a+rw /tmp/fio
 fio benches/fio.ini
 ```
 

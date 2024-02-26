@@ -18,7 +18,7 @@ type VecEntries = Vec<squeue::Entry>;
 
 pub(crate) fn worker_thread_func(rx: Receiver<OperationWithOutput>) {
     const MAX_FILES_TO_REGISTER: usize = 16;
-    const MAX_ENTRIES_PER_CHAIN: usize = 3; // Maximum number of io_uring entries per io_uring chain.
+    const MAX_ENTRIES_PER_CHAIN: usize = 2; // Maximum number of io_uring entries per io_uring chain.
     const SQ_RING_SIZE: usize = MAX_FILES_TO_REGISTER * MAX_ENTRIES_PER_CHAIN; // TODO: Allow the user to configure SQ_RING_SIZE.
     assert!(MAX_ENTRIES_PER_CHAIN < SQ_RING_SIZE);
     let mut ring: IoUring<squeue::Entry, cqueue::Entry> = io_uring::IoUring::builder()
