@@ -27,6 +27,11 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithOutput>) {
         .build(SQ_RING_SIZE as _)
         .expect("Failed to initialise io_uring.");
 
+    // Check that io_uring is set up to apply back-pressure to the submission queue, to stop the
+    // completion queue overflowing. See issue #66.
+    assert!(ring.params().is_feature_nodrop());
+    assert_eq!(ring.params().cq_entries(), ring.params().sq_entries() * 2);
+
     // Register "fixed" file descriptors, for use in chaining SQ entries:
     ring.submitter()
         .register_files_sparse(MAX_FILES_TO_REGISTER as _)
