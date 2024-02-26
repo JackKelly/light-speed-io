@@ -37,7 +37,7 @@ impl IoUringLocal {
     pub fn new() -> Self {
         assert!(MAX_ENTRIES_PER_CHAIN < SQ_RING_SIZE);
 
-        let mut ring: IoUring<squeue::Entry, cqueue::Entry> = io_uring::IoUring::builder()
+        let ring: IoUring<squeue::Entry, cqueue::Entry> = io_uring::IoUring::builder()
             .setup_sqpoll(1000) // The kernel sqpoll thread will sleep after this many milliseconds.
             // TODO: Allow the user to decide whether sqpoll is used.
             .build(SQ_RING_SIZE as _)
@@ -64,132 +64,153 @@ impl IoUringLocal {
         }
     }
 
-    pub(crate) fn worker_thread_func(&mut self, rx: Receiver<OperationWithOutput>) {
-        'outer: loop {
-            // Keep io_uring's submission queue topped up from this thread's internal queue.
-            // The internal queue always takes precedence over tasks from the user.
-            // TODO: Extract this inner loop into a separate function!
-            'inner: while self.sq_len_plus_cq_len() < SQ_RING_SIZE - MAX_ENTRIES_PER_CHAIN {
-                match self.internal_op_queue.pop_front() {
-                    None => break 'inner,
-                    Some(entries) => {
-                        unsafe {
-                            self.ring
-                                .submission()
-                                .push_multiple(entries.as_slice())
-                                .unwrap()
-                        };
-                    }
-                }
-            }
+    pub(crate) fn worker_thread_func(&mut self, mut rx: Receiver<OperationWithOutput>) {
+        loop {
+            self.move_entries_from_internal_queue_to_uring_sq();
 
-            // Keep io_uring's submission queue topped up with tasks from the user:
-            // TODO: Extract this inner loop into a separate function!
-            // TODO: The `n_files_registered < MAX_FILES_TO_REGISTER` check is only appropriate while
-            // Operations are only every `get` Operations.
-            'inner: while self.sq_len_plus_cq_len() < SQ_RING_SIZE - MAX_ENTRIES_PER_CHAIN
-                && self.n_files_registered < MAX_FILES_TO_REGISTER
+            if self
+                .move_entries_from_injector_queue_to_uring_sq(&mut rx)
+                .is_err()
             {
-                let op = if self.user_tasks_in_flight.is_empty() {
-                    // There are no tasks in flight in io_uring, so all that's
-                    // left to do is to block and wait for more `Operations` from the user.
-                    match rx.recv() {
-                        Ok(s) => s,
-                        Err(RecvError) => break 'outer, // The caller hung up.
-                    }
-                } else {
-                    match rx.try_recv() {
-                        Ok(s) => s,
-                        Err(TryRecvError::Empty) => {
-                            break 'inner;
-                        }
-                        Err(TryRecvError::Disconnected) => break 'outer,
-                    }
-                };
-
-                // Convert `Operation` to one or more `squeue::Entry`, and submit to io_uring.
-                let index_of_op = self.user_tasks_in_flight.get_next_index().unwrap();
-                let entries = match op.operation() {
-                    Operation::Get { path, .. } => create_openat_sqe(path, index_of_op),
-                };
-                self.user_tasks_in_flight.put(index_of_op, op);
-                unsafe {
-                    self.ring
-                        .submission()
-                        .push_multiple(entries.as_slice())
-                        .unwrap()
-                };
-                self.n_files_registered += 1; // TODO: When we support more `Operations` than just `get`,
-                                              // we'll need a way to only increment this when appropriate.
+                break;
             }
 
-            if self.ring.completion().is_empty() {
-                self.ring.submit_and_wait(1).unwrap();
-            } else {
-                // We need to call `ring.submit()` the first time we submit. And, if sqpoll is enabled, then
-                // we also need to call `ring.submit()` to waken the kernel polling thread.
-                // `ring.submit()` is basically a no-op if the kernel's sqpoll thread is still awake.
-                self.ring.submit().unwrap();
-            }
+            self.submit_and_maybe_wait();
 
-            for cqe in self.ring.completion() {
-                // user_data holds the io_uring opcode in the lower 32 bits,
-                // and holds the index_of_op in the upper 32 bits.
-                let uring_opcode = (cqe.user_data() & 0xFFFFFFFF) as u8;
-                let index_of_op = (cqe.user_data() >> 32) as usize;
-                let op = self.user_tasks_in_flight.as_mut(index_of_op).unwrap();
-
-                // Handle errors reported by io_uring:
-                if cqe.result() < 0 {
-                    let nix_err = nix::Error::from_i32(-cqe.result());
-                    let err = anyhow::Error::new(nix_err).context(format!(
-                    "{nix_err} (reported by io_uring completion queue entry (CQE) for opcode = {uring_opcode}, opname = {})",
-                    opcode_to_opname(uring_opcode),
-                ));
-                    op.send_error(err);
-                }
-
-                let error_has_occurred = op.error_has_occurred();
-
-                match op.operation_mut() {
-                    Operation::Get { path, fixed_fd, .. } => 'get: {
-                        match uring_opcode {
-                            opcode::OpenAt::CODE => {
-                                if error_has_occurred {
-                                    break 'get;
-                                };
-                                *fixed_fd = Some(types::Fixed(cqe.result() as u32));
-                                let (entries, buffer) = create_linked_read_close_sqes(
-                                    path,
-                                    fixed_fd.as_ref().unwrap(),
-                                    index_of_op,
-                                );
-                                op.set_output(buffer);
-                                self.internal_op_queue.push_back(entries);
-                            }
-                            opcode::Read::CODE => {
-                                if error_has_occurred {
-                                    break 'get;
-                                };
-                                op.send_output();
-                            }
-                            opcode::Close::CODE => {
-                                self.user_tasks_in_flight.remove(index_of_op).unwrap();
-                                self.n_files_registered -= 1;
-                            }
-                            _ => panic!("Unrecognised opcode!"),
-                        };
-                    }
-                }
-            }
+            self.process_uring_cq();
         }
         assert!(self.user_tasks_in_flight.is_empty());
     }
 
-    fn sq_len_plus_cq_len(&mut self) -> usize {
-        let mut sq_len_plus_cq_len = self.ring.submission().len();
-        sq_len_plus_cq_len += self.ring.completion().len();
-        sq_len_plus_cq_len
+    /// Keep io_uring's submission queue topped up from this thread's internal queue.
+    /// The internal queue always takes precedence over tasks from the user.
+    fn move_entries_from_internal_queue_to_uring_sq(&mut self) {
+        while !self.uring_is_full() {
+            match self.internal_op_queue.pop_front() {
+                None => break,
+                Some(entries) => {
+                    unsafe {
+                        self.ring
+                            .submission()
+                            .push_multiple(entries.as_slice())
+                            .unwrap()
+                    };
+                }
+            }
+        }
+    }
+
+    /// Keep io_uring's submission queue topped up with tasks from the user/
+    fn move_entries_from_injector_queue_to_uring_sq(
+        &mut self,
+        rx: &mut Receiver<OperationWithOutput>,
+    ) -> Result<(), RecvError> {
+        // TODO: The `n_files_registered < MAX_FILES_TO_REGISTER` check is only appropriate while
+        // Operations are only every `get` Operations.
+        while !self.uring_is_full() && self.n_files_registered < MAX_FILES_TO_REGISTER {
+            let op = if self.user_tasks_in_flight.is_empty() {
+                // There are no tasks in flight in io_uring, so all that's
+                // left to do is to block and wait for more `Operations` from the user.
+                match rx.recv() {
+                    Ok(s) => s,
+                    Err(RecvError) => return Err(RecvError), // The caller hung up.
+                }
+            } else {
+                match rx.try_recv() {
+                    Ok(s) => s,
+                    Err(TryRecvError::Empty) => return Ok(()),
+                    Err(TryRecvError::Disconnected) => return Err(RecvError), // The caller hung up.
+                }
+            };
+
+            // Convert `Operation` to one or more `squeue::Entry`, and submit to io_uring.
+            let index_of_op = self.user_tasks_in_flight.get_next_index().unwrap();
+            let entries = match op.operation() {
+                Operation::Get { path, .. } => create_openat_sqe(path, index_of_op),
+            };
+            self.user_tasks_in_flight.put(index_of_op, op);
+            unsafe {
+                self.ring
+                    .submission()
+                    .push_multiple(entries.as_slice())
+                    .unwrap()
+            };
+            self.n_files_registered += 1; // TODO: When we support more `Operations` than just `get`,
+                                          // we'll need a way to only increment this when appropriate.
+        }
+        Ok(())
+    }
+
+    fn submit_and_maybe_wait(&mut self) {
+        if self.ring.completion().is_empty() {
+            self.ring.submit_and_wait(1).unwrap();
+        } else {
+            // We need to call `ring.submit()` the first time we submit. And, if sqpoll is enabled, then
+            // we also need to call `ring.submit()` to waken the kernel polling thread.
+            // `ring.submit()` is basically a no-op if the kernel's sqpoll thread is still awake.
+            self.ring.submit().unwrap();
+        }
+    }
+
+    fn process_uring_cq(&mut self) {
+        for cqe in self.ring.completion() {
+            // user_data holds the io_uring opcode in the lower 32 bits,
+            // and holds the index_of_op in the upper 32 bits.
+            let uring_opcode = (cqe.user_data() & 0xFFFFFFFF) as u8;
+            let index_of_op = (cqe.user_data() >> 32) as usize;
+            let op = self.user_tasks_in_flight.as_mut(index_of_op).unwrap();
+
+            // Handle errors reported by io_uring:
+            if cqe.result() < 0 {
+                let nix_err = nix::Error::from_i32(-cqe.result());
+                let err = anyhow::Error::new(nix_err).context(format!(
+                    "{nix_err} (reported by io_uring completion queue entry (CQE) for opcode = {uring_opcode}, opname = {})",
+                    opcode_to_opname(uring_opcode),
+                ));
+                op.send_error(err);
+            }
+
+            let error_has_occurred = op.error_has_occurred();
+
+            match op.operation_mut() {
+                Operation::Get { path, fixed_fd, .. } => 'get: {
+                    match uring_opcode {
+                        opcode::OpenAt::CODE => {
+                            if error_has_occurred {
+                                break 'get;
+                            };
+                            *fixed_fd = Some(types::Fixed(cqe.result() as u32));
+                            let (entries, buffer) = create_linked_read_close_sqes(
+                                path,
+                                fixed_fd.as_ref().unwrap(),
+                                index_of_op,
+                            );
+                            op.set_output(buffer);
+                            self.internal_op_queue.push_back(entries);
+                        }
+                        opcode::Read::CODE => {
+                            if error_has_occurred {
+                                break 'get;
+                            };
+                            op.send_output();
+                        }
+                        opcode::Close::CODE => {
+                            self.user_tasks_in_flight.remove(index_of_op).unwrap();
+                            self.n_files_registered -= 1;
+                        }
+                        _ => panic!("Unrecognised opcode!"),
+                    };
+                }
+            }
+        }
+    }
+
+    fn sq_len_plus_cq_len(&self) -> usize {
+        unsafe { self.ring.submission_shared().len() + self.ring.completion_shared().len() }
+    }
+
+    fn uring_is_full(&self) -> bool {
+        self.sq_len_plus_cq_len() >= SQ_RING_SIZE - MAX_ENTRIES_PER_CHAIN
     }
 }
 fn get_filesize_bytes<P>(path: &P) -> i64
@@ -241,8 +262,6 @@ fn create_linked_read_close_sqes(
     let filesize_bytes = get_filesize_bytes(path.as_c_str());
 
     // Allocate vector:
-    // TODO: Don't initialise to all-zeros. Issue #46.
-    // See https://doc.rust-lang.org/std/mem/union.MaybeUninit.html#initializing-an-array-element-by-element
     let mut buffer = Vec::with_capacity(filesize_bytes as _);
 
     // Prepare the "read" opcode:
