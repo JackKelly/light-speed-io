@@ -3,6 +3,7 @@ use std::collections::VecDeque;
 pub(crate) struct Tracker<T> {
     pub(crate) ops_in_flight: Vec<Option<T>>,
     pub(crate) next_index: VecDeque<usize>,
+    len: usize,
 }
 
 impl<T> Tracker<T> {
@@ -10,6 +11,7 @@ impl<T> Tracker<T> {
         Self {
             ops_in_flight: (0..n).map(|_| None).collect(),
             next_index: (0..n).collect(),
+            len: 0,
         }
     }
 
@@ -19,21 +21,23 @@ impl<T> Tracker<T> {
 
     pub(crate) fn put(&mut self, index: usize, op: T) {
         self.ops_in_flight[index].replace(op);
+        self.len += 1;
     }
 
     pub(crate) fn as_mut(&mut self, index: usize) -> Option<&mut T> {
         self.ops_in_flight[index].as_mut()
     }
 
-    pub(crate) fn as_ref(&self, index: usize) -> Option<&T> {
-        self.ops_in_flight[index].as_ref()
-    }
-
     pub(crate) fn remove(&mut self, index: usize) -> Option<T> {
         self.ops_in_flight[index].take().map(|t| {
             self.next_index.push_back(index);
+            self.len -= 1;
             t
         })
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.len == 0
     }
 }
 
