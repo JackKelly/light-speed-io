@@ -41,9 +41,7 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithOutput>) {
     // https://manpages.debian.org/unstable/liburing-dev/io_uring_register.2.en.html#IORING_REGISTER_RING_FDS
 
     // Counters
-    let mut n_user_tasks_completed: u32 = 0;
     let mut n_files_registered: usize = 0;
-    let mut n_ops_received_from_user: u32 = 0;
 
     // These are the `squeue::Entry`s generated within this thread.
     // Each inner `Vec<Entry>` will be submitted in one go. Each chain of linked entries
@@ -57,24 +55,26 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithOutput>) {
         // Keep io_uring's submission queue topped up from this thread's internal queue.
         // The internal queue always takes precedence over tasks from the user.
         // TODO: Extract this inner loop into a separate function!
-        'inner: while ring.submission().len() < SQ_RING_SIZE - MAX_ENTRIES_PER_CHAIN
-            && !ring.completion().is_full()
-        {
+        // TODO: Extract this sq_len_plus_cq_len into a separate function.
+        let mut sq_len_plus_cq_len = ring.submission().len();
+        sq_len_plus_cq_len += ring.completion().len();
+        'inner: while sq_len_plus_cq_len < SQ_RING_SIZE - MAX_ENTRIES_PER_CHAIN {
             match internal_op_queue.pop_front() {
                 None => break 'inner,
                 Some(entries) => {
                     unsafe { ring.submission().push_multiple(entries.as_slice()).unwrap() };
                 }
             }
+            sq_len_plus_cq_len = ring.submission().len();
+            sq_len_plus_cq_len += ring.completion().len();
         }
 
         // Keep io_uring's submission queue topped up with tasks from the user:
         // TODO: Extract this inner loop into a separate function!
         // TODO: The `n_files_registered < MAX_FILES_TO_REGISTER` check is only appropriate while
         // Operations are only every `get` Operations.
-        'inner: while ring.submission().len() < SQ_RING_SIZE - MAX_ENTRIES_PER_CHAIN
+        'inner: while sq_len_plus_cq_len < SQ_RING_SIZE - MAX_ENTRIES_PER_CHAIN
             && n_files_registered < MAX_FILES_TO_REGISTER
-            && !ring.completion().is_full()
         {
             let op = if user_tasks_in_flight.is_empty() {
                 // There are no tasks in flight in io_uring, so all that's
@@ -93,8 +93,6 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithOutput>) {
                 }
             };
 
-            n_ops_received_from_user += 1;
-
             // Convert `Operation` to one or more `squeue::Entry`, and submit to io_uring.
             let index_of_op = user_tasks_in_flight.get_next_index().unwrap();
             let entries = match op.operation() {
@@ -104,6 +102,9 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithOutput>) {
             unsafe { ring.submission().push_multiple(entries.as_slice()).unwrap() };
             n_files_registered += 1; // TODO: When we support more `Operations` than just `get`,
                                      // we'll need a way to only increment this when appropriate.
+
+            sq_len_plus_cq_len = ring.submission().len();
+            sq_len_plus_cq_len += ring.completion().len();
         }
 
         if ring.completion().is_empty() {
@@ -158,7 +159,6 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithOutput>) {
                         }
                         opcode::Close::CODE => {
                             user_tasks_in_flight.remove(index_of_op).unwrap();
-                            n_user_tasks_completed += 1;
                             n_files_registered -= 1;
                         }
                         _ => panic!("Unrecognised opcode!"),
@@ -167,7 +167,7 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithOutput>) {
             }
         }
     }
-    assert_eq!(n_ops_received_from_user, n_user_tasks_completed);
+    assert!(user_tasks_in_flight.is_empty());
 }
 
 fn get_filesize_bytes<P>(path: &P) -> i64
