@@ -86,10 +86,12 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithOutput>) {
         {
             ring.submission().sync();
             ring.completion().sync();
-            let op = if ring.submission().is_empty() && ring.completion().is_empty() {
+            let op = if user_tasks_in_flight.is_empty()
+                && ring.submission().is_empty()
+                && ring.completion().is_empty()
+            {
                 // There are no tasks in flight in io_uring, so all that's
                 // left to do is to block and wait for more `Operations` from the user.
-                println!("Waiting for input...");
                 match rx.recv() {
                     Ok(s) => s,
                     Err(RecvError) => break 'outer, // The caller hung up.
@@ -103,7 +105,6 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithOutput>) {
                     Err(TryRecvError::Disconnected) => break 'outer,
                 }
             };
-            println!("Got input");
 
             n_ops_received_from_user += 1;
 
@@ -123,7 +124,7 @@ pub(crate) fn worker_thread_func(rx: Receiver<OperationWithOutput>) {
                                      // we'll need a way to only increment this when appropriate.
         }
 
-        if ring.completion().is_empty() && !ring.submission().is_empty() {
+        if ring.completion().is_empty() {
             ring.submit_and_wait(1).unwrap();
         } else {
             // We need to call `ring.submit()` the first time we submit. And, if sqpoll is enabled, then

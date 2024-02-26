@@ -29,7 +29,6 @@ async fn load_files_with_io_uring_local(
         for f in futures {
             let b = f.await.expect("At least one Result was an Error");
             assert_eq!(b.len(), FILE_SIZE_BYTES);
-            println!("got one file");
         }
         total_time += start_of_iter.elapsed();
     }
@@ -75,7 +74,7 @@ async fn load_files_with_local_file_system(
 }
 
 fn bench(c: &mut Criterion) {
-    const N_FILES: usize = 3;
+    const N_FILES: usize = 1000;
 
     // Configure group:
     let mut group = c.benchmark_group(format!("load_{N_FILES}_files"));
