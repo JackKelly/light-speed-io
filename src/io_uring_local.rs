@@ -9,8 +9,12 @@ use std::collections::VecDeque;
 use std::ffi::CString;
 use std::sync::mpsc::TryRecvError;
 use std::sync::mpsc::{Receiver, RecvError};
+use tokio::sync::oneshot;
 
-use crate::{operation, operation::Operation, tracker::Tracker};
+use crate::object_store_adapter::UserOpWithOutputChannel;
+use crate::user_operation::OutputOfUserOp;
+use crate::user_operation::UserOperation;
+use crate::{tracker::Tracker, user_operation};
 
 type VecEntries = Vec<squeue::Entry>;
 
@@ -28,7 +32,7 @@ pub struct IoUringLocal {
     internal_op_queue: VecDeque<VecEntries>,
 
     // These are the tasks that the user submits via `rx`.
-    user_tasks_in_flight: Tracker<Box<dyn Operation + Send>>,
+    user_tasks_in_flight: Tracker<Box<dyn IoUringOperation + Send>>,
 }
 
 impl IoUringLocal {
@@ -62,7 +66,7 @@ impl IoUringLocal {
         }
     }
 
-    pub(crate) fn worker_thread_func(&mut self, mut rx: Receiver<Box<dyn Operation + Send>>) {
+    pub(crate) fn worker_thread_func(&mut self, mut rx: Receiver<UserOpWithOutputChannel>) {
         // This is the main loop for the thread.
         loop {
             // The internal queue always takes precedence over the injector queue.
@@ -103,7 +107,7 @@ impl IoUringLocal {
     /// Keep io_uring's submission queue topped up with tasks from the user.
     fn move_entries_from_injector_queue_to_uring_sq(
         &mut self,
-        rx: &mut Receiver<Box<dyn Operation + Send>>,
+        rx: &mut Receiver<UserOpWithOutputChannel>,
     ) -> Result<(), RecvError> {
         // TODO: The `n_files_registered < MAX_FILES_TO_REGISTER` check is only appropriate while
         // Operations are only ever `get` Operations.
@@ -123,18 +127,28 @@ impl IoUringLocal {
                 }
             };
 
+            let mut op = match op.user_op {
+                UserOperation::Get { path } => IoUringGetOp::new(path, op.output_channel),
+                _ => panic!("Not implemented yet!"),
+            };
+
             // Convert `Operation` to one or more `squeue::Entry`, and submit to io_uring.
             let index_of_op = self.user_tasks_in_flight.get_next_index().unwrap();
-            let entries = match op.build_submission_queue_entries();
-            self.user_tasks_in_flight.put(index_of_op, op);
+            let entries = match op.next_step(index_of_op) {
+                NextStep::SubmitFirstEntries(entries) => entries,
+                NextStep::SubmitFirstEntriesToOpenFile(entries) => {
+                    self.n_files_registered += 1;
+                    entries
+                }
+                _ => panic!("next_step should only return first entries here!"),
+            };
             unsafe {
                 self.ring
                     .submission()
                     .push_multiple(entries.as_slice())
                     .unwrap()
             };
-            self.n_files_registered += 1; // TODO: When we support more `Operations` than just `get`,
-                                          // we'll need a way to only increment this when appropriate.
+            self.user_tasks_in_flight.put(index_of_op, Box::new(op));
         }
         Ok(())
     }
@@ -154,51 +168,17 @@ impl IoUringLocal {
         for cqe in self.ring.completion() {
             // user_data holds the io_uring opcode in the lower 32 bits,
             // and holds the index_of_op in the upper 32 bits.
-            let uring_opcode = (cqe.user_data() & 0xFFFFFFFF) as u8;
             let index_of_op = (cqe.user_data() >> 32) as usize;
             let op = self.user_tasks_in_flight.as_mut(index_of_op).unwrap();
-
-            // Handle errors reported by io_uring:
-            if cqe.result() < 0 {
-                let nix_err = nix::Error::from_i32(-cqe.result());
-                let err = anyhow::Error::new(nix_err).context(format!(
-                    "{nix_err} (reported by io_uring completion queue entry (CQE) for opcode = {uring_opcode}, opname = {})",
-                    opcode_to_opname(uring_opcode),
-                ));
-                op.send_error(err);
-            }
-
-            let error_has_occurred = op.error_has_occurred();
-
-            match op.operation_mut() {
-                Operation::Get { path, fixed_fd, .. } => 'get: {
-                    match uring_opcode {
-                        opcode::OpenAt::CODE => {
-                            if error_has_occurred {
-                                break 'get;
-                            };
-                            *fixed_fd = Some(types::Fixed(cqe.result() as u32));
-                            let (entries, buffer) = create_linked_read_close_sqes(
-                                path,
-                                fixed_fd.as_ref().unwrap(),
-                                index_of_op,
-                            );
-                            op.set_output(buffer);
-                            self.internal_op_queue.push_back(entries);
-                        }
-                        opcode::Read::CODE => {
-                            if error_has_occurred {
-                                break 'get;
-                            };
-                            op.send_output();
-                        }
-                        opcode::Close::CODE => {
-                            self.user_tasks_in_flight.remove(index_of_op).unwrap();
-                            self.n_files_registered -= 1;
-                        }
-                        _ => panic!("Unrecognised opcode!"),
-                    };
+            match op.next_step(index_of_op) {
+                NextStep::SubmitSubsequentEntries(entries) => {
+                    self.internal_op_queue.push_back(entries)
                 }
+                NextStep::Done => {
+                    self.user_tasks_in_flight.remove(index_of_op).unwrap();
+                    self.n_files_registered -= 1;
+                }
+                _ => (),
             }
         }
     }
@@ -250,7 +230,7 @@ fn create_linked_read_close_sqes(
     path: &CString,
     fixed_fd: &types::Fixed,
     index_of_op: usize,
-) -> (VecEntries, Output) {
+) -> (VecEntries, OutputOfUserOp) {
     // Convert the index_of_op into a u64, and bit-shift it left.
     // We do this so the u64 io_uring user_data represents the index_of_op in the left-most 32 bits,
     // and represents the io_uring opcode CODE in the right-most 32 bits.
@@ -277,7 +257,7 @@ fn create_linked_read_close_sqes(
         .build()
         .user_data(index_of_op | (opcode::Close::CODE as u64));
 
-    (vec![read_op, close_op], Output::Get { buffer })
+    (vec![read_op, close_op], OutputOfUserOp::Get(buffer))
 }
 
 fn opcode_to_opname(opcode: u8) -> &'static str {
@@ -289,31 +269,139 @@ fn opcode_to_opname(opcode: u8) -> &'static str {
     }
 }
 
-trait IoUringOperation {
-    fn process_completion_queue_entry(&mut self, cqe: cqueue::Entry) {
-        self.core().cqe = Some(cqe);
-        self.check_for_and_handle_cqe_error();
-    }
+#[derive(Debug)]
+struct IoUringGetOp {
+    path: CString,
+    uring_op: IoUringUserOp,
+    fixed_fd: Option<types::Fixed>,
+}
 
-    /// If called while `self.cqe` is None, then returns the first `Vec<squeue::Entry>`.
-    /// If `self.cqe` is `Some(cqe)`, then submit further `Vec<squeue::Entry>` and/or send result.
-    /// If the returned `Vec<squeue::Entry>` is empty then this operation can be removed.
-    fn build_submission_queue_entries(&mut self) -> Vec<squeue::Entry>;
-
-    fn check_for_and_handle_cqe_error(&mut self) {
-        if self.core().cqe.unwrap().as_ref().result() < 0 {
-            self.core().error_has_occurred = True;
-            let err = cqe_error_to_anyhow_error(self.cqe.unwrap().as_ref());
-            self.core().send_error(err);    
+impl IoUringGetOp {
+    fn new(path: CString, output_channel: oneshot::Sender<anyhow::Result<OutputOfUserOp>>) -> Self {
+        Self {
+            path,
+            uring_op: IoUringUserOp::new(output_channel),
+            fixed_fd: None,
         }
     }
 }
 
-impl IoUringOperation for operation::Get<cqueue::Entry> {
-    fn build_submission_queue_entries(&mut self) -> Vec<squeue::Entry> {
-        match self.core.cqe {
-            None => build_openat_sqe(&self.core.path, index_of_op)
+#[derive(Debug)]
+struct IoUringUserOp {
+    output: Option<OutputOfUserOp>,
+    // `output_channel` is an `Option` because `send` consumes itself,
+    // so we need to `output_channel.take().unwrap().send(Some(buffer))`.
+    output_channel: Option<oneshot::Sender<anyhow::Result<OutputOfUserOp>>>,
+    error_has_occurred: bool,
+    last_cqe: Option<cqueue::Entry>,
+    last_opcode: Option<u8>,
+}
+
+impl IoUringUserOp {
+    fn new(output_channel: oneshot::Sender<anyhow::Result<OutputOfUserOp>>) -> Self {
+        Self {
+            output: None,
+            output_channel: Some(output_channel),
+            error_has_occurred: false,
+            last_cqe: None,
+            last_opcode: None,
         }
     }
 
+    fn send_output(&mut self) {
+        self.output_channel
+            .take()
+            .unwrap()
+            .send(Ok(self.output.take().unwrap()))
+            .unwrap();
+    }
+
+    fn process_cqe(&mut self, cqe: cqueue::Entry) {
+        self.last_opcode = Some((cqe.user_data() & 0xFFFFFFFF) as u8);
+        self.last_cqe = Some(cqe);
+
+        if self.last_cqe.as_ref().unwrap().result() < 0 {
+            self.error_has_occurred = true;
+            let err = self.cqe_error_to_anyhow_error();
+            self.send_error(err);
+        }
+    }
+
+    fn send_error(&mut self, error: anyhow::Error) {
+        if self.error_has_occurred {
+            eprintln!("The output_channel has already been consumed (probably by sending a previous error)! But a new error has been reported: {error}");
+            return;
+        }
+        self.error_has_occurred = true;
+
+        let error = error.context(format!("IoUringUserOp = {self:?}"));
+
+        self.output_channel
+            .take()
+            .unwrap()
+            .send(Err(error))
+            .unwrap();
+    }
+
+    fn cqe_error_to_anyhow_error(&self) -> anyhow::Error {
+        let cqe = self.last_cqe.as_ref().unwrap();
+        let nix_err = nix::Error::from_i32(-cqe.result());
+        anyhow::Error::new(nix_err).context(format!(
+            "{nix_err} (reported by io_uring completion queue entry (CQE) for opcode = {}, opname = {})",
+            self.last_opcode.unwrap(), opcode_to_opname(self.last_opcode.unwrap())
+        ))
+    }
+}
+
+trait IoUringOperation {
+    /// If called while `self.uring_op.last_cqe` is None, then returns the first `squeue::Entry`(s).
+    /// If `self.uring_op.last_cqe` is `Some(cqe)`, then submit further SQEs and/or send result.
+    fn next_step(&mut self, index_of_op: usize) -> NextStep;
+}
+
+impl IoUringOperation for IoUringGetOp {
+    fn next_step(&mut self, index_of_op: usize) -> NextStep {
+        match self.uring_op.last_cqe.as_ref() {
+            // Build the first SQE:
+            None => {
+                NextStep::SubmitFirstEntriesToOpenFile(build_openat_sqe(&self.path, index_of_op))
+            }
+
+            // Build subsequent SQEs:
+            Some(cqe) => match self
+                .uring_op
+                .last_opcode
+                .expect("last_opcode not set, even though last_cqe is set!")
+            {
+                opcode::OpenAt::CODE | opcode::Read::CODE if self.uring_op.error_has_occurred => {
+                    NextStep::ErrorHasOccurred
+                }
+                opcode::OpenAt::CODE => {
+                    self.fixed_fd = Some(types::Fixed(cqe.result() as u32));
+                    let (entries, buffer) = create_linked_read_close_sqes(
+                        &self.path,
+                        self.fixed_fd.as_ref().unwrap(),
+                        index_of_op,
+                    );
+                    self.uring_op.output = Some(buffer);
+                    NextStep::SubmitSubsequentEntries(entries)
+                }
+                opcode::Read::CODE => {
+                    self.uring_op.send_output();
+                    NextStep::OutputHasBeenSent
+                }
+                opcode::Close::CODE => NextStep::Done,
+                _ => panic!("Unrecognised opcode!"),
+            },
+        }
+    }
+}
+
+enum NextStep {
+    SubmitFirstEntriesToOpenFile(Vec<squeue::Entry>),
+    SubmitFirstEntries(Vec<squeue::Entry>),
+    SubmitSubsequentEntries(Vec<squeue::Entry>),
+    ErrorHasOccurred,
+    OutputHasBeenSent,
+    Done,
 }
