@@ -1,34 +1,38 @@
 use io_uring::{cqueue, opcode, types};
 use std::ffi::CString;
+use std::ops::Range;
 use tokio::sync::oneshot;
 
 use crate::operation;
 use crate::uring;
 use crate::uring::operation::{
-    build_openat_sqe, create_linked_read_close_sqes, InnerState, NextStep,
+    build_openat_sqe, create_linked_read_range_close_sqes, InnerState, NextStep,
 };
 
 #[derive(Debug)]
-pub(super) struct Get {
+pub(super) struct GetRange {
     pub(super) path: CString,
+    pub(super) range: Range<i32>,
     pub(super) fixed_fd: Option<types::Fixed>,
     pub(super) inner: InnerState,
 }
 
-impl Get {
+impl GetRange {
     pub(super) fn new(
         path: CString,
+        range: Range<i32>,
         output_channel: oneshot::Sender<anyhow::Result<operation::OperationOutput>>,
     ) -> Self {
         Self {
             path,
+            range,
             inner: InnerState::new(output_channel),
             fixed_fd: None,
         }
     }
 }
 
-impl uring::Operation for Get {
+impl uring::Operation for GetRange {
     fn process_cqe(&mut self, cqe: cqueue::Entry) {
         self.inner.process_cqe(cqe);
     }
@@ -61,8 +65,8 @@ impl uring::Operation for Get {
                         }
                     } else {
                         self.fixed_fd = Some(types::Fixed(cqe.result() as u32));
-                        let (entries, buffer) = create_linked_read_close_sqes(
-                            &self.path,
+                        let (entries, buffer) = create_linked_read_range_close_sqes(
+                            &self.range,
                             self.fixed_fd.as_ref().unwrap(),
                             index_of_op,
                         );

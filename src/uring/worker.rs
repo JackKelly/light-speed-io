@@ -115,8 +115,13 @@ impl Worker {
                 }
             };
 
-            let mut op = match op.op {
-                operation::Operation::Get { path } => uring::Get::new(path, op.output_channel),
+            let mut op: Box<dyn uring::Operation + Send> = match op.op {
+                operation::Operation::Get { path } => {
+                    Box::new(uring::Get::new(path, op.output_channel))
+                }
+                operation::Operation::GetRange { path, range } => {
+                    Box::new(uring::GetRange::new(path, range, op.output_channel))
+                }
                 _ => panic!("Not implemented yet!"),
             };
 
@@ -140,7 +145,7 @@ impl Worker {
                     .push_multiple(entries.as_slice())
                     .unwrap()
             };
-            self.user_tasks_in_flight.put(index_of_op, Box::new(op));
+            self.user_tasks_in_flight.put(index_of_op, op);
         }
         Ok(())
     }
