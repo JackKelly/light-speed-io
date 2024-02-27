@@ -296,6 +296,7 @@ struct IoUringUserOp {
     error_has_occurred: bool,
     last_cqe: Option<cqueue::Entry>,
     last_opcode: Option<u8>,
+    n_steps_completed: usize,
 }
 
 impl IoUringUserOp {
@@ -306,6 +307,7 @@ impl IoUringUserOp {
             error_has_occurred: false,
             last_cqe: None,
             last_opcode: None,
+            n_steps_completed: 0,
         }
     }
 
@@ -366,9 +368,15 @@ impl IoUringOperation for IoUringGetOp {
     }
 
     fn next_step(&mut self, index_of_op: usize) -> NextStep {
+        self.uring_op.n_steps_completed += 1;
         match self.uring_op.last_cqe.as_ref() {
             // Build the first SQE:
             None => {
+                assert_eq!(
+                    self.uring_op.n_steps_completed, 1,
+                    "`next_step` has been called {} times, yet `last_cqe` is None. Have you forgotten to call `process_cqe`?",
+                    self.uring_op.n_steps_completed
+                );
                 NextStep::SubmitFirstEntriesToOpenFile(build_openat_sqe(&self.path, index_of_op))
             }
 
@@ -397,6 +405,7 @@ impl IoUringOperation for IoUringGetOp {
                 opcode::Read::CODE => {
                     if self.uring_op.error_has_occurred {
                         // We're not done yet, because we need to wait for the close op.
+                        // The close op is linked to the read op.
                         NextStep::Error
                     } else {
                         self.uring_op.send_output();
