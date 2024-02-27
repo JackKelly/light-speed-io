@@ -4,6 +4,7 @@ use snafu::{ensure, Snafu};
 use std::ffi::CString;
 use std::future::Future;
 use std::io;
+use std::ops::Range;
 use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -192,6 +193,28 @@ impl ObjectStoreAdapter {
             let out = rx.await.expect("Sender hung up!");
             out.map(|out| match out {
                 OperationOutput::Get(buffer) => Bytes::from(buffer),
+                _ => panic!("out must be a Get variant!"),
+            })
+        })
+    }
+
+    pub fn get_range(
+        &self,
+        location: &ObjectStorePath,
+        range: Range<i32>,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Bytes>> + Send + Sync>> {
+        let path = self.config.path_to_filesystem(location).unwrap();
+        let path = CString::new(path.as_os_str().as_bytes())
+            .expect("Failed to convert path '{path}' to CString.");
+
+        let operation = Operation::GetRange { path, range };
+
+        let rx = self.worker_thread.send(operation);
+
+        Box::pin(async {
+            let out = rx.await.expect("Sender hung up!");
+            out.map(|out| match out {
+                OperationOutput::GetRange(buffer) => Bytes::from(buffer),
                 _ => panic!("out must be a Get variant!"),
             })
         })

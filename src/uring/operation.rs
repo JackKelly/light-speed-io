@@ -5,6 +5,7 @@ use io_uring::types;
 use nix::sys::stat::stat;
 use nix::NixPath;
 use std::ffi::CString;
+use std::ops::Range;
 use tokio::sync::oneshot;
 
 use crate::operation;
@@ -100,6 +101,14 @@ impl InnerState {
             self.last_opcode.unwrap(), opcode_to_opname(self.last_opcode.unwrap())
         ))
     }
+
+    pub(super) fn check_n_steps_completed_is_1(&self) {
+        assert_eq!(
+            self.n_steps_completed, 1,
+            "`next_step` has been called {} times, yet `last_cqe` is None. Have you forgotten to call `process_cqe`?",
+            self.n_steps_completed
+        );
+    }
 }
 
 fn get_filesize_bytes<P>(path: &P) -> i64
@@ -169,6 +178,41 @@ pub(super) fn create_linked_read_close_sqes(
     (
         vec![read_op, close_op],
         operation::OperationOutput::Get(buffer),
+    )
+}
+
+pub(super) fn create_linked_read_range_close_sqes(
+    range: &Range<i32>,
+    fixed_fd: &types::Fixed,
+    index_of_op: usize,
+) -> (Vec<squeue::Entry>, operation::OperationOutput) {
+    // Convert the index_of_op into a u64, and bit-shift it left.
+    // We do this so the u64 io_uring user_data represents the index_of_op in the left-most 32 bits,
+    // and represents the io_uring opcode CODE in the right-most 32 bits.
+    let index_of_op: u64 = (index_of_op as u64) << 32;
+
+    // Allocate vector:
+    let mut buffer = Vec::with_capacity(range.len());
+
+    // Prepare the "read" opcode:
+    let read_op = opcode::Read::new(*fixed_fd, buffer.as_mut_ptr(), range.len() as u32)
+        .offset(range.start as _)
+        .build()
+        .user_data(index_of_op | (opcode::Read::CODE as u64))
+        .flags(squeue::Flags::IO_LINK);
+
+    unsafe {
+        buffer.set_len(range.len());
+    }
+
+    // Prepare the "close" opcode:
+    let close_op = opcode::Close::new(*fixed_fd)
+        .build()
+        .user_data(index_of_op | (opcode::Close::CODE as u64));
+
+    (
+        vec![read_op, close_op],
+        operation::OperationOutput::GetRange(buffer),
     )
 }
 
