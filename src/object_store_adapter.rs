@@ -190,7 +190,7 @@ impl ObjectStoreAdapter {
         let rx = self.worker_thread.send(operation);
 
         Box::pin(async {
-            let out = rx.await.unwrap();
+            let out = rx.await.expect("Sender hung up!");
             out.map(|out| match out {
                 OutputOfUserOp::Get(buffer) => Bytes::from(buffer),
                 _ => panic!("out must be a Get variant!"),
