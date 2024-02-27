@@ -12,8 +12,8 @@ use std::thread;
 use tokio::sync::oneshot;
 use url::Url;
 
-use crate::io_uring_local::IoUringLocal;
 use crate::operation::{Operation, OperationOutput};
+use crate::uring;
 
 /// A specialized `Error` for filesystem object store-related errors
 /// From `object_store::local`
@@ -105,21 +105,22 @@ impl Config {
 }
 
 #[derive(Debug)]
-pub(crate) struct UserOpWithOutputChannel {
-    pub(crate) user_op: Operation,
+pub(crate) struct OpAndOutputChan {
+    pub(crate) op: Operation,
     pub(crate) output_channel: oneshot::Sender<anyhow::Result<OperationOutput>>,
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 struct WorkerThread {
     handle: thread::JoinHandle<()>,
-    sender: mpsc::Sender<UserOpWithOutputChannel>, // Channel to send ops to the worker thread
+    sender: mpsc::Sender<OpAndOutputChan>, // Channel to send ops to the worker thread
 }
 
 impl WorkerThread {
     pub fn new<F>(mut worker_thread_func: F) -> Self
     where
-        F: FnMut(mpsc::Receiver<UserOpWithOutputChannel>) + Send + 'static,
+        F: FnMut(mpsc::Receiver<OpAndOutputChan>) + Send + 'static,
     {
         let (sender, rx) = mpsc::channel();
         let handle = thread::spawn(move || worker_thread_func(rx));
@@ -128,8 +129,8 @@ impl WorkerThread {
 
     pub fn send(&self, user_op: Operation) -> oneshot::Receiver<anyhow::Result<OperationOutput>> {
         let (output_channel, output_rx) = oneshot::channel();
-        let user_op_with_chan = UserOpWithOutputChannel {
-            user_op,
+        let user_op_with_chan = OpAndOutputChan {
+            op: user_op,
             output_channel,
         };
         self.sender
@@ -147,16 +148,17 @@ impl std::fmt::Display for ObjectStoreAdapter {
 
 impl Default for ObjectStoreAdapter {
     fn default() -> Self {
-        let mut io_uring_local = IoUringLocal::new();
-        Self::new(move |rx| IoUringLocal::worker_thread_func(&mut io_uring_local, rx))
+        let mut uring_worker = uring::Worker::new();
+        Self::new(move |rx| uring::Worker::worker_thread_func(&mut uring_worker, rx))
     }
 }
 
+#[allow(private_bounds)]
 impl ObjectStoreAdapter {
     /// Create new filesystem storage with no prefix
     pub fn new<F>(func_for_get_thread: F) -> Self
     where
-        F: FnMut(mpsc::Receiver<UserOpWithOutputChannel>) + Send + 'static,
+        F: FnMut(mpsc::Receiver<OpAndOutputChan>) + Send + 'static,
     {
         Self {
             config: Arc::new(Config {
