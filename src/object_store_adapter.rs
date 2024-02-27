@@ -258,12 +258,45 @@ mod tests {
             let result = future.await;
             if i < 2 {
                 let b = result.unwrap();
-                println!("Loaded {} bytes", b.len());
-                println!("{:?}", std::str::from_utf8(&b[..]).unwrap());
+                println!("GET: Loaded {} bytes", b.len());
+                println!("GET: {:?}", std::str::from_utf8(&b[..]).unwrap());
             } else {
                 let err = result.unwrap_err();
                 dbg!(&err);
-                println!("err={err}. err.root_cause()={}", err.root_cause());
+                println!("GET: err={err}. err.root_cause()={}", err.root_cause());
+                assert!(err.is::<nix::Error>());
+                assert_eq!(err.downcast_ref::<Errno>().unwrap(), &Errno::ENOENT);
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_get_range_with_io_uring_local() {
+        let filenames = vec![
+            ObjectStorePath::from("/home/jack/dev/rust/light-speed-io/README.md"),
+            ObjectStorePath::from("/home/jack/dev/rust/light-speed-io/Cargo.toml"),
+            ObjectStorePath::from("/this/path/does/not/exist"),
+        ];
+        let store = ObjectStoreAdapter::default();
+        let mut futures = Vec::new();
+        for filename in &filenames {
+            futures.push(store.get_range(filename, 10..100));
+        }
+
+        for (i, future) in futures.into_iter().enumerate() {
+            let result = future.await;
+            if i < 2 {
+                let b = result.unwrap();
+                println!("GET_RANGE: Loaded {} bytes", b.len());
+                assert_eq!(b.len(), 90);
+                println!("GET_RANGE: {:?}", std::str::from_utf8(&b[..]).unwrap());
+            } else {
+                let err = result.unwrap_err();
+                dbg!(&err);
+                println!(
+                    "GET_RANGE: err={err}. err.root_cause()={}",
+                    err.root_cause()
+                );
                 assert!(err.is::<nix::Error>());
                 assert_eq!(err.downcast_ref::<Errno>().unwrap(), &Errno::ENOENT);
             }
