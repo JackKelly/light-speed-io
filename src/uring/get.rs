@@ -43,7 +43,10 @@ impl uring::Operation for Get {
                     "`next_step` has been called {} times, yet `last_cqe` is None. Have you forgotten to call `process_cqe`?",
                     self.inner.n_steps_completed
                 );
-                NextStep::SubmitFirstEntriesToOpenFile(build_openat_sqe(&self.path, index_of_op))
+                NextStep::SubmitEntries {
+                    entries: build_openat_sqe(&self.path, index_of_op),
+                    registers_file: true,
+                }
             }
 
             // Build subsequent SQEs:
@@ -56,7 +59,10 @@ impl uring::Operation for Get {
                     if self.inner.error_has_occurred {
                         // If we failed to open the file, then there's no point submitting linked
                         // read-close operations. So we're done.
-                        NextStep::Done
+                        NextStep::MaybeDone {
+                            unregisters_file: true,
+                            done: true,
+                        }
                     } else {
                         self.fixed_fd = Some(types::Fixed(cqe.result() as u32));
                         let (entries, buffer) = create_linked_read_close_sqes(
@@ -65,21 +71,28 @@ impl uring::Operation for Get {
                             index_of_op,
                         );
                         self.inner.output = Some(buffer);
-                        NextStep::SubmitSubsequentEntries(entries)
+                        NextStep::SubmitEntries {
+                            entries,
+                            registers_file: false,
+                        }
                     }
                 }
                 opcode::Read::CODE => {
-                    if self.inner.error_has_occurred {
-                        // We're not done yet, because we need to wait for the close op.
-                        // The close op is linked to the read op.
-                        // TODO: Return Done if we unlink read and close.
-                        NextStep::Error
-                    } else {
+                    if !self.inner.error_has_occurred {
                         self.inner.send_output();
-                        NextStep::OutputHasBeenSent
+                    }
+                    // We're not done yet, because we need to wait for the close op.
+                    // The close op is linked to the read op.
+                    // TODO: Return Done if we unlink read and close.
+                    NextStep::MaybeDone {
+                        unregisters_file: false,
+                        done: false,
                     }
                 }
-                opcode::Close::CODE => NextStep::Done,
+                opcode::Close::CODE => NextStep::MaybeDone {
+                    unregisters_file: true,
+                    done: true,
+                },
                 _ => panic!("Unrecognised opcode!"),
             },
         }

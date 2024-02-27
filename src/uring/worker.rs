@@ -123,9 +123,13 @@ impl Worker {
             // Build one or more `squeue::Entry`, submit to io_uring, and stash the op for access later.
             let index_of_op = self.user_tasks_in_flight.get_next_index().unwrap();
             let entries = match op.next_step(index_of_op) {
-                uring::NextStep::SubmitFirstEntries(entries) => entries,
-                uring::NextStep::SubmitFirstEntriesToOpenFile(entries) => {
-                    self.n_files_registered += 1;
+                uring::NextStep::SubmitEntries {
+                    entries,
+                    registers_file,
+                } => {
+                    if registers_file {
+                        self.n_files_registered += 1;
+                    }
                     entries
                 }
                 _ => panic!("next_step should only return first entries here!"),
@@ -160,12 +164,27 @@ impl Worker {
             let op = self.user_tasks_in_flight.as_mut(index_of_op).unwrap();
             op.process_cqe(cqe);
             match op.next_step(index_of_op) {
-                uring::NextStep::SubmitSubsequentEntries(entries) => {
+                uring::NextStep::SubmitEntries {
+                    entries,
+                    registers_file: false,
+                } => {
                     self.internal_op_queue.push_back(entries);
                 }
-                uring::NextStep::Done => {
-                    self.user_tasks_in_flight.remove(index_of_op).unwrap();
-                    self.n_files_registered -= 1;
+                uring::NextStep::SubmitEntries {
+                    entries: _,
+                    registers_file: true,
+                } => panic!("registers_file should not be true for a subsequent SQE!"),
+                uring::NextStep::MaybeDone {
+                    unregisters_file,
+                    done,
+                    ..
+                } => {
+                    if done {
+                        self.user_tasks_in_flight.remove(index_of_op).unwrap();
+                    }
+                    if unregisters_file {
+                        self.n_files_registered -= 1;
+                    }
                 }
                 _ => (),
             }

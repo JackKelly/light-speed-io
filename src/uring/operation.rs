@@ -17,13 +17,17 @@ pub(super) trait Operation {
 }
 
 pub(crate) enum NextStep {
-    SubmitFirstEntriesToOpenFile(Vec<squeue::Entry>),
-    #[allow(dead_code)] // TODO: Remove this `allow` when we implement GetRange!
-    SubmitFirstEntries(Vec<squeue::Entry>),
-    SubmitSubsequentEntries(Vec<squeue::Entry>),
-    Error,
-    OutputHasBeenSent,
-    Done,
+    SubmitEntries {
+        entries: Vec<squeue::Entry>,
+        // If true, then these entries will register one file.
+        registers_file: bool,
+    },
+    MaybeDone {
+        // If true, the the CQE reports that it's unregistered one file.
+        unregisters_file: bool,
+        // We're done! Remove this operation from the list of ops in flight.
+        done: bool,
+    },
 }
 
 #[derive(Debug)]
