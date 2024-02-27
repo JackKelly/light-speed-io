@@ -10,9 +10,7 @@ use std::ffi::CString;
 use std::sync::mpsc::TryRecvError;
 use std::sync::mpsc::{Receiver, RecvError};
 
-use crate::operation::OperationWithOutput;
-use crate::operation::Output;
-use crate::{operation::Operation, tracker::Tracker};
+use crate::{operation, operation::Operation, tracker::Tracker};
 
 type VecEntries = Vec<squeue::Entry>;
 
@@ -30,7 +28,7 @@ pub struct IoUringLocal {
     internal_op_queue: VecDeque<VecEntries>,
 
     // These are the tasks that the user submits via `rx`.
-    user_tasks_in_flight: Tracker<OperationWithOutput>,
+    user_tasks_in_flight: Tracker<Box<dyn Operation + Send>>,
 }
 
 impl IoUringLocal {
@@ -64,10 +62,13 @@ impl IoUringLocal {
         }
     }
 
-    pub(crate) fn worker_thread_func(&mut self, mut rx: Receiver<OperationWithOutput>) {
+    pub(crate) fn worker_thread_func(&mut self, mut rx: Receiver<Box<dyn Operation + Send>>) {
+        // This is the main loop for the thread.
         loop {
+            // The internal queue always takes precedence over the injector queue.
             self.move_entries_from_internal_queue_to_uring_sq();
 
+            // If there's space in io_uring's SQ, then add SQEs from the injector queue:
             if self
                 .move_entries_from_injector_queue_to_uring_sq(&mut rx)
                 .is_err()
@@ -76,7 +77,6 @@ impl IoUringLocal {
             }
 
             self.submit_and_maybe_wait();
-
             self.process_uring_cq();
         }
         assert!(self.user_tasks_in_flight.is_empty());
@@ -100,13 +100,13 @@ impl IoUringLocal {
         }
     }
 
-    /// Keep io_uring's submission queue topped up with tasks from the user/
+    /// Keep io_uring's submission queue topped up with tasks from the user.
     fn move_entries_from_injector_queue_to_uring_sq(
         &mut self,
-        rx: &mut Receiver<OperationWithOutput>,
+        rx: &mut Receiver<Box<dyn Operation + Send>>,
     ) -> Result<(), RecvError> {
         // TODO: The `n_files_registered < MAX_FILES_TO_REGISTER` check is only appropriate while
-        // Operations are only every `get` Operations.
+        // Operations are only ever `get` Operations.
         while !self.uring_is_full() && self.n_files_registered < MAX_FILES_TO_REGISTER {
             let op = if self.user_tasks_in_flight.is_empty() {
                 // There are no tasks in flight in io_uring, so all that's
@@ -125,9 +125,7 @@ impl IoUringLocal {
 
             // Convert `Operation` to one or more `squeue::Entry`, and submit to io_uring.
             let index_of_op = self.user_tasks_in_flight.get_next_index().unwrap();
-            let entries = match op.operation() {
-                Operation::Get { path, .. } => create_openat_sqe(path, index_of_op),
-            };
+            let entries = match op.build_submission_queue_entries();
             self.user_tasks_in_flight.put(index_of_op, op);
             unsafe {
                 self.ring
@@ -220,7 +218,7 @@ where
     stat(path).expect("Failed to get filesize!").st_size
 }
 
-fn create_openat_sqe(path: &CString, index_of_op: usize) -> VecEntries {
+fn build_openat_sqe(path: &CString, index_of_op: usize) -> VecEntries {
     // TODO: Test for these:
     // - opcode::OpenAt2::CODE
     // - opcode::Close::CODE
@@ -289,4 +287,33 @@ fn opcode_to_opname(opcode: u8) -> &'static str {
         opcode::Close::CODE => "close",
         _ => "Un-recognised opcode",
     }
+}
+
+trait IoUringOperation {
+    fn process_completion_queue_entry(&mut self, cqe: cqueue::Entry) {
+        self.core().cqe = Some(cqe);
+        self.check_for_and_handle_cqe_error();
+    }
+
+    /// If called while `self.cqe` is None, then returns the first `Vec<squeue::Entry>`.
+    /// If `self.cqe` is `Some(cqe)`, then submit further `Vec<squeue::Entry>` and/or send result.
+    /// If the returned `Vec<squeue::Entry>` is empty then this operation can be removed.
+    fn build_submission_queue_entries(&mut self) -> Vec<squeue::Entry>;
+
+    fn check_for_and_handle_cqe_error(&mut self) {
+        if self.core().cqe.unwrap().as_ref().result() < 0 {
+            self.core().error_has_occurred = True;
+            let err = cqe_error_to_anyhow_error(self.cqe.unwrap().as_ref());
+            self.core().send_error(err);    
+        }
+    }
+}
+
+impl IoUringOperation for operation::Get<cqueue::Entry> {
+    fn build_submission_queue_entries(&mut self) -> Vec<squeue::Entry> {
+        match self.core.cqe {
+            None => build_openat_sqe(&self.core.path, index_of_op)
+        }
+    }
+
 }

@@ -12,7 +12,7 @@ use std::thread;
 use url::Url;
 
 use crate::io_uring_local::IoUringLocal;
-use crate::operation::{Operation, OperationWithOutput, Output};
+use crate::operation::{Get, Operation};
 
 /// A specialized `Error` for filesystem object store-related errors
 /// From `object_store::local`
@@ -106,22 +106,22 @@ impl Config {
 #[derive(Debug)]
 struct WorkerThread {
     handle: thread::JoinHandle<()>,
-    sender: mpsc::Sender<OperationWithOutput>, // Channel to send ops to the worker thread
+    sender: mpsc::Sender<Box<dyn Operation + Send>>, // Channel to send ops to the worker thread
 }
 
 impl WorkerThread {
     pub fn new<F>(mut worker_thread_func: F) -> Self
     where
-        F: FnMut(mpsc::Receiver<OperationWithOutput>) + Send + Sync + 'static,
+        F: FnMut(mpsc::Receiver<Box<dyn Operation + Send>>) + Send,
     {
         let (sender, rx) = mpsc::channel();
         let handle = thread::spawn(move || worker_thread_func(rx));
         Self { handle, sender }
     }
 
-    pub fn send(&self, op_with_chan: OperationWithOutput) {
+    pub fn send(&self, operation: Box<dyn Operation + Send>) {
         self.sender
-            .send(op_with_chan)
+            .send(operation)
             .expect("Failed to send message to worker thread!");
     }
 }
@@ -143,7 +143,7 @@ impl ObjectStoreAdapter {
     /// Create new filesystem storage with no prefix
     pub fn new<F>(func_for_get_thread: F) -> Self
     where
-        F: FnMut(mpsc::Receiver<OperationWithOutput>) + Send + Sync + 'static,
+        F: FnMut(mpsc::Receiver<Box<dyn Operation + Send>>) + Send,
     {
         Self {
             config: Arc::new(Config {
@@ -161,7 +161,7 @@ impl ObjectStoreAdapter {
     // TODO: `ObjectStoreAdapter` shouldn't implement `get` because `ObjectStore::get` has a default impl.
     //       Instead, `ObjectStoreAdapter` should impl `get_opts` which returns a `Result<GetResult>`.
     //       But I'm keeping things simple for now!
-    pub fn get(
+    pub fn get<CQE: std::fmt::Debug>(
         &self,
         location: &ObjectStorePath,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<Bytes>> + Send + Sync>> {
@@ -169,21 +169,13 @@ impl ObjectStoreAdapter {
         let path = CString::new(path.as_os_str().as_bytes())
             .expect("Failed to convert path '{path}' to CString.");
 
-        let operation = Operation::Get {
-            path,
-            fixed_fd: None,
-        };
+        let operation = Get::<CQE>::new(path);
 
-        let (op_with_chan, rx) = OperationWithOutput::new(operation);
+        let rx = operation.core.set_output_channel();
 
-        self.worker_thread.send(op_with_chan);
+        self.worker_thread.send(Box::new(operation));
 
-        Box::pin(async {
-            rx.await.unwrap().map(|o| {
-                let Output::Get { buffer } = o;
-                Bytes::from(buffer)
-            })
-        })
+        Box::pin(async { rx.await.unwrap().map(Bytes::from) })
     }
 }
 
@@ -203,6 +195,7 @@ fn is_valid_file_path(path: &ObjectStorePath) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use io_uring::cqueue;
     use nix::errno::Errno;
 
     use super::*;
@@ -217,7 +210,7 @@ mod tests {
         let store = ObjectStoreAdapter::default();
         let mut futures = Vec::new();
         for filename in &filenames {
-            futures.push(store.get(filename));
+            futures.push(store.get::<cqueue::Entry>(filename));
         }
 
         for (i, future) in futures.into_iter().enumerate() {
