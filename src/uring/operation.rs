@@ -16,7 +16,7 @@ pub(super) trait Operation {
     fn next_step(&mut self, index_of_op: usize) -> NextStep;
 }
 
-pub(crate) enum NextStep {
+pub(super) enum NextStep {
     SubmitEntries {
         entries: Vec<squeue::Entry>,
         // If true, then these entries will register one file.
@@ -31,19 +31,19 @@ pub(crate) enum NextStep {
 }
 
 #[derive(Debug)]
-pub(crate) struct InnerState {
-    pub(crate) output: Option<operation::OperationOutput>,
+pub(super) struct InnerState {
+    pub(super) output: Option<operation::OperationOutput>,
     // `output_channel` is an `Option` because `send` consumes itself,
     // so we need to `output_channel.take().unwrap().send(Some(buffer))`.
-    pub(crate) output_channel: Option<oneshot::Sender<anyhow::Result<operation::OperationOutput>>>,
-    pub(crate) error_has_occurred: bool,
-    pub(crate) last_cqe: Option<cqueue::Entry>,
-    pub(crate) last_opcode: Option<u8>,
-    pub(crate) n_steps_completed: usize,
+    pub(super) output_channel: Option<oneshot::Sender<anyhow::Result<operation::OperationOutput>>>,
+    pub(super) error_has_occurred: bool,
+    pub(super) last_cqe: Option<cqueue::Entry>,
+    pub(super) last_opcode: Option<u8>,
+    pub(super) n_steps_completed: usize,
 }
 
 impl InnerState {
-    pub(crate) fn new(
+    pub(super) fn new(
         output_channel: oneshot::Sender<anyhow::Result<operation::OperationOutput>>,
     ) -> Self {
         Self {
@@ -56,7 +56,7 @@ impl InnerState {
         }
     }
 
-    pub(crate) fn send_output(&mut self) {
+    pub(super) fn send_output(&mut self) {
         self.output_channel
             .take()
             .unwrap()
@@ -64,7 +64,7 @@ impl InnerState {
             .unwrap();
     }
 
-    pub(crate) fn process_cqe(&mut self, cqe: cqueue::Entry) {
+    pub(super) fn process_cqe(&mut self, cqe: cqueue::Entry) {
         // user_data holds the io_uring opcode in the lower 32 bits,
         // and holds the index_of_op in the upper 32 bits.
         self.last_opcode = Some((cqe.user_data() & 0xFFFFFFFF) as u8);
@@ -77,7 +77,7 @@ impl InnerState {
         }
     }
 
-    pub(crate) fn send_error(&mut self, error: anyhow::Error) {
+    pub(super) fn send_error(&mut self, error: anyhow::Error) {
         if self.error_has_occurred {
             eprintln!("The output_channel has already been consumed (probably by sending a previous error)! But a new error has been reported: {error}");
             return;
@@ -92,7 +92,7 @@ impl InnerState {
             .unwrap();
     }
 
-    pub(crate) fn cqe_error_to_anyhow_error(&self) -> anyhow::Error {
+    pub(super) fn cqe_error_to_anyhow_error(&self) -> anyhow::Error {
         let cqe = self.last_cqe.as_ref().unwrap();
         let nix_err = nix::Error::from_i32(-cqe.result());
         anyhow::Error::new(nix_err).context(format!(
