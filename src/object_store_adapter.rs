@@ -13,7 +13,7 @@ use tokio::sync::oneshot;
 use url::Url;
 
 use crate::io_uring_local::IoUringLocal;
-use crate::user_operation::{OutputOfUserOp, UserOperation};
+use crate::operation::{Operation, OperationOutput};
 
 /// A specialized `Error` for filesystem object store-related errors
 /// From `object_store::local`
@@ -106,8 +106,8 @@ impl Config {
 
 #[derive(Debug)]
 pub(crate) struct UserOpWithOutputChannel {
-    pub(crate) user_op: UserOperation,
-    pub(crate) output_channel: oneshot::Sender<anyhow::Result<OutputOfUserOp>>,
+    pub(crate) user_op: Operation,
+    pub(crate) output_channel: oneshot::Sender<anyhow::Result<OperationOutput>>,
 }
 
 #[derive(Debug)]
@@ -126,10 +126,7 @@ impl WorkerThread {
         Self { handle, sender }
     }
 
-    pub fn send(
-        &self,
-        user_op: UserOperation,
-    ) -> oneshot::Receiver<anyhow::Result<OutputOfUserOp>> {
+    pub fn send(&self, user_op: Operation) -> oneshot::Receiver<anyhow::Result<OperationOutput>> {
         let (output_channel, output_rx) = oneshot::channel();
         let user_op_with_chan = UserOpWithOutputChannel {
             user_op,
@@ -185,14 +182,14 @@ impl ObjectStoreAdapter {
         let path = CString::new(path.as_os_str().as_bytes())
             .expect("Failed to convert path '{path}' to CString.");
 
-        let operation = UserOperation::Get { path };
+        let operation = Operation::Get { path };
 
         let rx = self.worker_thread.send(operation);
 
         Box::pin(async {
             let out = rx.await.expect("Sender hung up!");
             out.map(|out| match out {
-                OutputOfUserOp::Get(buffer) => Bytes::from(buffer),
+                OperationOutput::Get(buffer) => Bytes::from(buffer),
                 _ => panic!("out must be a Get variant!"),
             })
         })

@@ -6,7 +6,7 @@
 use std::{ffi::CString, ops::Range};
 
 #[derive(Debug)]
-pub enum UserOperation {
+pub enum Operation {
     Get {
         // Creating a new CString allocates memory. And io_uring openat requires a CString.
         // We need to ensure the CString is valid until the completion queue entry arrives.
@@ -24,7 +24,7 @@ pub enum UserOperation {
 }
 
 #[derive(Debug)]
-pub enum OutputOfUserOp {
+pub enum OperationOutput {
     Get(Vec<u8>),
     GetRange(Vec<u8>),
     GetRanges(Vec<Vec<u8>>),

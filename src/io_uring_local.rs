@@ -12,9 +12,8 @@ use std::sync::mpsc::{Receiver, RecvError};
 use tokio::sync::oneshot;
 
 use crate::object_store_adapter::UserOpWithOutputChannel;
+use crate::operation;
 use crate::tracker::Tracker;
-use crate::user_operation::OutputOfUserOp;
-use crate::user_operation::UserOperation;
 
 type VecEntries = Vec<squeue::Entry>;
 
@@ -32,7 +31,7 @@ pub struct IoUringLocal {
     internal_op_queue: VecDeque<VecEntries>,
 
     // These are the tasks that the user submits via `rx`.
-    user_tasks_in_flight: Tracker<Box<dyn IoUringOperation + Send>>,
+    user_tasks_in_flight: Tracker<Box<dyn UringOperation + Send>>,
 }
 
 impl IoUringLocal {
@@ -128,7 +127,7 @@ impl IoUringLocal {
             };
 
             let mut op = match op.user_op {
-                UserOperation::Get { path } => IoUringGetOp::new(path, op.output_channel),
+                operation::Operation::Get { path } => Get::new(path, op.output_channel),
                 _ => panic!("Not implemented yet!"),
             };
 
@@ -231,7 +230,7 @@ fn create_linked_read_close_sqes(
     path: &CString,
     fixed_fd: &types::Fixed,
     index_of_op: usize,
-) -> (VecEntries, OutputOfUserOp) {
+) -> (VecEntries, operation::OperationOutput) {
     // Convert the index_of_op into a u64, and bit-shift it left.
     // We do this so the u64 io_uring user_data represents the index_of_op in the left-most 32 bits,
     // and represents the io_uring opcode CODE in the right-most 32 bits.
@@ -258,7 +257,10 @@ fn create_linked_read_close_sqes(
         .build()
         .user_data(index_of_op | (opcode::Close::CODE as u64));
 
-    (vec![read_op, close_op], OutputOfUserOp::Get(buffer))
+    (
+        vec![read_op, close_op],
+        operation::OperationOutput::Get(buffer),
+    )
 }
 
 fn opcode_to_opname(opcode: u8) -> &'static str {
@@ -270,37 +272,112 @@ fn opcode_to_opname(opcode: u8) -> &'static str {
     }
 }
 
+trait UringOperation {
+    fn process_cqe(&mut self, cqe: cqueue::Entry);
+    /// If called while `self.uring_op.last_cqe` is None, then returns the first `squeue::Entry`(s).
+    /// If `self.uring_op.last_cqe` is `Some(cqe)`, then submit further SQEs and/or send result.
+    fn next_step(&mut self, index_of_op: usize) -> NextStep;
+}
 #[derive(Debug)]
-struct IoUringGetOp {
+struct Get {
     path: CString,
-    uring_op: IoUringUserOp,
     fixed_fd: Option<types::Fixed>,
+    inner: InnerState,
 }
 
-impl IoUringGetOp {
-    fn new(path: CString, output_channel: oneshot::Sender<anyhow::Result<OutputOfUserOp>>) -> Self {
+impl Get {
+    fn new(
+        path: CString,
+        output_channel: oneshot::Sender<anyhow::Result<operation::OperationOutput>>,
+    ) -> Self {
         Self {
             path,
-            uring_op: IoUringUserOp::new(output_channel),
+            inner: InnerState::new(output_channel),
             fixed_fd: None,
         }
     }
 }
 
+impl UringOperation for Get {
+    fn process_cqe(&mut self, cqe: cqueue::Entry) {
+        self.inner.process_cqe(cqe);
+    }
+
+    fn next_step(&mut self, index_of_op: usize) -> NextStep {
+        self.inner.n_steps_completed += 1;
+        match self.inner.last_cqe.as_ref() {
+            // Build the first SQE:
+            None => {
+                assert_eq!(
+                    self.inner.n_steps_completed, 1,
+                    "`next_step` has been called {} times, yet `last_cqe` is None. Have you forgotten to call `process_cqe`?",
+                    self.inner.n_steps_completed
+                );
+                NextStep::SubmitFirstEntriesToOpenFile(build_openat_sqe(&self.path, index_of_op))
+            }
+
+            // Build subsequent SQEs:
+            Some(cqe) => match self
+                .inner
+                .last_opcode
+                .expect("last_opcode not set, even though last_cqe is set!")
+            {
+                opcode::OpenAt::CODE => {
+                    if self.inner.error_has_occurred {
+                        // If we failed to open the file, then there's no point submitting linked
+                        // read-close operations. So we're done.
+                        NextStep::Done
+                    } else {
+                        self.fixed_fd = Some(types::Fixed(cqe.result() as u32));
+                        let (entries, buffer) = create_linked_read_close_sqes(
+                            &self.path,
+                            self.fixed_fd.as_ref().unwrap(),
+                            index_of_op,
+                        );
+                        self.inner.output = Some(buffer);
+                        NextStep::SubmitSubsequentEntries(entries)
+                    }
+                }
+                opcode::Read::CODE => {
+                    if self.inner.error_has_occurred {
+                        // We're not done yet, because we need to wait for the close op.
+                        // The close op is linked to the read op.
+                        NextStep::Error
+                    } else {
+                        self.inner.send_output();
+                        NextStep::OutputHasBeenSent
+                    }
+                }
+                opcode::Close::CODE => NextStep::Done,
+                _ => panic!("Unrecognised opcode!"),
+            },
+        }
+    }
+}
+
+enum NextStep {
+    SubmitFirstEntriesToOpenFile(Vec<squeue::Entry>),
+    SubmitFirstEntries(Vec<squeue::Entry>),
+    SubmitSubsequentEntries(Vec<squeue::Entry>),
+    Error,
+    OutputHasBeenSent,
+    Done,
+}
+
 #[derive(Debug)]
-struct IoUringUserOp {
-    output: Option<OutputOfUserOp>,
+struct InnerState {
+    output: Option<operation::OperationOutput>,
     // `output_channel` is an `Option` because `send` consumes itself,
     // so we need to `output_channel.take().unwrap().send(Some(buffer))`.
-    output_channel: Option<oneshot::Sender<anyhow::Result<OutputOfUserOp>>>,
+    output_channel: Option<oneshot::Sender<anyhow::Result<operation::OperationOutput>>>,
     error_has_occurred: bool,
     last_cqe: Option<cqueue::Entry>,
     last_opcode: Option<u8>,
     n_steps_completed: usize,
 }
 
-impl IoUringUserOp {
-    fn new(output_channel: oneshot::Sender<anyhow::Result<OutputOfUserOp>>) -> Self {
+impl InnerState {
+    fn new(output_channel: oneshot::Sender<anyhow::Result<operation::OperationOutput>>) -> Self {
         Self {
             output: None,
             output_channel: Some(output_channel),
@@ -353,77 +430,4 @@ impl IoUringUserOp {
             self.last_opcode.unwrap(), opcode_to_opname(self.last_opcode.unwrap())
         ))
     }
-}
-
-trait IoUringOperation {
-    fn process_cqe(&mut self, cqe: cqueue::Entry);
-    /// If called while `self.uring_op.last_cqe` is None, then returns the first `squeue::Entry`(s).
-    /// If `self.uring_op.last_cqe` is `Some(cqe)`, then submit further SQEs and/or send result.
-    fn next_step(&mut self, index_of_op: usize) -> NextStep;
-}
-
-impl IoUringOperation for IoUringGetOp {
-    fn process_cqe(&mut self, cqe: cqueue::Entry) {
-        self.uring_op.process_cqe(cqe);
-    }
-
-    fn next_step(&mut self, index_of_op: usize) -> NextStep {
-        self.uring_op.n_steps_completed += 1;
-        match self.uring_op.last_cqe.as_ref() {
-            // Build the first SQE:
-            None => {
-                assert_eq!(
-                    self.uring_op.n_steps_completed, 1,
-                    "`next_step` has been called {} times, yet `last_cqe` is None. Have you forgotten to call `process_cqe`?",
-                    self.uring_op.n_steps_completed
-                );
-                NextStep::SubmitFirstEntriesToOpenFile(build_openat_sqe(&self.path, index_of_op))
-            }
-
-            // Build subsequent SQEs:
-            Some(cqe) => match self
-                .uring_op
-                .last_opcode
-                .expect("last_opcode not set, even though last_cqe is set!")
-            {
-                opcode::OpenAt::CODE => {
-                    if self.uring_op.error_has_occurred {
-                        // If we failed to open the file, then there's no point submitting linked
-                        // read-close operations. So we're done.
-                        NextStep::Done
-                    } else {
-                        self.fixed_fd = Some(types::Fixed(cqe.result() as u32));
-                        let (entries, buffer) = create_linked_read_close_sqes(
-                            &self.path,
-                            self.fixed_fd.as_ref().unwrap(),
-                            index_of_op,
-                        );
-                        self.uring_op.output = Some(buffer);
-                        NextStep::SubmitSubsequentEntries(entries)
-                    }
-                }
-                opcode::Read::CODE => {
-                    if self.uring_op.error_has_occurred {
-                        // We're not done yet, because we need to wait for the close op.
-                        // The close op is linked to the read op.
-                        NextStep::Error
-                    } else {
-                        self.uring_op.send_output();
-                        NextStep::OutputHasBeenSent
-                    }
-                }
-                opcode::Close::CODE => NextStep::Done,
-                _ => panic!("Unrecognised opcode!"),
-            },
-        }
-    }
-}
-
-enum NextStep {
-    SubmitFirstEntriesToOpenFile(Vec<squeue::Entry>),
-    SubmitFirstEntries(Vec<squeue::Entry>),
-    SubmitSubsequentEntries(Vec<squeue::Entry>),
-    Error,
-    OutputHasBeenSent,
-    Done,
 }
