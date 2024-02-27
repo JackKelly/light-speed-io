@@ -13,8 +13,10 @@ pub enum Operation {
         // So we keep the CString here, in the `Operation`.
         path: CString,
     },
-    #[allow(dead_code)] // TODO: Remove this `allow` when we implement GetRange!
-    GetRange { path: CString, range: Range<i32> },
+    GetRange {
+        path: CString,
+        range: Range<i32>,
+    },
     #[allow(dead_code)] // TODO: Remove this `allow` when we implement GetRange!
     GetRanges {
         path: CString,
@@ -25,7 +27,6 @@ pub enum Operation {
 #[derive(Debug)]
 pub enum OperationOutput {
     Get(Vec<u8>),
-    #[allow(dead_code)] // TODO: Remove this `allow` when we implement GetRange!
     GetRange(Vec<u8>),
     #[allow(dead_code)] // TODO: Remove this `allow` when we implement GetRange!
     GetRanges(Vec<Vec<u8>>),

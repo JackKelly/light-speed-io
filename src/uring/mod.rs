@@ -1,5 +1,7 @@
+mod get;
 mod operation;
 mod worker;
 
-use operation::{Get, NextStep, Operation};
-pub use worker::Worker;
+use get::Get;
+use operation::{NextStep, Operation};
+pub(crate) use worker::Worker;
