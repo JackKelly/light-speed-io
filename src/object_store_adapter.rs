@@ -9,10 +9,11 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::{mpsc, Arc};
 use std::thread;
+use tokio::sync::oneshot;
 use url::Url;
 
-use crate::io_uring_local::IoUringLocal;
-use crate::operation::{Operation, OperationWithOutput, Output};
+use crate::operation::{Operation, OperationOutput};
+use crate::uring;
 
 /// A specialized `Error` for filesystem object store-related errors
 /// From `object_store::local`
@@ -104,25 +105,38 @@ impl Config {
 }
 
 #[derive(Debug)]
+pub(crate) struct OpAndOutputChan {
+    pub(crate) op: Operation,
+    pub(crate) output_channel: oneshot::Sender<anyhow::Result<OperationOutput>>,
+}
+
+#[derive(Debug)]
+#[allow(dead_code)]
 struct WorkerThread {
     handle: thread::JoinHandle<()>,
-    sender: mpsc::Sender<OperationWithOutput>, // Channel to send ops to the worker thread
+    sender: mpsc::Sender<OpAndOutputChan>, // Channel to send ops to the worker thread
 }
 
 impl WorkerThread {
     pub fn new<F>(mut worker_thread_func: F) -> Self
     where
-        F: FnMut(mpsc::Receiver<OperationWithOutput>) + Send + Sync + 'static,
+        F: FnMut(mpsc::Receiver<OpAndOutputChan>) + Send + 'static,
     {
         let (sender, rx) = mpsc::channel();
         let handle = thread::spawn(move || worker_thread_func(rx));
         Self { handle, sender }
     }
 
-    pub fn send(&self, op_with_chan: OperationWithOutput) {
+    pub fn send(&self, user_op: Operation) -> oneshot::Receiver<anyhow::Result<OperationOutput>> {
+        let (output_channel, output_rx) = oneshot::channel();
+        let user_op_with_chan = OpAndOutputChan {
+            op: user_op,
+            output_channel,
+        };
         self.sender
-            .send(op_with_chan)
+            .send(user_op_with_chan)
             .expect("Failed to send message to worker thread!");
+        output_rx
     }
 }
 
@@ -134,16 +148,17 @@ impl std::fmt::Display for ObjectStoreAdapter {
 
 impl Default for ObjectStoreAdapter {
     fn default() -> Self {
-        let mut io_uring_local = IoUringLocal::new();
-        Self::new(move |rx| IoUringLocal::worker_thread_func(&mut io_uring_local, rx))
+        let mut uring_worker = uring::Worker::new();
+        Self::new(move |rx| uring::Worker::worker_thread_func(&mut uring_worker, rx))
     }
 }
 
+#[allow(private_bounds)]
 impl ObjectStoreAdapter {
     /// Create new filesystem storage with no prefix
     pub fn new<F>(func_for_get_thread: F) -> Self
     where
-        F: FnMut(mpsc::Receiver<OperationWithOutput>) + Send + Sync + 'static,
+        F: FnMut(mpsc::Receiver<OpAndOutputChan>) + Send + 'static,
     {
         Self {
             config: Arc::new(Config {
@@ -169,19 +184,15 @@ impl ObjectStoreAdapter {
         let path = CString::new(path.as_os_str().as_bytes())
             .expect("Failed to convert path '{path}' to CString.");
 
-        let operation = Operation::Get {
-            path,
-            fixed_fd: None,
-        };
+        let operation = Operation::Get { path };
 
-        let (op_with_chan, rx) = OperationWithOutput::new(operation);
-
-        self.worker_thread.send(op_with_chan);
+        let rx = self.worker_thread.send(operation);
 
         Box::pin(async {
-            rx.await.unwrap().map(|o| {
-                let Output::Get { buffer } = o;
-                Bytes::from(buffer)
+            let out = rx.await.expect("Sender hung up!");
+            out.map(|out| match out {
+                OperationOutput::Get(buffer) => Bytes::from(buffer),
+                _ => panic!("out must be a Get variant!"),
             })
         })
     }
