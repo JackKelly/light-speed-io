@@ -10,7 +10,7 @@ use tokio::runtime::Runtime;
 
 const FILE_SIZE_BYTES: usize = 262_144;
 const DATA_PATH: &str = "/tmp/fio/";
-const RANGE: Range<isize> = 0..4096;
+const RANGE: Range<isize> = 0..(1024 * 16);
 
 async fn uring_get(filenames: &Vec<ObjectStorePath>, n_iterations: u64) -> Duration {
     let mut total_time = Duration::ZERO;
@@ -216,6 +216,10 @@ fn clear_page_cache() {
 fn get_filenames(n: usize) -> Vec<ObjectStorePath> {
     // Create a vector of filenames (files created by `fio`)
     (0..n)
-        .map(|i| ObjectStorePath::from(format!("//{DATA_PATH}reader1.0.{i}")))
+        .map(|i| {
+            ObjectStorePath::from(format!(
+                "//{DATA_PATH}sequential_read_1000_files_each_256KiB.0.{i}"
+            ))
+        })
         .collect()
 }

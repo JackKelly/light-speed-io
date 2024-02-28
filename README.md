@@ -39,5 +39,5 @@ echo "0" | \
     sudo tee '/proc/sys/kernel/perf_event_paranoid' | \
     sudo tee '/proc/sys/kernel/kptr_restrict'
 
-perf stat target/release/deps/io_uring_local-<HASH PRINTED BY CARGO BENCH> io_uring_local --bench --profile-time 5
+perf stat target/release/deps/uring_get-<HASH PRINTED BY CARGO BENCH> uring_get --bench --profile-time 5
 ```
