@@ -1,3 +1,5 @@
+use aligned_vec::AVec;
+use aligned_vec::ConstAlign;
 use io_uring::cqueue;
 use io_uring::opcode;
 use io_uring::squeue;
@@ -157,8 +159,13 @@ pub(super) fn create_linked_read_close_sqes(
     // Get filesize: TODO: Use io_uring to get filesize; see issue #41.
     let filesize_bytes = get_filesize_bytes(path.as_c_str());
 
+    // Align buffer size to 512 bytes
+    const ALIGN_BYTES: usize = 512;
+    let buf_size_bytes = ((filesize_bytes as usize / ALIGN_BYTES) + 1) * ALIGN_BYTES;
+
     // Allocate vector:
-    let mut buffer = Vec::with_capacity(filesize_bytes as _);
+    let mut buffer: AVec<u8, ConstAlign<ALIGN_BYTES>> =
+        AVec::with_capacity(ALIGN_BYTES, buf_size_bytes as _);
 
     // Prepare the "read" opcode:
     let read_op = opcode::Read::new(*fixed_fd, buffer.as_mut_ptr(), filesize_bytes as u32)
