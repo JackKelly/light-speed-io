@@ -182,7 +182,7 @@ pub(super) fn create_linked_read_close_sqes(
 }
 
 pub(super) fn create_linked_read_range_close_sqes(
-    range: &Range<i32>,
+    range: &Range<isize>,
     fixed_fd: &types::Fixed,
     index_of_op: usize,
 ) -> (Vec<squeue::Entry>, operation::OperationOutput) {

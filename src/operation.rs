@@ -15,12 +15,12 @@ pub enum Operation {
     },
     GetRange {
         path: CString,
-        range: Range<i32>,
+        range: Range<isize>,
     },
     #[allow(dead_code)] // TODO: Remove this `allow` when we implement GetRange!
     GetRanges {
         path: CString,
-        ranges: Vec<Range<i32>>,
+        ranges: Vec<Range<isize>>,
     },
 }
 

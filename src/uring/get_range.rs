@@ -12,7 +12,7 @@ use crate::uring::operation::{
 #[derive(Debug)]
 pub(super) struct GetRange {
     pub(super) path: CString,
-    pub(super) range: Range<i32>,
+    pub(super) range: Range<isize>,
     pub(super) fixed_fd: Option<types::Fixed>,
     pub(super) inner: InnerState,
 }
@@ -20,7 +20,7 @@ pub(super) struct GetRange {
 impl GetRange {
     pub(super) fn new(
         path: CString,
-        range: Range<i32>,
+        range: Range<isize>,
         output_channel: oneshot::Sender<anyhow::Result<operation::OperationOutput>>,
     ) -> Self {
         Self {

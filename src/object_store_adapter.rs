@@ -201,7 +201,7 @@ impl ObjectStoreAdapter {
     pub fn get_range(
         &self,
         location: &ObjectStorePath,
-        range: Range<i32>,
+        range: Range<isize>,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<Bytes>> + Send + Sync>> {
         let path = self.config.path_to_filesystem(location).unwrap();
         let path = CString::new(path.as_os_str().as_bytes())
