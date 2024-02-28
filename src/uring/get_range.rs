@@ -45,7 +45,7 @@ impl uring::Operation for GetRange {
                 self.inner.check_n_steps_completed_is_1();
                 NextStep::SubmitEntries {
                     entries: build_openat_sqe(&self.path, index_of_op),
-                    registers_file: true,
+                    register_file: true,
                 }
             }
 
@@ -59,9 +59,8 @@ impl uring::Operation for GetRange {
                     if self.inner.error_has_occurred {
                         // If we failed to open the file, then there's no point submitting linked
                         // read-close operations. So we're done.
-                        NextStep::MaybeDone {
-                            unregisters_file: true,
-                            done: true,
+                        NextStep::Done {
+                            unregister_file: true,
                         }
                     } else {
                         self.fixed_fd = Some(types::Fixed(cqe.result() as u32));
@@ -73,7 +72,7 @@ impl uring::Operation for GetRange {
                         self.inner.output = Some(buffer);
                         NextStep::SubmitEntries {
                             entries,
-                            registers_file: false,
+                            register_file: false,
                         }
                     }
                 }
@@ -84,14 +83,10 @@ impl uring::Operation for GetRange {
                     // We're not done yet, because we need to wait for the close op.
                     // The close op is linked to the read op.
                     // TODO: Return Done if we unlink read and close.
-                    NextStep::MaybeDone {
-                        unregisters_file: false,
-                        done: false,
-                    }
+                    NextStep::Pending
                 }
-                opcode::Close::CODE => NextStep::MaybeDone {
-                    unregisters_file: true,
-                    done: true,
+                opcode::Close::CODE => NextStep::Done {
+                    unregister_file: true,
                 },
                 _ => panic!("Unrecognised opcode!"),
             },

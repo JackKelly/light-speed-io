@@ -20,14 +20,14 @@ pub(super) trait Operation {
 pub(super) enum NextStep {
     SubmitEntries {
         entries: Vec<squeue::Entry>,
-        // If true, then these entries will register one file.
-        registers_file: bool,
+        // If true, then these squeue entries will register one file.
+        register_file: bool,
     },
-    MaybeDone {
+    Pending,
+    // We're done! Remove this operation from the list of ops in flight.
+    Done {
         // If true, the the CQE reports that it's unregistered one file.
-        unregisters_file: bool,
-        // We're done! Remove this operation from the list of ops in flight.
-        done: bool,
+        unregister_file: bool,
     },
 }
 

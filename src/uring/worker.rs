@@ -7,7 +7,7 @@ use std::sync::mpsc::{Receiver, RecvError};
 
 use crate::object_store_adapter::OpAndOutputChan;
 use crate::tracker::Tracker;
-use crate::{operation, uring, uring::Operation};
+use crate::{operation, uring};
 
 const MAX_FILES_TO_REGISTER: usize = 16;
 const MAX_ENTRIES_PER_CHAIN: usize = 2; // Maximum number of io_uring entries per io_uring chain.
@@ -130,7 +130,7 @@ impl Worker {
             let entries = match op.next_step(index_of_op) {
                 uring::NextStep::SubmitEntries {
                     entries,
-                    registers_file,
+                    register_file: registers_file,
                 } => {
                     if registers_file {
                         self.n_files_registered += 1;
@@ -171,27 +171,23 @@ impl Worker {
             match op.next_step(index_of_op) {
                 uring::NextStep::SubmitEntries {
                     entries,
-                    registers_file: false,
+                    register_file: false,
                 } => {
                     self.internal_op_queue.push_back(entries);
                 }
                 uring::NextStep::SubmitEntries {
                     entries: _,
-                    registers_file: true,
+                    register_file: true,
                 } => panic!("registers_file should not be true for a subsequent SQE!"),
-                uring::NextStep::MaybeDone {
-                    unregisters_file,
-                    done,
-                    ..
+                uring::NextStep::Done {
+                    unregister_file: unregisters_file,
                 } => {
-                    if done {
-                        self.user_tasks_in_flight.remove(index_of_op).unwrap();
-                    }
+                    self.user_tasks_in_flight.remove(index_of_op).unwrap();
                     if unregisters_file {
                         self.n_files_registered -= 1;
                     }
                 }
-                _ => (),
+                uring::NextStep::Pending => (),
             }
         }
     }
