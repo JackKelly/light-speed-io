@@ -36,6 +36,12 @@ Compile and run all benchmarks:
 cargo bench
 ```
 
+Or run a specific benchmark:
+
+```shell
+cargo bench -- "get_1000_whole_files/uring_get" --exact
+```
+
 OPTIONAL: Enable perf counters and profile the benchmark code:
 ```shell
 echo "0" | \
@@ -45,3 +51,6 @@ echo "0" | \
 
 perf stat target/release/deps/uring_get-<HASH PRINTED BY CARGO BENCH> uring_get --bench --profile-time 5
 ```
+OPTIONAL: Create flamegraph:
+1. [Install `cargo flamegraph`](https://github.com/flamegraph-rs/flamegraph?tab=readme-ov-file#installation) and its requirements.
+2. `cargo flamegraph --bench get -- --bench uring_get --exact --profile-time 5`
