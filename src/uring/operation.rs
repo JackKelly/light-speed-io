@@ -8,7 +8,9 @@ use std::ffi::CString;
 use std::ops::Range;
 use tokio::sync::oneshot;
 
-use crate::operation;
+use crate::{aligned_buffer::AlignedBuffer, operation};
+
+const ALIGN: usize = 512;
 
 pub(super) trait Operation {
     fn process_cqe(&mut self, cqe: cqueue::Entry);
@@ -137,7 +139,7 @@ pub(super) fn build_openat_sqe(path: &CString, index_of_op: usize) -> Vec<squeue
         path_ptr,
     )
     .file_index(Some(file_index))
-    .flags(libc::O_RDONLY) // | libc::O_DIRECT) // TODO: Re-enable O_DIRECT.
+    .flags(libc::O_RDONLY) // | libc::O_DIRECT)
     .build()
     .user_data(index_of_op | (opcode::OpenAt::CODE as u64));
 
@@ -158,17 +160,13 @@ pub(super) fn create_linked_read_close_sqes(
     let filesize_bytes = get_filesize_bytes(path.as_c_str());
 
     // Allocate vector:
-    let mut buffer = Vec::with_capacity(filesize_bytes as _);
+    let mut buffer = AlignedBuffer::new(filesize_bytes as _, ALIGN);
 
     // Prepare the "read" opcode:
-    let read_op = opcode::Read::new(*fixed_fd, buffer.as_mut_ptr(), filesize_bytes as u32)
+    let read_op = opcode::Read::new(*fixed_fd, buffer.as_mut(), buffer.aligned_len() as u32)
         .build()
         .user_data(index_of_op | (opcode::Read::CODE as u64))
         .flags(squeue::Flags::IO_LINK);
-
-    unsafe {
-        buffer.set_len(filesize_bytes as _);
-    }
 
     // Prepare the "close" opcode:
     let close_op = opcode::Close::new(*fixed_fd)
@@ -192,18 +190,14 @@ pub(super) fn create_linked_read_range_close_sqes(
     let index_of_op: u64 = (index_of_op as u64) << 32;
 
     // Allocate vector:
-    let mut buffer = Vec::with_capacity(range.len());
+    let mut buffer = AlignedBuffer::new(range.len(), ALIGN);
 
     // Prepare the "read" opcode:
-    let read_op = opcode::Read::new(*fixed_fd, buffer.as_mut_ptr(), range.len() as u32)
+    let read_op = opcode::Read::new(*fixed_fd, buffer.as_mut(), buffer.aligned_len() as u32)
         .offset(range.start as _)
         .build()
         .user_data(index_of_op | (opcode::Read::CODE as u64))
         .flags(squeue::Flags::IO_LINK);
-
-    unsafe {
-        buffer.set_len(range.len());
-    }
 
     // Prepare the "close" opcode:
     let close_op = opcode::Close::new(*fixed_fd)

@@ -1,3 +1,4 @@
+use crate::aligned_buffer::AlignedBuffer;
 /// `Operation`s are used to communicate the user's instructions
 /// to the backend. The intention is that there will be
 /// one `Operation` variant per `ObjectStore` method.
@@ -26,8 +27,8 @@ pub enum Operation {
 
 #[derive(Debug)]
 pub enum OperationOutput {
-    Get(Vec<u8>),
-    GetRange(Vec<u8>),
+    Get(AlignedBuffer),
+    GetRange(AlignedBuffer),
     #[allow(dead_code)] // TODO: Remove this `allow` when we implement GetRange!
-    GetRanges(Vec<Vec<u8>>),
+    GetRanges(Vec<AlignedBuffer>),
 }

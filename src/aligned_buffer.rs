@@ -1,17 +1,23 @@
 use core::{ptr::NonNull, slice};
 use std::alloc;
 
-struct AlignedBuffer {
+#[derive(Debug)]
+pub(crate) struct AlignedBuffer {
     buf: NonNull<u8>,
     len: usize,
     layout: alloc::Layout,
 }
 
+unsafe impl Send for AlignedBuffer {}
+
 impl AlignedBuffer {
-    /// align must not be zero, and must be a power of two.
-    fn new(len: usize, align: usize) -> Self {
+    /// Aligns the start and end of the buffer with `align`.
+    /// 'align' must not be zero, and must be a power of two.
+    pub(crate) fn new(len: usize, align: usize) -> Self {
         assert_ne!(len, 0);
-        let layout = alloc::Layout::from_size_align(len, align).unwrap();
+        let layout = alloc::Layout::from_size_align(len, align)
+            .unwrap()
+            .pad_to_align();
         let ptr = unsafe { alloc::alloc(layout) };
         if ptr.is_null() {
             alloc::handle_alloc_error(layout);
@@ -23,11 +29,15 @@ impl AlignedBuffer {
         }
     }
 
-    fn as_mut(&mut self) -> *mut u8 {
+    pub(crate) fn aligned_len(&self) -> usize {
+        self.layout.size()
+    }
+
+    pub(crate) fn as_mut(&mut self) -> *mut u8 {
         unsafe { self.buf.as_mut() }
     }
 
-    fn as_slice(&self) -> &[u8] {
+    pub(crate) fn as_slice(&self) -> &[u8] {
         unsafe { slice::from_raw_parts(self.buf.as_ref(), self.len) }
     }
 }

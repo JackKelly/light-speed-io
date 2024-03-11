@@ -192,7 +192,7 @@ impl ObjectStoreAdapter {
         Box::pin(async {
             let out = rx.await.expect("Sender hung up!");
             out.map(|out| match out {
-                OperationOutput::Get(buffer) => Bytes::from(buffer),
+                OperationOutput::Get(buffer) => Bytes::copy_from_slice(buffer.as_slice()),
                 _ => panic!("out must be a Get variant!"),
             })
         })
@@ -214,7 +214,7 @@ impl ObjectStoreAdapter {
         Box::pin(async {
             let out = rx.await.expect("Sender hung up!");
             out.map(|out| match out {
-                OperationOutput::GetRange(buffer) => Bytes::from(buffer),
+                OperationOutput::GetRange(buffer) => Bytes::copy_from_slice(buffer.as_slice()),
                 _ => panic!("out must be a Get variant!"),
             })
         })
