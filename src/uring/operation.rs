@@ -10,7 +10,7 @@ use tokio::sync::oneshot;
 
 use crate::{aligned_buffer::AlignedBuffer, operation};
 
-const ALIGN: usize = 512;
+pub(super) const ALIGN: usize = 512;
 
 pub(super) trait Operation {
     fn process_cqe(&mut self, cqe: cqueue::Entry);

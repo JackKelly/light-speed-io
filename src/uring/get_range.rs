@@ -1,4 +1,6 @@
+use crate::uring::operation::ALIGN;
 use io_uring::{cqueue, opcode, types};
+use std::cmp::max;
 use std::ffi::CString;
 use std::ops::Range;
 use tokio::sync::oneshot;
@@ -79,11 +81,38 @@ impl uring::Operation for GetRange {
                 }
                 opcode::Read::CODE => {
                     if !self.inner.error_has_occurred {
+                        // Check we've read the correct number of bytes.
+                        if let operation::OperationOutput::GetRange(buf) =
+                            self.inner.output.as_ref().unwrap()
+                        {
+                            let len_requested_by_user = buf.len();
+                            // FIXME: Split reads of more than 2 GiB into multiple smaller reads!
+                            // See issue #99.
+                            if len_requested_by_user > 2_147_479_552 {
+                                panic!(
+                                        "`read` will transfer at most 2 GiB but {} bytes were requested. \
+                                            See https://github.com/JackKelly/light-speed-io/issues/99", 
+                                        len_requested_by_user);
+                            }
+                            let len_requested_by_user: i32 =
+                                len_requested_by_user.try_into().unwrap();
+                            // FIXME: Retry if we read less data than requested! See issue #100.
+                            assert_eq!(
+                                cqe.result(),
+                                // It looks like read will never read less than `ALIGN` bytes.
+                                max(len_requested_by_user, ALIGN as i32),
+                                "Number of bytes read by io_uring does not match the number of \
+                                    bytes requested! This situation is not yet handled. \
+                                    See https://github.com/JackKelly/light-speed-io/issues/100"
+                            );
+                        }
                         self.inner.send_output();
                     }
+
                     // We're not done yet, because we need to wait for the close op.
                     // The close op is linked to the read op.
-                    // TODO: Return Done if we unlink read and close.
+                    // TODO: Return Done if we modify the code such `read` and `close` are no
+                    // longer linked.
                     NextStep::Pending
                 }
                 opcode::Close::CODE => NextStep::Done {
