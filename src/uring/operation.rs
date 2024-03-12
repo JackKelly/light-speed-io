@@ -81,12 +81,23 @@ impl InnerState {
     }
 
     pub(super) fn send_error(&mut self, error: anyhow::Error) {
+        let error = error.context(format!("IoUringUserOp = {self:?}"));
+
         if self.error_has_occurred {
-            eprintln!("The output_channel has already been consumed (probably by sending a previous error)! But a new error has been reported: {error}");
+            eprintln!("The output_channel has already been consumed (probably by sending a previous error)! But a new error has been reported:");
+            for cause in error.chain() {
+                eprintln!("{cause}");
+            }
             return;
         }
 
-        let error = error.context(format!("IoUringUserOp = {self:?}"));
+        if self.output_channel.is_none() {
+            eprintln!("The output_channel has already been consumed, but `error_has_occurred` is false. The `output_channel` was probably consumed by sending a valid output back to the user. The new error is:");
+            for cause in error.chain() {
+                eprintln!("{cause}");
+            }
+            return;
+        }
 
         self.output_channel
             .take()
@@ -139,7 +150,7 @@ pub(super) fn build_openat_sqe(path: &CString, index_of_op: usize) -> Vec<squeue
         path_ptr,
     )
     .file_index(Some(file_index))
-    .flags(libc::O_RDONLY) // | libc::O_DIRECT)
+    .flags(libc::O_RDONLY | libc::O_DIRECT)
     .build()
     .user_data(index_of_op | (opcode::OpenAt::CODE as u64));
 
@@ -163,7 +174,11 @@ pub(super) fn create_linked_read_close_sqes(
     let mut buffer = AlignedBuffer::new(filesize_bytes as _, ALIGN);
 
     // Prepare the "read" opcode:
-    let read_op = opcode::Read::new(*fixed_fd, buffer.as_mut(), buffer.aligned_len() as u32)
+    println!(
+        "in create_linked_read_close_sqes: buffer.aligned_len = {}",
+        buffer.aligned_len() as u32
+    );
+    let read_op = opcode::Read::new(*fixed_fd, buffer.as_ptr(), buffer.aligned_len() as u32)
         .build()
         .user_data(index_of_op | (opcode::Read::CODE as u64))
         .flags(squeue::Flags::IO_LINK);
@@ -193,7 +208,7 @@ pub(super) fn create_linked_read_range_close_sqes(
     let mut buffer = AlignedBuffer::new(range.len(), ALIGN);
 
     // Prepare the "read" opcode:
-    let read_op = opcode::Read::new(*fixed_fd, buffer.as_mut(), buffer.aligned_len() as u32)
+    let read_op = opcode::Read::new(*fixed_fd, buffer.as_ptr(), buffer.aligned_len() as u32)
         .offset(range.start as _)
         .build()
         .user_data(index_of_op | (opcode::Read::CODE as u64))

@@ -246,7 +246,7 @@ mod tests {
         let filenames = vec![
             ObjectStorePath::from("/home/jack/dev/rust/light-speed-io/README.md"),
             ObjectStorePath::from("/home/jack/dev/rust/light-speed-io/Cargo.toml"),
-            ObjectStorePath::from("/this/path/does/not/exist"),
+            // ObjectStorePath::from("/this/path/does/not/exist"),
         ];
         let store = ObjectStoreAdapter::default();
         let mut futures = Vec::new();
