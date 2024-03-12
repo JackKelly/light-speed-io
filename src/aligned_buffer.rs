@@ -1,11 +1,17 @@
 use core::slice;
 use std::alloc;
 
+/// A memory buffer allocated on the heap, where the start position and end position are both
+/// aligned to `align` bytes. This is useful for working with O_DIRECT file IO, where the
+/// filesystem will often expect the buffer to be aligned to the logical block size (typically 512
+/// bytes).
 #[derive(Debug)]
 pub(crate) struct AlignedBuffer {
     buf: *mut u8,
-    len: usize,
-    layout: alloc::Layout,
+    len: usize,          // The number of bytes requested by the user.
+    start_offset: usize, // The number of bytes unused at the start of the buffer.
+    layout: alloc::Layout, // `layout.size()` gives the number of bytes _actually_ allocated,
+                         // which will be a multiple of `align`.
 }
 
 unsafe impl Send for AlignedBuffer {}
@@ -13,21 +19,31 @@ unsafe impl Send for AlignedBuffer {}
 impl AlignedBuffer {
     /// Aligns the start and end of the buffer with `align`.
     /// 'align' must not be zero, and must be a power of two.
-    pub(crate) fn new(len: usize, align: usize) -> Self {
+    pub(crate) fn new(len: usize, align: usize, start_offset: usize) -> Self {
         assert_ne!(len, 0);
-        let layout = alloc::Layout::from_size_align(len, align)
+        // Let's say the user requests a buffer of len 3 and offset 2; and align is 4:
+        //            index:     0 1 2 3 4 5 6 7
+        //   aligned blocks:     |------|------|
+        //        requested:         |---|
+        // In this case, we need to allocate 8 bytes becuase we need to move the start
+        // backwards to the first byte, and move the end forwards to the eighth byte.
+        let layout = alloc::Layout::from_size_align(len + (start_offset % align), align)
             .expect("failed to create Layout!")
             .pad_to_align();
-        let ptr = unsafe { alloc::alloc(layout) };
-        if ptr.is_null() {
-            eprint!("ptr is null! handle_alloc_error...");
+        let buf = unsafe { alloc::alloc(layout) };
+        if buf.is_null() {
             alloc::handle_alloc_error(layout);
         }
         Self {
-            buf: ptr,
+            buf,
             len,
+            start_offset,
             layout,
         }
+    }
+
+    pub(crate) fn aligned_start_offset(&self) -> usize {
+        (self.start_offset / self.layout.align()) * self.layout.align()
     }
 
     pub(crate) const fn aligned_len(&self) -> usize {
@@ -39,7 +55,12 @@ impl AlignedBuffer {
     }
 
     pub(crate) fn as_slice(&self) -> &[u8] {
-        unsafe { slice::from_raw_parts(self.buf, self.len) }
+        unsafe {
+            slice::from_raw_parts(
+                self.buf.offset(self.start_offset.try_into().unwrap()),
+                self.len,
+            )
+        }
     }
 }
 
@@ -57,8 +78,8 @@ mod tests {
     fn test_write_and_read() {
         // Create a new buffer:
         const LEN: usize = 16;
-        let mut aligned_buf1 = AlignedBuffer::new(LEN, 8);
-        let mut aligned_buf2 = AlignedBuffer::new(LEN, 8);
+        let mut aligned_buf1 = AlignedBuffer::new(LEN, 8, 0);
+        let mut aligned_buf2 = AlignedBuffer::new(LEN, 8, 0);
 
         // Set the values of the buffer:
         {

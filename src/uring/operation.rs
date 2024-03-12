@@ -171,17 +171,15 @@ pub(super) fn create_linked_read_close_sqes(
     let filesize_bytes = get_filesize_bytes(path.as_c_str());
 
     // Allocate vector:
-    let mut buffer = AlignedBuffer::new(filesize_bytes as _, ALIGN);
+    let mut buffer = AlignedBuffer::new(filesize_bytes as _, ALIGN, 0);
 
     // Prepare the "read" opcode:
-    println!(
-        "in create_linked_read_close_sqes: buffer.aligned_len = {}",
-        buffer.aligned_len() as u32
-    );
     let read_op = opcode::Read::new(*fixed_fd, buffer.as_ptr(), buffer.aligned_len() as u32)
         .build()
         .user_data(index_of_op | (opcode::Read::CODE as u64))
-        .flags(squeue::Flags::IO_LINK);
+        .flags(squeue::Flags::IO_HARDLINK); // We need a _hard_ link because read will fail if we read
+                                            // beyond the end of the file, which is very likely to happen when we're using O_DIRECT.
+                                            // When using O_DIRECT, the read length has to be a multiple of ALIGN.
 
     // Prepare the "close" opcode:
     let close_op = opcode::Close::new(*fixed_fd)
@@ -205,14 +203,14 @@ pub(super) fn create_linked_read_range_close_sqes(
     let index_of_op: u64 = (index_of_op as u64) << 32;
 
     // Allocate vector:
-    let mut buffer = AlignedBuffer::new(range.len(), ALIGN);
+    let mut buffer = AlignedBuffer::new(range.len(), ALIGN, range.start.try_into().unwrap());
 
     // Prepare the "read" opcode:
     let read_op = opcode::Read::new(*fixed_fd, buffer.as_ptr(), buffer.aligned_len() as u32)
-        .offset(range.start as _)
+        .offset(buffer.aligned_start_offset() as _)
         .build()
         .user_data(index_of_op | (opcode::Read::CODE as u64))
-        .flags(squeue::Flags::IO_LINK);
+        .flags(squeue::Flags::IO_HARDLINK);
 
     // Prepare the "close" opcode:
     let close_op = opcode::Close::new(*fixed_fd)
