@@ -9,7 +9,7 @@ use std::{
 use tokio::runtime::Runtime;
 
 const FILE_SIZE_BYTES: usize = 262_144;
-const DATA_PATH: &str = "/tmp/fio/";
+const DATA_PATH: &str = "/mnt/t700-2tb/fio/";
 const RANGE: Range<isize> = 0..(1024 * 16);
 
 async fn uring_get(filenames: &Vec<ObjectStorePath>, n_iterations: u64) -> Duration {
