@@ -1,4 +1,3 @@
-use bytes::Bytes;
 use object_store::path::Path as ObjectStorePath;
 use snafu::{ensure, Snafu};
 use std::ffi::CString;
@@ -13,6 +12,7 @@ use std::thread;
 use tokio::sync::oneshot;
 use url::Url;
 
+use crate::aligned_buffer::AlignedBuffer;
 use crate::operation::{Operation, OperationOutput};
 use crate::uring;
 
@@ -180,7 +180,7 @@ impl ObjectStoreAdapter {
     pub fn get(
         &self,
         location: &ObjectStorePath,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Bytes>> + Send + Sync>> {
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<AlignedBuffer>> + Send + Sync>> {
         let path = self.config.path_to_filesystem(location).unwrap();
         let path = CString::new(path.as_os_str().as_bytes())
             .expect("Failed to convert path '{path}' to CString.");
@@ -192,7 +192,7 @@ impl ObjectStoreAdapter {
         Box::pin(async {
             let out = rx.await.expect("Sender hung up!");
             out.map(|out| match out {
-                OperationOutput::Get(buffer) => Bytes::copy_from_slice(buffer.as_slice()),
+                OperationOutput::Get(buffer) => buffer,
                 _ => panic!("out must be a Get variant!"),
             })
         })
@@ -202,7 +202,7 @@ impl ObjectStoreAdapter {
         &self,
         location: &ObjectStorePath,
         range: Range<isize>,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Bytes>> + Send + Sync>> {
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<AlignedBuffer>> + Send + Sync>> {
         let path = self.config.path_to_filesystem(location).unwrap();
         let path = CString::new(path.as_os_str().as_bytes())
             .expect("Failed to convert path '{path}' to CString.");
@@ -214,7 +214,7 @@ impl ObjectStoreAdapter {
         Box::pin(async {
             let out = rx.await.expect("Sender hung up!");
             out.map(|out| match out {
-                OperationOutput::GetRange(buffer) => Bytes::copy_from_slice(buffer.as_slice()),
+                OperationOutput::GetRange(buffer) => buffer,
                 _ => panic!("out must be a Get variant!"),
             })
         })
@@ -258,8 +258,8 @@ mod tests {
             let result = future.await;
             if i < 2 {
                 let b = result.unwrap();
-                println!("GET: Loaded {} bytes", b.len());
-                println!("GET: {:?}", std::str::from_utf8(&b[..]).unwrap());
+                println!("GET: Loaded {} bytes", b.as_slice().len());
+                println!("GET: {:?}", std::str::from_utf8(&b.as_slice()[..]).unwrap());
             } else {
                 let err = result.unwrap_err();
                 dbg!(&err);
@@ -287,9 +287,12 @@ mod tests {
             let result = future.await;
             if i < 2 {
                 let b = result.unwrap();
-                println!("GET_RANGE: Loaded {} bytes", b.len());
-                assert_eq!(b.len(), 90);
-                println!("GET_RANGE: {:?}", std::str::from_utf8(&b[..]).unwrap());
+                println!("GET_RANGE: Loaded {} bytes", b.as_slice().len());
+                assert_eq!(b.as_slice().len(), 90);
+                println!(
+                    "GET_RANGE: {:?}",
+                    std::str::from_utf8(&b.as_slice()[..]).unwrap()
+                );
             } else {
                 let err = result.unwrap_err();
                 dbg!(&err);

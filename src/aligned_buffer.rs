@@ -6,7 +6,7 @@ use std::alloc;
 /// filesystem will often expect the buffer to be aligned to the logical block size (typically 512
 /// bytes).
 #[derive(Debug)]
-pub(crate) struct AlignedBuffer {
+pub struct AlignedBuffer {
     buf: *mut u8,
     len: usize,          // The number of bytes requested by the user.
     start_offset: usize, // The number of bytes unused at the start of the buffer.
@@ -54,7 +54,7 @@ impl AlignedBuffer {
         self.buf
     }
 
-    pub(crate) fn as_slice(&self) -> &[u8] {
+    pub fn as_slice(&self) -> &[u8] {
         unsafe {
             slice::from_raw_parts(
                 self.buf.offset(self.start_offset.try_into().unwrap()),

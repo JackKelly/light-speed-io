@@ -27,7 +27,7 @@ async fn uring_get(filenames: &Vec<ObjectStorePath>, n_iterations: u64) -> Durat
         }
         for f in futures {
             let b = f.await.expect("At least one Result was an Error");
-            assert_eq!(b.len(), FILE_SIZE_BYTES);
+            assert_eq!(b.as_slice().len(), FILE_SIZE_BYTES);
         }
         total_time += start_of_iter.elapsed();
     }
@@ -49,7 +49,7 @@ async fn uring_get_range(filenames: &Vec<ObjectStorePath>, n_iterations: u64) ->
         }
         for f in futures {
             let b = f.await.expect("At least one Result was an Error");
-            assert_eq!(b.len(), RANGE.len());
+            assert_eq!(b.as_slice().len(), RANGE.len());
         }
         total_time += start_of_iter.elapsed();
     }
