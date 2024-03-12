@@ -108,7 +108,7 @@ impl InnerState {
 
     pub(super) fn cqe_error_to_anyhow_error(&self) -> anyhow::Error {
         let cqe = self.last_cqe.as_ref().unwrap();
-        let nix_err = nix::Error::from_i32(-cqe.result());
+        let nix_err = nix::Error::from_raw(-cqe.result());
         anyhow::Error::new(nix_err).context(format!(
             "{nix_err} (reported by io_uring completion queue entry (CQE) for opcode = {}, opname = {})",
             self.last_opcode.unwrap(), opcode_to_opname(self.last_opcode.unwrap())
