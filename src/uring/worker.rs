@@ -116,9 +116,6 @@ impl Worker {
             };
 
             let mut op: Box<dyn uring::Operation + Send> = match op.op {
-                operation::Operation::Get { path } => {
-                    Box::new(uring::Get::new(path, op.output_channel))
-                }
                 operation::Operation::GetRange { path, range } => {
                     Box::new(uring::GetRange::new(path, range, op.output_channel))
                 }
