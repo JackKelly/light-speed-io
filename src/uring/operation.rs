@@ -157,42 +157,8 @@ pub(super) fn build_openat_sqe(path: &CString, index_of_op: usize) -> Vec<squeue
     vec![open_op]
 }
 
-pub(super) fn create_linked_read_close_sqes(
-    path: &CString,
-    fixed_fd: &types::Fixed,
-    index_of_op: usize,
-) -> (Vec<squeue::Entry>, operation::OperationOutput) {
-    // Convert the index_of_op into a u64, and bit-shift it left.
-    // We do this so the u64 io_uring user_data represents the index_of_op in the left-most 32 bits,
-    // and represents the io_uring opcode CODE in the right-most 32 bits.
-    let index_of_op: u64 = (index_of_op as u64) << 32;
-
-    // Get filesize: TODO: Use io_uring to get filesize; see issue #41.
-    let filesize_bytes = get_filesize_bytes(path.as_c_str());
-
-    // Allocate vector:
-    let mut buffer = AlignedBuffer::new(filesize_bytes as _, ALIGN, 0);
-
-    // Prepare the "read" opcode:
-    let read_op = opcode::Read::new(*fixed_fd, buffer.as_ptr(), buffer.aligned_len() as u32)
-        .build()
-        .user_data(index_of_op | (opcode::Read::CODE as u64))
-        .flags(squeue::Flags::IO_HARDLINK); // We need a _hard_ link because read will fail if we read
-                                            // beyond the end of the file, which is very likely to happen when we're using O_DIRECT.
-                                            // When using O_DIRECT, the read length has to be a multiple of ALIGN.
-
-    // Prepare the "close" opcode:
-    let close_op = opcode::Close::new(*fixed_fd)
-        .build()
-        .user_data(index_of_op | (opcode::Close::CODE as u64));
-
-    (
-        vec![read_op, close_op],
-        operation::OperationOutput::Get(buffer),
-    )
-}
-
 pub(super) fn create_linked_read_range_close_sqes(
+    path: &CString,
     range: &Range<isize>,
     fixed_fd: &types::Fixed,
     index_of_op: usize,
@@ -202,17 +168,40 @@ pub(super) fn create_linked_read_range_close_sqes(
     // and represents the io_uring opcode CODE in the right-most 32 bits.
     let index_of_op: u64 = (index_of_op as u64) << 32;
 
+    // Get the start_offset and len of the range:
+    let filesize = if range.start < 0 || range.end < 0 {
+        // Call `get_filesize_bytes` at most once per file!
+        Some(get_filesize_bytes(path.as_c_str()) as isize)
+    } else {
+        None
+    };
+    let start_offset = if range.start >= 0 {
+        range.start
+    } else {
+        // range.start is negative, so we must interpret it as an offset from the end of the file.
+        filesize.unwrap() + range.start
+    };
+    let end_offset = if range.end >= 0 {
+        range.end
+    } else {
+        // range.end is negative, so we must interpret it as an offset from the end of the file.
+        filesize.unwrap() + range.end + 1
+    };
+    let len = end_offset - start_offset;
+    assert!(len > 0);
+
     // Allocate vector:
-    let mut buffer = AlignedBuffer::new(range.len(), ALIGN, range.start.try_into().unwrap());
+    let mut buffer = AlignedBuffer::new(len as usize, ALIGN, start_offset.try_into().unwrap());
 
     // Prepare the "read" opcode:
     let read_op = opcode::Read::new(*fixed_fd, buffer.as_ptr(), buffer.aligned_len() as u32)
         .offset(buffer.aligned_start_offset() as _)
         .build()
         .user_data(index_of_op | (opcode::Read::CODE as u64))
-        .flags(squeue::Flags::IO_HARDLINK);
-
-    // Prepare the "close" opcode:
+        .flags(squeue::Flags::IO_HARDLINK); // We need a _hard_ link because read will fail if we read
+                                            // beyond the end of the file, which is very likely to happen when we're using O_DIRECT.
+                                            // When using O_DIRECT, the read length has to be a multiple of ALIGN.
+                                            // Prepare the "close" opcode:
     let close_op = opcode::Close::new(*fixed_fd)
         .build()
         .user_data(index_of_op | (opcode::Close::CODE as u64));

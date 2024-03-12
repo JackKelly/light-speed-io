@@ -65,6 +65,7 @@ impl uring::Operation for GetRange {
                     } else {
                         self.fixed_fd = Some(types::Fixed(cqe.result() as u32));
                         let (entries, buffer) = create_linked_read_range_close_sqes(
+                            &self.path,
                             &self.range,
                             self.fixed_fd.as_ref().unwrap(),
                             index_of_op,

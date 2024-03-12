@@ -181,21 +181,7 @@ impl ObjectStoreAdapter {
         &self,
         location: &ObjectStorePath,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<AlignedBuffer>> + Send + Sync>> {
-        let path = self.config.path_to_filesystem(location).unwrap();
-        let path = CString::new(path.as_os_str().as_bytes())
-            .expect("Failed to convert path '{path}' to CString.");
-
-        let operation = Operation::Get { path };
-
-        let rx = self.worker_thread.send(operation);
-
-        Box::pin(async {
-            let out = rx.await.expect("Sender hung up!");
-            out.map(|out| match out {
-                OperationOutput::Get(buffer) => buffer,
-                _ => panic!("out must be a Get variant!"),
-            })
-        })
+        self.get_range(location, 0..-1)
     }
 
     pub fn get_range(
@@ -203,10 +189,7 @@ impl ObjectStoreAdapter {
         location: &ObjectStorePath,
         range: Range<isize>,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<AlignedBuffer>> + Send + Sync>> {
-        let path = self.config.path_to_filesystem(location).unwrap();
-        let path = CString::new(path.as_os_str().as_bytes())
-            .expect("Failed to convert path '{path}' to CString.");
-
+        let path = self.get_cstring_path(location);
         let operation = Operation::GetRange { path, range };
 
         let rx = self.worker_thread.send(operation);
@@ -215,9 +198,15 @@ impl ObjectStoreAdapter {
             let out = rx.await.expect("Sender hung up!");
             out.map(|out| match out {
                 OperationOutput::GetRange(buffer) => buffer,
-                _ => panic!("out must be a Get variant!"),
+                _ => panic!("out must be a GetRange variant!"),
             })
         })
+    }
+
+    fn get_cstring_path(&self, location: &ObjectStorePath) -> CString {
+        let path = self.config.path_to_filesystem(location).unwrap();
+        CString::new(path.as_os_str().as_bytes())
+            .expect("Failed to convert path '{path}' to CString.")
     }
 }
 
