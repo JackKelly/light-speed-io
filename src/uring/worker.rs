@@ -2,6 +2,7 @@ use io_uring::cqueue;
 use io_uring::squeue;
 use io_uring::IoUring;
 use std::collections::VecDeque;
+use std::sync::mpsc::TryRecvError;
 use std::sync::mpsc::{Receiver, RecvError};
 
 use crate::object_store_adapter::OpAndOutputChan;
@@ -103,14 +104,14 @@ impl Worker {
                 // There are no tasks in flight in io_uring, so all that's
                 // left to do is to block and wait for more `Operations` from the user.
                 match rx.recv() {
-                    Ok(op) => op,
+                    Ok(s) => s,
                     Err(RecvError) => return Err(RecvError), // The caller hung up.
                 }
             } else {
-                if let Ok(op) = rx.try_recv() {
-                    op
-                } else {
-                    break;
+                match rx.try_recv() {
+                    Ok(s) => s,
+                    Err(TryRecvError::Empty) => return Ok(()),
+                    Err(TryRecvError::Disconnected) => return Err(RecvError), // The caller hung up.
                 }
             };
 
@@ -145,7 +146,6 @@ impl Worker {
                     .unwrap()
             };
             self.user_tasks_in_flight.put(index_of_op, op);
-            self.ring.submission().sync();
         }
         Ok(())
     }
@@ -197,6 +197,6 @@ impl Worker {
     }
 
     fn uring_is_full(&self) -> bool {
-        self.sq_len_plus_cq_len() >= (SQ_RING_SIZE - MAX_ENTRIES_PER_CHAIN)
+        self.sq_len_plus_cq_len() >= SQ_RING_SIZE - MAX_ENTRIES_PER_CHAIN
     }
 }
