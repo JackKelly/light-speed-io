@@ -46,6 +46,10 @@ impl AlignedBuffer {
         (self.start_offset / self.layout.align()) * self.layout.align()
     }
 
+    pub(crate) const fn len(&self) -> usize {
+        self.len
+    }
+
     pub(crate) const fn aligned_len(&self) -> usize {
         self.layout.size()
     }
