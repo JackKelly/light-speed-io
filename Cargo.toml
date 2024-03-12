@@ -30,13 +30,10 @@ harness = false
 
 [profile.bench]
 debug = true  # Enable debuginfo when profiling with cargo flamegraph.
-panic = 'abort' # Exit the whole process if any thread panics.
 
 [profile.release]
-panic = 'abort'
+panic = 'abort' # Exit the whole process if any thread panics.
 
 [profile.dev]
-panic = 'abort'
+panic = 'abort' # Exit the whole process if any thread panics.
 
-[profile.test]
-panic = 'abort'

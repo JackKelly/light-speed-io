@@ -9,7 +9,7 @@ use std::{
 use tokio::runtime::Runtime;
 
 const FILE_SIZE_BYTES: usize = 262_144;
-const DATA_PATH: &str = "/tmp/fio/";
+const DATA_PATH: &str = "/mnt/t700-2tb/fio/";
 const RANGE: Range<isize> = 0..(1024 * 16);
 
 async fn uring_get(filenames: &Vec<ObjectStorePath>, n_iterations: u64) -> Duration {
@@ -27,7 +27,7 @@ async fn uring_get(filenames: &Vec<ObjectStorePath>, n_iterations: u64) -> Durat
         }
         for f in futures {
             let b = f.await.expect("At least one Result was an Error");
-            assert_eq!(b.len(), FILE_SIZE_BYTES);
+            assert_eq!(b.as_slice().len(), FILE_SIZE_BYTES);
         }
         total_time += start_of_iter.elapsed();
     }
@@ -49,7 +49,7 @@ async fn uring_get_range(filenames: &Vec<ObjectStorePath>, n_iterations: u64) ->
         }
         for f in futures {
             let b = f.await.expect("At least one Result was an Error");
-            assert_eq!(b.len(), RANGE.len());
+            assert_eq!(b.as_slice().len(), RANGE.len());
         }
         total_time += start_of_iter.elapsed();
     }
