@@ -16,6 +16,9 @@ use std::sync::Arc;
 #[derive(Debug)]
 struct Chunk<M> {
     buffer: Vec<u8>, // TODO: Use `AlignedBuffer` or `Bytes`.
+    // Although, actually, maybe I don't need `Bytes` because when we use
+    // `MergedByteRange`, it'll only be a single thread writing to that buffer. So we can just use
+    // `AlignedBuffer`. See LSIO issue #108.
     metadata: M,
 }
 
