@@ -11,7 +11,8 @@ use std::sync::Arc;
 ///---------------  COMMON TO ALL I/O BACKENDS  ---------------------
 
 /// `Chunk` is used throughout the LSIO stack. It is the unit of data that's passed from the I/O
-/// layer, to the compute layer, and to the application layer.
+/// layer, to the compute layer, and to the application layer. (To be more precise:
+/// `Result<Chunk<M>>` is usually what is passed around!)
 #[derive(Debug)]
 struct Chunk<M> {
     buffer: Vec<u8>, // TODO: Use `AlignedBuffer` or `Bytes`.
@@ -21,6 +22,8 @@ struct Chunk<M> {
 #[derive(Debug)]
 enum IoOutput<M> {
     Chunk(Chunk<M>),
+    // Other variants could communicate be along the lines of:
+    // `BytesWritten, Listing(Vec<FileMetadata>)`, etc.
 }
 
 /// IO Operations (common to all I/O backends).
@@ -30,10 +33,10 @@ enum IoOperation<M> {
     ///
     /// # Errors:
     /// If the user submits a GetRanges operation with an invalid filename then
-    /// the user will receive a single Err(std::io::ErrorKind::NotFound) with context
+    /// the user will receive a single std::io::Error(std::io::ErrorKind::NotFound) with context
     /// that describes the filename that failed.
     /// If a subset of the `byte_ranges` results in an error (e.g. reading beyond
-    /// end of the file) then the user will receive a mixture of `Ok(Output::Buffer)`
+    /// end of the file) then the user will receive a mixture of `Ok(IoOutput)`
     /// and `Err`, where the `Err` will include context such as the filename
     /// and byte_range.
     GetRanges {
