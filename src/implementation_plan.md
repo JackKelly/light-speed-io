@@ -1,0 +1,7 @@
+- [ ] Implement `io_uring_local`
+  - [ ] Flat crate structure
+  - [ ] Use `enum IoOperation`
+  - [ ] Strip out the `object_store` and `tokio` stuff
+  - [ ] Use Rayon for multiple io_uring worker threads
+- [ ] Implement `object_store_bridge`
+- [ ] Benchmark `io_uring_local` vs `object_store_bridge`
