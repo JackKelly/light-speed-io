@@ -13,6 +13,8 @@ My first area of focus is on high-speed IO for local SSDs on Linux. But I'm defi
 ![Planned design for LSIO](planned_design.svg)
 ([Original Google Draw version of this diagram](https://docs.google.com/drawings/d/1cpRai2k9y2Y9v4ieaof33FT27uB4JlK_rJL9Lvbj4MM/edit?usp=sharing).)
 
+(See [this code sketch](https://github.com/JackKelly/light-speed-io/blob/new-design-March-2024/src/new_design_march_2024.rs) for some concrete ideas for how this can work.)
+
 My hope is to categorise the crates into several different levels of abstraction:
 
 ## Abstraction level 1: Data input/output
