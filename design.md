@@ -10,7 +10,7 @@ My first area of focus is on high-speed IO for local SSDs on Linux. But I'm defi
 
 # What crates would live in this repo? What would they do? And how would they communicate with each other? 
 
-![Planned design for LSIO](design.svg)
+![Planned design for LSIO](planned_design.svg)
 ([Original Google Draw version of this diagram](https://docs.google.com/drawings/d/1cpRai2k9y2Y9v4ieaof33FT27uB4JlK_rJL9Lvbj4MM/edit?usp=sharing).)
 
 My hope is to categorise the crates into several different levels of abstraction:
