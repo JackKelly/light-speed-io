@@ -1,7 +1,7 @@
 Test diagram:
 
 ```mermaid
-graph TD;
+graph BU;
     A-->B;
     A-->C;
     B-->D;
