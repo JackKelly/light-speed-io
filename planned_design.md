@@ -61,3 +61,8 @@ These crates will each include a Python API.
 - [ ] `lsio_rechunker`
 - [ ] `lsio_array`
 
+# How long will this take?
+
+Implementing the complete design sketched out above will take _years_!
+
+By the end of 2024, I hope to have MVP implementations of "level 1 (I/O)" and "level 2 (parallel compute on chunks)" and a basic Zarr implementation for level 4. But please don't hold me to that!
