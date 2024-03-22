@@ -8,7 +8,7 @@ A concrete goal is to be able to compute summary statistics of multi-terabyte da
 
 My first area of focus is on high-speed IO for local SSDs on Linux. But I'm definitely also interested in helping speed things up when data is stored in cloud object storage.
 
-# What crates would live in this repo? What would they do? And how would they communicate with each other? 
+# Which crates would live in this repo? What would they do? And how would they communicate with each other? 
 
 ![Planned design for LSIO](planned_design.svg)
 ([Original Google Draw version of this diagram](https://docs.google.com/drawings/d/1cpRai2k9y2Y9v4ieaof33FT27uB4JlK_rJL9Lvbj4MM/edit?usp=sharing).)
