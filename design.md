@@ -20,14 +20,13 @@ This is lowest level of abstraction: the level closest to the hardware.
 
 ### Common interface
 These IO crates will share a common interface: They'll have three `Channels`:
-- Instruction channel: The user will send `enum IoOperation`s through this channel to express the user's IO requests (such as "get 1,000 chunks of `/foo/bar`"). These instructions will probably be grouped (#68), such that the IO crate will guarantee that all operations in group _n_ are completed before any IO operations in group _n+1_ are started.
-- Output channel: To return completed data to the user (these will also be grouped) (see #105).
-- Buffer recycling channel: For the user to optionally tell the IO crate "hey, I've finished with this buffer, so you can re-use it" (to minimise the number of heap allocations). (#38)
+- Instruction channel: The user will send `enum IoOperation`s through this channel to express the user's IO requests (such as "get 1,000 chunks of `/foo/bar`"). These instructions will probably be grouped ([#68](https://github.com/JackKelly/light-speed-io/issues/68)), such that the IO crate will guarantee that all operations in group _n_ are completed before any IO operations in group _n+1_ are started.
+- Output channel: To return completed data to the user (these will also be grouped) (see [#105](https://github.com/JackKelly/light-speed-io/issues/105)).
+- Buffer recycling channel: For the user to optionally tell the IO crate "hey, I've finished with this buffer, so you can re-use it" (to minimise the number of heap allocations). ([#38](https://github.com/JackKelly/light-speed-io/issues/38))
 
 ### Crates
 - [ ] `lsio_io_uring_local` (this is what I'm currently working on): provide a small threadpool which performs IO using io_uring.
-- [ ] #107 (also see #10)
-- [ ] #102
+- [ ] [`object_store_bridge` #107](https://github.com/JackKelly/light-speed-io/issues/107) (also see [Ideas for fast cloud storage #10](https://github.com/JackKelly/light-speed-io/issues/10))
 - [ ] maybe other crates for high-performance local storage on MacOS and/or Windows.
 
 ## Abstraction level 2: Parallel compute on chunks
@@ -36,7 +35,7 @@ These IO crates will share a common interface: They'll have three `Channels`:
 These crates will all consume the `output channel` from the IO layer. See [this code sketch](https://github.com/JackKelly/light-speed-io/issues/104#issuecomment-1999780779) for an outline of how this could work.
 
 ### Crates
-- [ ] #39
+- [ ] [lsio_io_python_adaptor #39)[https://github.com/JackKelly/light-speed-io/issues/39]
 - [ ] `lsio_compute`: Perform parallel computation on data. Users can supply any function to be applied to each chunk. The actual computation will probably be orchestrated by Rayon. This crate will implement functions for operating on the `struct Chunks` that represents each buffer with its metadata (see #105).
 - [ ] `lsio_codecs`: Compression / decompression
 
