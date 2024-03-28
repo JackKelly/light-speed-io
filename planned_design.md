@@ -2,6 +2,8 @@
 
 The ultimate aim is to provide a suite of tools for working with large, labelled, multi-dimensional datasets as efficiently as possible on modern hardware. By "large" I mean datasets that are too large to fit into RAM. By "labelled" I mean datasets where each dimension can have coordinates associated with it. For example, a dataset of satellite imagery might have 4 dimensions: x, y, time, and channel. The x and y dimensions might be labelled with longitude and latitude coordinates, respectively. 
 
+This git repository will (probably) contain multiple crates. Each crate will implement "one thing". See the diagram below for a sketch of how these crates will relate to each other, and talk to each other.
+
 There already exist some awesome projects to work with large, labelled, multi-dimensional datasets (such as xarray, fsspec, dask, satpy, etc.). My aim is to help speed up this existing stack: Either by providing tools that those existing Python packages can hook into, or by providing new tools which play nicely with the existing stack.
 
 A concrete goal is to be able to compute summary statistics of multi-terabyte datasets on a laptop, at a speed of about 5 minutes per terabyte (from a fast local SSD), with minimal RAM requirements.
