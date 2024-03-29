@@ -164,7 +164,9 @@ trait OptimiseByteRanges<M> {
 }
 
 ///--------------------- URING-SPECIFIC CODE ------------------------
-enum UringOptimisedByteRanges<M> {
+
+/// Note that uring deals with a single byte_range at a time.
+enum UringOptimisedByteRange<M> {
     Unchanged {
         filename: Arc<CString>,
         byte_range: Range<isize>,
@@ -199,7 +201,7 @@ enum UringOptimisedByteRanges<M> {
     },
 }
 
-impl<M> OptimiseByteRanges<M> for UringOptimisedByteRanges<M> {
+impl<M> OptimiseByteRanges<M> for UringOptimisedByteRange<M> {
     type FilenameType = Arc<CString>;
 
     fn convert_filename(filename: PathBuf) -> Self::FilenameType {
@@ -256,57 +258,24 @@ impl<M> OptimiseByteRanges<M> for UringOptimisedByteRanges<M> {
     }
 }
 
-enum UringOperation<M> {
-    GetRange {
-        byte_range: UringOptimisedByteRanges<M>,
-        fixed_file_descriptor: Option<usize>, // TODO: Use types::Fixed
-    },
-    PutRange {
-        byte_range: UringOptimisedByteRanges<M>,
-        fixed_file_descriptor: Option<usize>, // TODO: Use types::Fixed
-    },
-}
-
-#[derive(Debug)]
-enum NextStep<M> {
-    SubmitEntries {
-        entries: Vec<squeue::Entry>,
-        // If true, then these squeue entries will register one file.
-        register_file: bool,
-    },
-    Pending {
-        output: Option<IoOutput<M>>,
-    },
-    // We're done! Remove this operation from the list of ops in flight.
-    Done {
-        // true means that the CQE reports that it has unregistered one file.
-        unregister_file: bool,
-        output: Option<IoOutput<M>>,
-    },
-}
-
-impl<M> UringOperation<M> {
-    fn get_first_step(&self, index_of_op: usize) -> NextStep<M> {
-        match &self {
-            Self::GetRange {
-                byte_range,
-                fixed_file_descriptor,
-            } => todo!(),
-            Self::PutRange {
-                byte_range,
-                fixed_file_descriptor,
-            } => todo!(),
-        }
-    }
-
-    /// # Errors:
-    /// If io_uring reports an error, then this function will return an `std::io::Error` with the
-    /// context set twice: First to the `UringOperation`, and then to the `NextStep`.
+/// ------------------ COMMON TO ALL URING OPERATIONS ---------------------
+/// Some aims of this design:
+/// - Allocate on the stack
+/// - Cleanly separate the code that implements the state machine for handling each operation.
+/// - Gain the benefits of using the typestate pattern, whilst still allowing us to keep the types
+/// in a vector. See issue #117.
+trait UringOp<M> {
+    /// Notes on implementation:
+    /// We could imagine a world in which we want to return a buffer _and_ an error, such as when
+    /// io_uring reads less data than is requested. We have simplified, and assumed that this
+    /// specific case will always be an error, hence it's fine to return a Result<NextStep>.
     fn process_cqe_and_get_next_step(
-        &self,
+        &mut self,
         cqe: cqueue::Entry,
         index_of_op: usize,
     ) -> Result<NextStep<M>> {
+        // TODO: Implement a UserData struct that uses From<u64> to convert from cqe.user_data.
+        // See #116.
         let opcode = get_opcode_from_user_data(cqe.user_data());
 
         // Check if the CQE reports an error. We can't return the error yet
@@ -315,36 +284,76 @@ impl<M> UringOperation<M> {
         // every error that occurs (because we now have a limitless output Channel)!
         let maybe_error = cqe_error_to_anyhow_error(cqe.result());
 
-        match &self {
-            Self::GetRange {
-                byte_range,
-                fixed_file_descriptor,
-            } => self.process_cqe_for_get_range(
-                byte_range,
-                fixed_file_descriptor,
-                opcode,
-                maybe_error,
-            ),
-            Self::PutRange {
-                byte_range,
-                fixed_file_descriptor,
-            } => self.process_cqe_for_put_range(
-                byte_range,
-                fixed_file_descriptor,
-                opcode,
-                maybe_error,
-            ),
-        }
+        self.process_opcode_and_get_next_step(opcode, maybe_error, index_of_op)
     }
 
-    fn process_cqe_for_get_range(
-        &self,
-        byte_range: UringOptimisedByteRanges<M>,
-        fixed_file_descriptor: Option<usize>,
+    fn process_opcode_and_get_next_step(
+        &mut self,
         opcode: u8,
         maybe_error: Option<Error>,
+        index_of_op: usize,
+    ) -> Result<NextStep<M>>;
+}
+
+#[derive(Debug)]
+enum NextStep<M> {
+    SubmitEntries(Vec<squeue::Entry>),
+    OutputIsReadyButOpIsPending(IoOutput<M>), // Needs a better name!
+    Pending,
+    // We're done! Remove this operation from the list of ops in flight.
+    DoneWithOutput(IoOutput<M>),
+    Done,
+}
+
+/// We keep a Vec<UringOperation> in each thread to track progress of each operation:
+enum UringOperation<M> {
+    GetRange(GetRange<M>),
+}
+
+impl<M> UringOperation<M> {
+    /// If io_uring reports an error, then this function will return an `std::io::Error` with the
+    /// context set twice: First to the `UringOperation`, and then to the `NextStep`.
+    fn process_cqe_and_get_next_step(
+        &self,
+        cqe: cqueue::Entry,
+        index_of_op: usize,
     ) -> Result<NextStep<M>> {
-        todo!();
+        match &self {
+            Self::GetRange(get_range) => get_range.process_cqe_and_get_next_step(cqe, index_of_op),
+        }
+    }
+}
+
+/// ---------------- SPECIFIC TO THE GETRANGE OP ---------------------
+
+enum GetRangeNextOpToSubmitToUring {
+    OpenAndGetFileSize,
+    Read,
+    Close,
+}
+
+struct GetRange<M> {
+    state: GetRangeNextOpToSubmitToUring,
+    byte_range: UringOptimisedByteRange<M>,
+    file_descriptor: usize, // Let's keep life simple and use "normal" FDs.
+}
+
+impl<M> UringOp<M> for GetRange<M> {
+    fn process_opcode_and_get_next_step(
+        &mut self,
+        opcode: u8, // TODO: Maybe we should use an enum for the io_uring opcodes?
+        maybe_error: Option<Error>,
+        index_of_op: usize,
+    ) -> Result<NextStep<M>> {
+        match self.state {
+            GetRangeNextOpToSubmitToUring::OpenAndGetFileSize => {
+                // TODO: implement handling of cqe
+                self.state = GetRangeNextOpToSubmitToUring::Read;
+                todo!()
+            }
+            GetRangeNextOpToSubmitToUring::Read => todo!(),
+            GetRangeNextOpToSubmitToUring::Close => todo!(),
+        }
     }
 }
 
