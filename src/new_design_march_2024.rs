@@ -12,21 +12,21 @@ use std::sync::Arc;
 
 /// `Chunk` is used throughout the LSIO stack. It is the unit of data that's passed from the I/O
 /// layer, to the compute layer, and to the application layer. (To be more precise:
-/// `Result<Chunk<M>>` is usually what is passed around!)
+/// `Result<Chunk<M>>` is usually what is passed around!). The current assumption is that each
+/// `Chunk` will only ever be _written_ to by a single thread (this should be true even when using
+/// `Merged` byte range). But, it's entirely possible that a single `Chunk` might be _read_ from
+/// multiple threads.
 #[derive(Debug)]
 struct Chunk<M> {
-    buffer: Vec<u8>, // TODO: Use `AlignedBuffer` or `Bytes`.
-    // Although, actually, maybe I don't need `Bytes` because when we use
-    // `MergedByteRange`, it'll only be a single thread writing to that buffer. So we can just use
-    // `AlignedBuffer`. See LSIO issue #108.
+    buffer: Vec<u8>, // TODO: Use `AlignedBuffer`.
     metadata: M,
 }
 
 #[derive(Debug)]
 enum IoOutput<M> {
     Chunk(Chunk<M>),
-    // Other variants could communicate be along the lines of:
-    // `BytesWritten, Listing(Vec<FileMetadata>)`, etc.
+    // Other variants could communicate info like:
+    // `BytesWritten`, `Listing(Vec<FileMetadata>)`, etc.
 }
 
 /// IO Operations (common to all I/O backends).
@@ -65,39 +65,6 @@ enum IoOperation<M> {
     },
 }
 
-// TODO: Update this text!
-//
-// Once the GetRangesUserOp passes to the uring threadpool,
-// the first worker thread which grabs this GetRangesUserOp
-// will get the filesize (if necessary) and then optimise the byte_ranges and submit some
-// combination of
-// `UnchangedGetOp`, `MergedGetOp`, and `SplitGetOp` to the Rayon
-// task queue. Each of these will implement the `UringTask` trait
-// (which has methods for `process_cqe` and `next`).
-//
-// for example:
-//
-// Let's say the user asks for one 4 GByte file.
-// Linux cannot load anything larger than 2 GB in one go.
-// But we don't know the size immediately because the user used byte_range=0..-1.
-// The steps will be:
-// 1. Get the filesize from io_uring and, concurrently, open the file.
-// 2. As soon as the filesize is returned, we see that this is a big file, and so we need to submit
-//    a `SplitGetOp`.
-// 3. Set split_byte_ranges to [0..2GB, 2GB..4GB].
-// 4. Set next_to_submit to 0, and set n_completed to 0.
-// 5. Submit the uring operations, using the appropriate pointer offset.
-// 7. When both `read` operations have completed, submit the user_buffer and metadata to the
-//    completion queue.
-//
-// Now let's say that the user asks for 1 million chunks from a single file.
-// Some of these chunks are close, so we merge them.
-// The user has asked for only 1,000 buffers to be allocated at any given time.
-// 1. The first uring worker thread gets the filesize if necessary.
-// 2. Then submits a mix of operations to the Rayon task queue.
-// 3. Each MergedGetOp just submits a single read to uring,
-// and when that read completes, it submits read-only slices (but how to keep the buffer alive, if
-// we're only passing back &[u8]? Maybe use Bytes?).
 trait OptimiseByteRanges<M> {
     type FilenameType: Clone;
     fn optimise(io_operation: IoOperation<M>, max_gap: usize, max_file_size: usize) -> Vec<Self>
@@ -165,6 +132,37 @@ trait OptimiseByteRanges<M> {
 
 ///--------------------- URING-SPECIFIC CODE ------------------------
 
+// Flow of information:
+//
+// Once the `enum IoOperation::GetRanges` passes to the uring threadpool,
+// the first worker thread which grabs this `GetRanges`
+// will get the filesize (if necessary) and then optimise the byte ranges and submit some
+// combination of `Unchanged`, `Merged`, and `Split` to the Rayon task queue. See:
+// https://github.com/JackKelly/rust-playground/blob/main/rayon-for-io-threadpool/src/main.rs
+//
+// for example:
+//
+// Let's say the user asks for one 4 GByte file.
+// Linux cannot load anything larger than 2 GB in one go.
+// But we don't know the size immediately because the user used byte_range=0..-1.
+// The steps will be:
+// 1. Get the filesize from io_uring and, concurrently, open the file.
+// 2. As soon as the filesize is returned, we see that this is a big file, and so we need to submit
+//    a `Split` optimised byte range.
+// 3. Set split_byte_ranges to [0..2GB, 2GB..4GB].
+// 4. Set next_to_submit to 0, and set n_completed to 0.
+// 5. Submit the uring operations, using the appropriate pointer offset into the buffer.
+// 7. When both `read` operations have completed, submit the user_buffer and metadata to the
+//    completion queue.
+//
+// Now let's say that the user asks for 1 million chunks from a single file.
+// Some of these chunks are close, so we merge them.
+// The user has asked for only 1,000 buffers to be allocated at any given time.
+// 1. The first uring worker thread gets the filesize if necessary.
+// 2. Then submits a mix of operations to the Rayon task queue.
+// 3. Each `Merged` byte range just submits a single read to uring,
+//    and when that read completes, it submits read-only slices.
+
 /// Note that uring deals with a single byte_range at a time.
 enum UringOptimisedByteRange<M> {
     Unchanged {
@@ -224,6 +222,7 @@ impl<M> OptimiseByteRanges<M> for UringOptimisedByteRange<M> {
             metadata,
         }
     }
+
     fn new_split_byte_range(
         filename: Self::FilenameType,
         split_byte_ranges: Vec<Range<isize>>,
@@ -241,6 +240,7 @@ impl<M> OptimiseByteRanges<M> for UringOptimisedByteRange<M> {
             user_metadata,
         }
     }
+
     fn new_merged_byte_range(
         filename: Self::FilenameType,
         merged_byte_range: Range<isize>,
@@ -265,7 +265,7 @@ impl<M> OptimiseByteRanges<M> for UringOptimisedByteRange<M> {
 /// - Gain the benefits of using the typestate pattern, whilst still allowing us to keep the types
 /// in a vector. See issue #117.
 trait UringOp<M> {
-    /// Notes on implementation:
+    /// Notes on the return type:
     /// We could imagine a world in which we want to return a buffer _and_ an error, such as when
     /// io_uring reads less data than is requested. We have simplified, and assumed that this
     /// specific case will always be an error, hence it's fine to return a Result<NextStep>.
@@ -298,14 +298,17 @@ trait UringOp<M> {
 #[derive(Debug)]
 enum NextStep<M> {
     SubmitEntries(Vec<squeue::Entry>),
-    OutputIsReadyButOpIsPending(IoOutput<M>), // Needs a better name!
+    /// We're not completely done yet. For example, perhaps the file hasn't been closed yet.
+    /// But the output is ready.
+    PendingWithOutput(IoOutput<M>), // Needs a better name!
+    /// We're not done yet. And there's no output ready.
     Pending,
-    // We're done! Remove this operation from the list of ops in flight.
+    /// We're done! Remove this operation from the list of ops in flight.
     DoneWithOutput(IoOutput<M>),
     Done,
 }
 
-/// We keep a Vec<UringOperation> in each thread to track progress of each operation:
+/// We keep a `Vec<UringOperation>` in each thread to track progress of each operation:
 enum UringOperation<M> {
     GetRange(GetRange<M>),
 }
@@ -326,14 +329,7 @@ impl<M> UringOperation<M> {
 
 /// ---------------- SPECIFIC TO THE GETRANGE OP ---------------------
 
-enum GetRangeNextOpToSubmitToUring {
-    OpenAndGetFileSize,
-    Read,
-    Close,
-}
-
 struct GetRange<M> {
-    state: GetRangeNextOpToSubmitToUring,
     byte_range: UringOptimisedByteRange<M>,
     file_descriptor: usize, // Let's keep life simple and use "normal" FDs.
 }
@@ -345,14 +341,11 @@ impl<M> UringOp<M> for GetRange<M> {
         maybe_error: Option<Error>,
         index_of_op: usize,
     ) -> Result<NextStep<M>> {
-        match self.state {
-            GetRangeNextOpToSubmitToUring::OpenAndGetFileSize => {
-                // TODO: implement handling of cqe
-                self.state = GetRangeNextOpToSubmitToUring::Read;
-                todo!()
-            }
-            GetRangeNextOpToSubmitToUring::Read => todo!(),
-            GetRangeNextOpToSubmitToUring::Close => todo!(),
+        match opcode {
+            opcode::OPENAT2 => todo!(),
+            opcode::STATX => todo!(),
+            opcode::READ => todo!(),
+            opcode::CLOSE => todo!(),
         }
     }
 }
