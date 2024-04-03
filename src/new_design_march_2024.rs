@@ -308,7 +308,7 @@ enum NextStep<M> {
     Done,
 }
 
-/// We keep a `Vec<UringOperation>` in each thread to track progress of each operation:
+/// We keep a `Tracker<UringOperation>` in each thread to track progress of each operation:
 enum UringOperation<M> {
     GetRange(GetRange<M>),
 }
