@@ -5,7 +5,6 @@ use std::iter::zip;
 use std::ops::Range;
 use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
-use std::sync::mpsc::channel;
 use std::sync::Arc;
 
 ///---------------  COMMON TO ALL I/O BACKENDS  ---------------------
@@ -30,6 +29,7 @@ enum IoOutput<M> {
 }
 
 /// IO Operations (common to all I/O backends).
+/// This is how the user sends instructions to the I/O backend.
 #[derive(Debug)]
 enum IoOperation<M> {
     /// Submit a GetRanges operation.
@@ -66,7 +66,10 @@ enum IoOperation<M> {
 }
 
 trait OptimiseByteRanges<M> {
+    /// Different implementations might require different types to represent the filename.
+    /// For example, io_uring uses `Arc<CString>`.
     type FilenameType: Clone;
+
     fn optimise(io_operation: IoOperation<M>, max_gap: usize, max_file_size: usize) -> Vec<Self>
     where
         Self: Sized,
@@ -350,17 +353,56 @@ impl<M> UringOp<M> for GetRange<M> {
     }
 }
 
+/// ------------------ USAGE EXAMPLES -------------------------------
+
 fn main() {
-    let (tx, rx) = channel();
+    // Create a new IoUringLocal instance, which also returns two channels: one for
+    // sending instructions to the backend, and one for receiving data from the backend:
+    // These queues are `crossbeam::channel`s.
+    let (io_uring, submission_queue, completion_queue) = IoUringLocalBuilder::new().build();
 
-    let get_ranges_op = IoOperation::GetRanges {
-        filename: PathBuf::from("foo/bar"),
-        byte_ranges: vec![0..100, 500..-1],
-        metadata: Some(vec![0, 1]),
-    };
+    // Define two operations in a Group:
+    vec![
+        IoOperation::GetRanges {
+            filename: PathBuf::from("foo/bar"),
+            byte_ranges: vec![0..100, 500..-1],
+            metadata: Some(vec![0, 1]),
+        },
+        IoOperation::GetRanges {
+            filename: PathBuf::from("foo/baz"),
+            byte_ranges: vec![0..100, 500..-1],
+            metadata: Some(vec![0, 1]),
+        },
+        IoOperation::EndOfGroup {
+            group_metadata: OutputFilename("output.bin"),
+        },
+    ]
+    .for_each(|op| {
+        // Send the Group to io_uring:
+        submission_queue.send(op).unwrap();
+    });
 
-    tx.send(get_ranges_op).unwrap();
+    // Process the data:
+    completion_queue
+        .into_iter()
+        .par_bridge()
+        .for_each(|output_group: OutputGroup| {
+            let out = output_group
+                .outputs
+                .into_iter()
+                .par_bridge()
+                .map(|output| {
+                    assert_eq!(output.operation_kind, GetRanges);
+                    let decompressed = decompress(&output.buffer.unwrap());
+                    buffer_recycling_queue.send(output.buffer.take()).unwrap();
+                    decompressed
+                })
+                .reduce(reduce_func);
+            let out = compress(out);
 
-    let recv = rx.recv().unwrap();
-    println!("{recv:?}");
+            // Write `out` to disk:
+            let put_op = Operation::put_ranges(output_group.metadata.output_filename, 0..-1, out);
+            let op_group = OpGroup::new().append(put_op);
+            submission_queue.send(op_group); // Does not block.
+        });
 }
