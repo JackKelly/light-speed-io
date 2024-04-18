@@ -1,5 +1,5 @@
 # Light Speed IO (LSIO)
-The ultimate ambition is to enable folks to read many small sequences of data from disk as fast as modern hardware will allow.
+The ultimate ambition is to enable folks to efficiently load and process large, multi-dimensional data as fast as modern hardware will allow.
 
 For now, this repo is just a place for me to tinker with ideas. This code won't do anything vaguely useful for months!
 
