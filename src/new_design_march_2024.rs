@@ -314,6 +314,7 @@ enum NextStep<M> {
 /// We keep a `Tracker<UringOperation>` in each thread to track progress of each operation:
 enum UringOperation<M> {
     GetRange(GetRange<M>),
+    IoOperationWrapper(IoOperationWrapper<M>),
 }
 
 impl<M> UringOperation<M> {
@@ -338,6 +339,28 @@ struct GetRange<M> {
 }
 
 impl<M> UringOp<M> for GetRange<M> {
+    fn process_opcode_and_get_next_step(
+        &mut self,
+        opcode: u8, // TODO: Maybe we should use an enum for the io_uring opcodes?
+        maybe_error: Option<Error>,
+        index_of_op: usize,
+    ) -> Result<NextStep<M>> {
+        match opcode {
+            opcode::OPENAT2 => todo!(),
+            opcode::STATX => todo!(),
+            opcode::READ => todo!(),
+            opcode::CLOSE => todo!(),
+        }
+    }
+}
+
+/// ---------------- SPECIFIC TO THE IOOPERATIONWRAPPER -------------
+
+struct IoOperationWrapper<M> {
+    op: IoOperation<M>,
+}
+
+impl<M> UringOp<M> for IoOperationWrapper<M> {
     fn process_opcode_and_get_next_step(
         &mut self,
         opcode: u8, // TODO: Maybe we should use an enum for the io_uring opcodes?
