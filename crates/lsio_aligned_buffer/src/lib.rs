@@ -21,6 +21,12 @@ unsafe impl Sync for AlignedBufferMut {}
 impl AlignedBufferMut {
     /// Aligns the start and end of the buffer with `align`.
     /// 'align' must not be zero, and must be a power of two.
+    //
+    // TODO: Actually, I think `new` should take a `len` argument, _not_ a `slice` argument.
+    // For a new `AlignedBufferMut`, `valid_slice` should be `0..len`.
+    // And then, slices should always be guaranteed to be fully aligned.
+    // Then we can get rid of the confusing `as_mut_ptr_to_start_of_underlying_buf`, and rename
+    // `as_mut_ptr_to_valid_slice` to `as_mut_ptr`.
     pub(crate) fn new(slice: Range<usize>, align: usize) -> Self {
         assert_ne!(slice.len(), 0);
         // Let's say the user requests a buffer of len 3 and offset 2; and align is 4:
@@ -30,7 +36,7 @@ impl AlignedBufferMut {
         // In this case, we need to allocate 8 bytes becuase we need to move the start
         // backwards to the first byte, and move the end forwards to the eighth byte.
         let inner_buf = InnerAlignedBuffer::new(slice.len() + (slice.start % align), align);
-        inner_buf.claim_new_exclusive_slice(&slice).unwrap();
+        inner_buf.request_new_exclusive_slice(&slice).unwrap();
         Self {
             buf: Arc::new(inner_buf),
             valid_slice: slice,
@@ -48,8 +54,112 @@ impl AlignedBufferMut {
         self.buf.size()
     }
 
-    pub(crate) fn as_mut_ptr_to_underlying_buf(&mut self) -> *mut u8 {
+    pub(crate) fn as_mut_ptr_to_start_of_underlying_buf(&mut self) -> *mut u8 {
         self.buf.as_mut_ptr()
+    }
+
+    pub(crate) fn as_mut_ptr_to_valid_slice(&mut self) -> *mut u8 {
+        unsafe {
+            self.buf
+                .as_mut_ptr()
+                .offset(self.valid_slice.start as isize)
+        }
+    }
+
+    /// Split this view of the underlying buffer into two at the given index.
+    ///
+    /// `idx` must not be zero. `idx` must be exactly divisible by the alignment of the underlying
+    /// buffer. `idx` must be contained in `self.valid_slice`.
+    ///
+    /// Afterwards, `self` contains `[idx, valid_slice.end)` and the returned `AlignedBufferMut`
+    /// contains elements `[valid_slice.start, idx)`.
+    ///
+    /// To show this graphically:
+    ///
+    /// Before calling `split_to`:
+    ///
+    /// Underlying buffer:  0 1 2 3 4 5 6 7 8 9
+    /// self.valid_slice :     [2,          8)
+    ///
+    /// After calling `split_to(6)`:
+    ///
+    /// self.valid_slice :             [6,  8)
+    /// other.valid_slice:     [2,      6)
+    pub(crate) fn split_to(&mut self, idx: usize) -> anyhow::Result<Self> {
+        if !self.valid_slice.contains(&idx) {
+            Err(anyhow::format_err!(
+                "idx {idx} is not contained in this buffer's valid_slice {:?}",
+                self.valid_slice,
+            ))
+        } else if idx == 0 {
+            Err(anyhow::format_err!("idx must not be zero!"))
+        } else if idx % self.buf.alignment() != 0 {
+            Err(anyhow::format_err!(
+                "idx {idx} must be exactly divisible by the alignment {}",
+                self.buf.alignment()
+            ))
+        } else {
+            // Remove our old `valid_slice`:
+            self.buf.remove_exclusive_slice(&self.valid_slice).unwrap();
+
+            // Create and request a new `valid_slice` for the new `AlignedBufferMut`:
+            let new_valid_slice = self.valid_slice.start..idx;
+            self.buf
+                .request_new_exclusive_slice(&new_valid_slice)
+                .unwrap();
+
+            // Request a new `valid_slice` for `self`:
+            self.valid_slice.start = idx;
+            self.buf
+                .request_new_exclusive_slice(&self.valid_slice)
+                .unwrap();
+
+            Ok(AlignedBufferMut {
+                buf: self.buf.clone(),
+                valid_slice: new_valid_slice,
+            })
+        }
+    }
+
+    /// If this is the only `AlignedBufferMut` with access to the underlying buffer
+    /// then `freeze` returns a read-only `AlignedBuffer` (wrapped in `Ok`), which contains a
+    /// reference to the underlying buffer, and has its `valid_slice` set to the entire byte range
+    /// of the underlying buffer. If, on the other hand, other `AlignedBufferMut`s have access to
+    /// the underlying then `freeze` will return `Err(self)`.
+    pub(crate) fn freeze(self) -> Result<AlignedBuffer, Self> {
+        if Arc::strong_count(&self.buf) == 1 {
+            Ok(AlignedBuffer {
+                buf: self.buf.clone(),
+                valid_slice: 0..self.capacity(),
+            })
+        } else {
+            Err(self)
+        }
+    }
+}
+
+impl Drop for AlignedBufferMut {
+    fn drop(&mut self) {
+        self.buf.remove_exclusive_slice(&self.valid_slice).unwrap();
+    }
+}
+
+/// Immutable.
+#[derive(Debug)]
+struct AlignedBuffer {
+    buf: Arc<InnerAlignedBuffer>,
+    /// The slice requested by the user.
+    valid_slice: Range<usize>,
+}
+
+unsafe impl Send for AlignedBuffer {}
+unsafe impl Sync for AlignedBuffer {}
+
+impl AlignedBuffer {
+    /// The length of the `valid_slice` requested by the user. The `valid_slice` is a view into the
+    /// underlying buffer. The underlying buffer may be larger than `len`.
+    pub(crate) fn len(&self) -> usize {
+        self.valid_slice.len()
     }
 
     pub fn as_slice(&self) -> &[u8] {
@@ -64,12 +174,6 @@ impl AlignedBufferMut {
     }
 }
 
-impl Drop for AlignedBufferMut {
-    fn drop(&mut self) {
-        self.buf.remove_exclusive_slice(&self.valid_slice).unwrap();
-    }
-}
-
 #[derive(Debug)]
 struct InnerAlignedBuffer {
     buf: *mut u8,
@@ -77,6 +181,11 @@ struct InnerAlignedBuffer {
     /// a multiple of `align`.
     layout: alloc::Layout,
     /// A list of the slices which are currently mutably borrowed.
+    //
+    // TODO: Actually, I think we can completely remove `exclusive_slices` and all the methods
+    // associated with it! The only way of getting a new `AlignedBufferMut` is by splitting it,
+    // which (should!) guarantee that we only ever get non-overlapping mutable views.
+    //
     // TODO: To improve performance of finding a `Range` within this set, we might want to use
     // `BTreeSet`. But `BTreeSet` requires `Ord`, and `Ord` isn't implemented for `Range`, so we'd
     // have to define a new range type which holds a `Range` and implements `Ord`, or perhaps have
@@ -103,7 +212,7 @@ impl InnerAlignedBuffer {
 
     /// Attempt to claim a new, exclusive slice. This will return an Error if the requested slice
     /// overlaps with an existing slice.
-    fn claim_new_exclusive_slice(&self, slice: &Range<usize>) -> anyhow::Result<()> {
+    fn request_new_exclusive_slice(&self, slice: &Range<usize>) -> anyhow::Result<()> {
         let mut exclusive_slices = self.exclusive_slices.lock().unwrap();
         for exclusive_slice in exclusive_slices.iter() {
             if overlaps(exclusive_slice, slice) {
@@ -183,8 +292,8 @@ mod tests {
 
         // Set the values of the buffer:
         {
-            let ptr1 = aligned_buf1.as_mut_ptr_to_underlying_buf();
-            let ptr2 = aligned_buf2.as_mut_ptr_to_underlying_buf();
+            let ptr1 = aligned_buf1.as_mut_ptr_to_valid_slice();
+            let ptr2 = aligned_buf2.as_mut_ptr_to_valid_slice();
             unsafe {
                 for i in 0..LEN {
                     *ptr1.offset(i as _) = i as u8;
@@ -194,14 +303,14 @@ mod tests {
         }
         // Read the values back out:
         {
-            let slice1 = aligned_buf1.as_slice();
-            let slice2 = aligned_buf2.as_slice();
+            let slice1 = aligned_buf1.freeze().unwrap();
+            let slice2 = aligned_buf2.freeze().unwrap();
             for i in 0..LEN {
-                assert_eq!(slice1[i], i as u8);
-                assert_eq!(slice2[i], i as u8);
+                assert_eq!(slice1.as_slice()[i], i as u8);
+                assert_eq!(slice2.as_slice()[i], i as u8);
             }
             assert_eq!(
-                slice1,
+                slice1.as_slice(),
                 [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
             );
         }
