@@ -1,5 +1,10 @@
+use anyhow;
 use core::{ops::Range, slice};
-use std::{alloc, sync::Arc};
+use std::{
+    alloc,
+    ops::RangeBounds,
+    sync::{atomic::AtomicU64, Arc, Mutex},
+};
 
 /// A memory buffer allocated on the heap, where the start position and end position of the backing
 /// buffer are both aligned. This is useful for working with O_DIRECT file IO, where the filesystem
@@ -17,6 +22,8 @@ struct InnerAlignedBuffer {
     /// `layout.size()` gives the number of bytes _actually_ allocated, which will be
     /// a multiple of `align`.
     layout: alloc::Layout,
+    /// A list of the slices which are currently mutably borrowed.
+    exclusive_slices: Mutex<Vec<Range<usize>>>,
 }
 
 unsafe impl Send for AlignedBuffer {}
@@ -32,14 +39,33 @@ impl InnerAlignedBuffer {
         if buf.is_null() {
             alloc::handle_alloc_error(layout);
         }
-        Self { buf, layout }
+        Self {
+            buf,
+            layout,
+            exclusive_slices: Mutex::new(Vec::new()),
+        }
     }
 
+    /// Attempt to claim a new, exclusive slice. This will return an Error if the requested slice
+    /// overlaps with an existing slice.
+    fn claim_new_exclusive_slice(&mut self, slice: &Range<usize>) -> anyhow::Result<()> {
+        let mut exclusive_slices = self.exclusive_slices.lock().unwrap();
+        for exclusive_slice in exclusive_slices.iter() {
+            if overlaps(exclusive_slice, slice) {
+                return Err(anyhow::format_err!("The requested slice {slice:?} overlaps with an existing slice: {exclusive_slice:?}"));
+            }
+        }
+        exclusive_slices.push(slice.clone());
+        Ok(())
+    }
+
+    /// The total size of the underlying buffer.
     const fn size(&self) -> usize {
         self.layout.size()
     }
 
-    const fn align(&self) -> usize {
+    /// Get the alignment, in bytes.
+    const fn alignment(&self) -> usize {
         self.layout.align()
     }
 
@@ -69,12 +95,11 @@ impl AlignedBuffer {
         //        requested:         |---|
         // In this case, we need to allocate 8 bytes becuase we need to move the start
         // backwards to the first byte, and move the end forwards to the eighth byte.
-        let inner_buf = Arc::new(InnerAlignedBuffer::new(
-            slice.len() + (slice.start % align),
-            align,
-        ));
+        let mut inner_buf = InnerAlignedBuffer::new(slice.len() + (slice.start % align), align);
+        inner_buf.claim_new_exclusive_slice(&slice).unwrap();
+        let inner_buf = inner_buf; // Immutable.
         Self {
-            buf: inner_buf,
+            buf: Arc::new(inner_buf),
             valid_slice: slice,
         }
     }
@@ -108,9 +133,31 @@ impl AlignedBuffer {
 
 // TODO: Implement clone?
 
+fn overlaps(a: &Range<usize>, b: &Range<usize>) -> bool {
+    if a.is_empty() || b.is_empty() {
+        return false;
+    }
+    a.contains(&b.start) || a.contains(&(b.end - 1))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_overlaps() {
+        // Ranges which don't overlap
+        for (a, b) in vec![((0..5), (5..10)), ((0..1), (100..200)), ((1..1), (0..5))] {
+            assert!(!overlaps(&a, &b));
+            assert!(!overlaps(&b, &a));
+        }
+
+        // Ranges which do overlap
+        for (a, b) in vec![((0..5), (4..5)), ((0..5), (0..5))] {
+            assert!(overlaps(&a, &b), "overlaps({a:?}, {b:?})");
+            assert!(overlaps(&b, &a), "overlaps({b:?}, {a:?})");
+        }
+    }
 
     #[test]
     fn test_write_and_read() {
