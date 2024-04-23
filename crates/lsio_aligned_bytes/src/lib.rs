@@ -1,70 +1,66 @@
 use core::{ops::Range, slice};
-use std::{
-    alloc,
-    collections::HashSet,
-    sync::{Arc, Mutex},
-};
+use std::{alloc, sync::Arc};
 
 /// A memory buffer allocated on the heap, where the start position and end position of the backing
 /// buffer are both aligned. This is useful for working with O_DIRECT file IO, where the filesystem
 /// will often expect the buffer to be aligned to the logical block size (typically 512 bytes).
 #[derive(Debug)]
-pub struct AlignedBufferMut {
-    buf: Arc<InnerAlignedBuffer>,
+pub struct AlignedBytesMut {
+    buf: Arc<InnerBuffer>,
     /// The slice requested by the user.
-    valid_slice: Range<usize>,
+    range: Range<usize>,
 }
 
-unsafe impl Send for AlignedBufferMut {}
-unsafe impl Sync for AlignedBufferMut {}
+unsafe impl Send for AlignedBytesMut {}
+unsafe impl Sync for AlignedBytesMut {}
 
-impl AlignedBufferMut {
+impl AlignedBytesMut {
     /// Aligns the start and end of the buffer with `align`.
     /// 'align' must not be zero, and must be a power of two.
     pub(crate) fn new(len: usize, align: usize) -> Self {
-        let inner_buf = InnerAlignedBuffer::new(len, align);
+        let inner_buf = InnerBuffer::new(len, align);
         Self {
             buf: Arc::new(inner_buf),
-            valid_slice: 0..len,
+            range: 0..len,
         }
     }
 
-    /// The length of the `valid_slice` requested by the user. The `valid_slice` is a view into the
+    /// The length of the `range` requested by the user. The `range` is a view into the
     /// underlying buffer. The underlying buffer may be larger than `len`.
     pub(crate) fn len(&self) -> usize {
-        self.valid_slice.len()
+        self.range.len()
     }
 
-    /// Get a mutable pointer to this `AlignedBufferMut`'s `valid_slice`.
+    /// Get a mutable pointer to this `AlignedBytesMut`'s `range`.
     pub(crate) fn as_mut_ptr(&mut self) -> *mut u8 {
         let ptr = self.buf.as_mut_ptr();
-        unsafe { ptr.offset(self.valid_slice.start as isize) }
+        unsafe { ptr.offset(self.range.start as isize) }
     }
 
     /// Split this view of the underlying buffer into two views at the given index.
     ///
     /// `idx` must not be zero. `idx` must be exactly divisible by the alignment of the underlying
-    /// buffer. `idx` must be contained in `self.valid_slice`.
+    /// buffer. `idx` must be contained in `self.range`.
     ///
-    /// Afterwards, `self` contains `[idx, valid_slice.end)` and the returned `AlignedBufferMut`
-    /// contains elements `[valid_slice.start, idx)`.
+    /// Afterwards, `self` contains `[idx, range.end)` and the returned `AlignedBytesMut`
+    /// contains elements `[range.start, idx)`.
     ///
     /// To show this graphically:
     ///
     /// Before calling `split_to`:
     ///
     /// Underlying buffer:  0 1 2 3 4 5 6 7 8 9
-    /// self.valid_slice :     [2,          8)
+    /// self.range       :     [2,          8)
     ///
     /// After calling `split_to(6)`:
     ///
-    /// self.valid_slice :             [6,  8)
-    /// other.valid_slice:     [2,      6)
+    /// self.range       :             [6,  8)
+    /// other.range      :     [2,      6)
     pub(crate) fn split_to(&mut self, idx: usize) -> anyhow::Result<Self> {
-        if !self.valid_slice.contains(&idx) {
+        if !self.range.contains(&idx) {
             Err(anyhow::format_err!(
-                "idx {idx} is not contained in this buffer's valid_slice {:?}",
-                self.valid_slice,
+                "idx {idx} is not contained in this buffer's range {:?}",
+                self.range,
             ))
         } else if idx == 0 {
             Err(anyhow::format_err!("idx must not be zero!"))
@@ -74,25 +70,25 @@ impl AlignedBufferMut {
                 self.buf.alignment()
             ))
         } else {
-            let new_valid_slice = self.valid_slice.start..idx;
-            self.valid_slice.start = idx;
-            Ok(AlignedBufferMut {
+            let new_range = self.range.start..idx;
+            self.range.start = idx;
+            Ok(AlignedBytesMut {
                 buf: self.buf.clone(),
-                valid_slice: new_valid_slice,
+                range: new_range,
             })
         }
     }
 
-    /// If this is the only `AlignedBufferMut` with access to the underlying buffer
-    /// then `freeze_and_grow` returns a read-only `AlignedBuffer` (wrapped in `Ok`), which contains a
-    /// reference to the underlying buffer, and has its `valid_slice` set to the entire byte range
-    /// of the underlying buffer. If, on the other hand, other `AlignedBufferMut`s have access to
+    /// If this is the only `AlignedBytesMut` with access to the underlying buffer
+    /// then `freeze_and_grow` returns a read-only `AlignedBytes` (wrapped in `Ok`), which contains a
+    /// reference to the underlying buffer, and has its `range` set to the entire byte range
+    /// of the underlying buffer. If, on the other hand, other `AlignedBytesMut`s have access to
     /// the underlying then `freeze_and_grow` will return `Err(self)`.
-    pub(crate) fn freeze_and_grow(self) -> Result<AlignedBuffer, Self> {
+    pub(crate) fn freeze_and_grow(self) -> Result<AlignedBytes, Self> {
         if Arc::strong_count(&self.buf) == 1 {
-            Ok(AlignedBuffer {
+            Ok(AlignedBytes {
                 buf: self.buf.clone(),
-                valid_slice: 0..self.buf.size(),
+                range: 0..self.buf.len(),
             })
         } else {
             Err(self)
@@ -101,44 +97,60 @@ impl AlignedBufferMut {
 }
 
 /// Immutable.
-#[derive(Debug)]
-struct AlignedBuffer {
-    buf: Arc<InnerAlignedBuffer>,
+#[derive(Debug, Clone)]
+struct AlignedBytes {
+    buf: Arc<InnerBuffer>,
     /// The slice requested by the user.
-    valid_slice: Range<usize>,
+    range: Range<usize>,
 }
 
-unsafe impl Send for AlignedBuffer {}
-unsafe impl Sync for AlignedBuffer {}
+unsafe impl Send for AlignedBytes {}
+unsafe impl Sync for AlignedBytes {}
 
-impl AlignedBuffer {
-    /// The length of the `valid_slice` requested by the user. The `valid_slice` is a view into the
+impl AlignedBytes {
+    /// Returns a slice of self for the provided range.
+    ///
+    /// This will increment the reference count for the underlying memory and return a new `AlignedBytes`
+    /// handle set to the slice.
+    ///
+    /// The requested `range` indexes into the entire underlying buffer.
+    ///
+    /// ## Panics
+    /// Panics if `range.is_empty()` or if `range.end` > the size of the underlying buffer.
+    pub fn slice(&self, range: Range<usize>) -> Self {
+        assert!(!range.is_empty());
+        assert!(range.end <= self.buf.len());
+        Self {
+            buf: self.buf.clone(),
+            range,
+        }
+    }
+
+    /// The length of the `range` requested by the user. The `range` is a view into the
     /// underlying buffer. The underlying buffer may be larger than `len`.
-    pub(crate) fn len(&self) -> usize {
-        self.valid_slice.len()
+    pub fn len(&self) -> usize {
+        self.range.len()
+    }
+
+    pub fn as_ptr(&self) -> *const u8 {
+        let ptr = self.buf.as_ptr();
+        unsafe { ptr.offset(self.range.start as isize) }
     }
 
     pub fn as_slice(&self) -> &[u8] {
-        unsafe {
-            slice::from_raw_parts(
-                self.buf
-                    .as_ptr()
-                    .offset(self.valid_slice.start.try_into().unwrap()),
-                self.len(),
-            )
-        }
+        unsafe { slice::from_raw_parts(self.as_ptr(), self.len()) }
     }
 }
 
 #[derive(Debug)]
-struct InnerAlignedBuffer {
-    buf: *mut u8,
+struct InnerBuffer {
+    buf: *mut u8, // TODO: Use `NotNull`.
     /// `layout.size()` gives the number of bytes _actually_ allocated, which will be
     /// a multiple of `align`.
     layout: alloc::Layout,
 }
 
-impl InnerAlignedBuffer {
+impl InnerBuffer {
     fn new(len: usize, align: usize) -> Self {
         assert_ne!(len, 0);
         let layout = alloc::Layout::from_size_align(len, align)
@@ -152,7 +164,7 @@ impl InnerAlignedBuffer {
     }
 
     /// The total size of the underlying buffer.
-    const fn size(&self) -> usize {
+    const fn len(&self) -> usize {
         self.layout.size()
     }
 
@@ -170,7 +182,7 @@ impl InnerAlignedBuffer {
     }
 }
 
-impl Drop for InnerAlignedBuffer {
+impl Drop for InnerBuffer {
     fn drop(&mut self) {
         unsafe { alloc::dealloc(self.buf, self.layout) };
     }
@@ -184,8 +196,8 @@ mod tests {
     fn test_write_and_read() {
         // Create a new buffer:
         const LEN: usize = 16;
-        let mut aligned_buf1 = AlignedBufferMut::new(LEN, 8);
-        let mut aligned_buf2 = AlignedBufferMut::new(LEN, 8);
+        let mut aligned_buf1 = AlignedBytesMut::new(LEN, 8);
+        let mut aligned_buf2 = AlignedBytesMut::new(LEN, 8);
 
         // Set the values of the buffer:
         {

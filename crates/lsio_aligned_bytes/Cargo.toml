@@ -1,5 +1,5 @@
 [package]
-name = "lsio_aligned_buffer"
+name = "lsio_aligned_bytes"
 version = "0.0.1"  # Maybe we will publish this as a stand-alone crate.
 edition.workspace = true
 license.workspace = true
