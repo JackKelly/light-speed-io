@@ -4,6 +4,33 @@ use std::{alloc, sync::Arc};
 /// A memory buffer allocated on the heap, where the start position and end position of the backing
 /// buffer are both aligned. This is useful for working with O_DIRECT file IO, where the filesystem
 /// will often expect the buffer to be aligned to the logical block size (typically 512 bytes).
+///
+/// # Examples
+///
+/// ## Write into a single `AlignedBytesMut`, freeze, and split the frozen `AlignedBytes`.
+///
+/// ```
+/// use lsio_aligned_bytes::AlignedBytesMut;
+///
+/// const LEN: usize = 32;
+/// const ALIGN: usize = 4;
+/// let mut bytes = AlignedBytesMut::new(LEN, ALIGN);
+///
+/// // Write into the buffer. (Normally, this would be done by the operating system)
+/// let ptr = bytes.as_mut_ptr();
+/// for i in 0..LEN {
+///     unsafe { *ptr.offset(i as isize) = i as u8; }
+/// }
+///
+/// // Freeze (to get a read-only `AlignedBytes`)
+/// let bytes = bytes.freeze_and_grow().unwrap();
+/// assert_eq!(bytes.as_slice(), (0..(LEN as u8)).collect::<Vec<u8>>());
+///
+/// // Split
+/// let a = bytes.slice(4..9);
+/// assert_eq!(a.len(), 5);
+/// assert_eq!(a.as_slice(), [4, 5, 6, 7, 8]);
+/// ```
 #[derive(Debug)]
 pub struct AlignedBytesMut {
     buf: Arc<InnerBuffer>,
@@ -17,7 +44,7 @@ unsafe impl Sync for AlignedBytesMut {}
 impl AlignedBytesMut {
     /// Aligns the start and end of the buffer with `align`.
     /// 'align' must not be zero, and must be a power of two.
-    pub(crate) fn new(len: usize, align: usize) -> Self {
+    pub fn new(len: usize, align: usize) -> Self {
         let inner_buf = InnerBuffer::new(len, align);
         Self {
             buf: Arc::new(inner_buf),
@@ -27,12 +54,12 @@ impl AlignedBytesMut {
 
     /// The length of the `range` requested by the user. The `range` is a view into the
     /// underlying buffer. The underlying buffer may be larger than `len`.
-    pub(crate) fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.range.len()
     }
 
     /// Get a mutable pointer to this `AlignedBytesMut`'s `range`.
-    pub(crate) fn as_mut_ptr(&mut self) -> *mut u8 {
+    pub fn as_mut_ptr(&mut self) -> *mut u8 {
         let ptr = self.buf.as_mut_ptr();
         unsafe { ptr.offset(self.range.start as isize) }
     }
@@ -56,7 +83,7 @@ impl AlignedBytesMut {
     ///
     /// self.range       :             [6,  8)
     /// other.range      :     [2,      6)
-    pub(crate) fn split_to(&mut self, idx: usize) -> anyhow::Result<Self> {
+    pub fn split_to(&mut self, idx: usize) -> anyhow::Result<Self> {
         if !self.range.contains(&idx) {
             Err(anyhow::format_err!(
                 "idx {idx} is not contained in this buffer's range {:?}",
@@ -84,7 +111,7 @@ impl AlignedBytesMut {
     /// reference to the underlying buffer, and has its `range` set to the entire byte range
     /// of the underlying buffer. If, on the other hand, other `AlignedBytesMut`s have access to
     /// the underlying then `freeze_and_grow` will return `Err(self)`.
-    pub(crate) fn freeze_and_grow(self) -> Result<AlignedBytes, Self> {
+    pub fn freeze_and_grow(self) -> Result<AlignedBytes, Self> {
         if Arc::strong_count(&self.buf) == 1 {
             Ok(AlignedBytes {
                 buf: self.buf.clone(),
@@ -98,7 +125,7 @@ impl AlignedBytesMut {
 
 /// Immutable.
 #[derive(Debug, Clone)]
-struct AlignedBytes {
+pub struct AlignedBytes {
     buf: Arc<InnerBuffer>,
     /// The slice requested by the user.
     range: Range<usize>,
