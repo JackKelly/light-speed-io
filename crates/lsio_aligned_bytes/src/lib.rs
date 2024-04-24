@@ -38,38 +38,62 @@
 //! of the LSIO project! In fact, the only way to write data into an `AlignedBytesMut` is via
 //! [`AlignedBytesMut::as_mut_ptr`] (because that's what the operating system expects!)
 //!
-//! # Examples
+//! # Examples and use-cases
 //!
-//! Write into a single `AlignedBytesMut`, freeze, and split the frozen `AlignedBytes`:
+//! **Use case 1: The user requests multiple contiguous byte ranges from LSIO.**
+//!
+//! Let's say the user requests two byte ranges from a single file: `0..4096`, and `4096..8192`.
+//!
+//! Under the hood, LSIO will:
+//!
+//! - Notice that these two byte ranges are consecutive, and merge these two byte ranges into a
+//!   single read operation.
+//! - Allocate a single 8,192 byte `AlignedBytesMut`, aligned to 512-bytes.
+//! - Submit a `read` operation to `io_uring` for all 8,192 bytes.
+//! - When the single read op completes, we `freeze_and_grow` the buffer, which consumes the
+//!   `AlignedBytesMut` and returns a 8,192 byte `AlignedBytes`.
+//! - Split the `AlignedBytes` into two owned `AlignedBytes`, and return these to the user.
+//! - The underlying buffer will be dropped when the user drops the two `AlignedBytes`.
+//!
+//! Here's a code sketch to show how this works:
 //!
 //! ```
 //! use lsio_aligned_bytes::AlignedBytesMut;
 //!
-//! const LEN: usize = 32;
-//! const ALIGN: usize = 4;
+//! // Allocate a single 8,192 byte `AlignedBytesMut`:
+//! const LEN: usize = 8_192;
+//! const ALIGN: usize = 512;
 //! let mut bytes = AlignedBytesMut::new(LEN, ALIGN);
 //!
-//! // Write into the buffer. (Normally, this would be done by the operating system)
+//! // Write into the buffer. (In this toy example, we'll write directly into the buffer.
+//! // But in "real" code, we'd pass the pointer to the operating system, which in turn would write
+//! // data into the buffer for us.)
 //! let ptr = bytes.as_mut_ptr();
 //! for i in 0..LEN {
 //!     unsafe { *ptr.offset(i as isize) = i as u8; }
 //! }
 //!
-//! // Freeze (to get a read-only `AlignedBytes`)
+//! // Freeze (to get a read-only `AlignedBytes`). We `unwrap` because `freeze_and_grow` will fail
+//! // if there's more than one `AlignedBytesMut` referencing our backing buffer.
 //! let bytes = bytes.freeze_and_grow().unwrap();
-//! assert_eq!(bytes.as_slice(), (0..(LEN as u8)).collect::<Vec<u8>>());
+//! let expected_byte_string: Vec<u8> = (0..LEN).map(|i| i as u8).collect();
+//! assert_eq!(bytes.as_slice(), expected_byte_string);
 //!
 //! // Split
-//! let a = bytes.slice(4..9);
-//! assert_eq!(a.len(), 5);
-//! assert_eq!(a.as_slice(), [4, 5, 6, 7, 8]);
+//! let buffer_0 = bytes.slice(0..4_096);
+//! let buffer_1 = bytes.slice(4_096..8_192);
+//! assert_eq!(buffer_0.len(), 4_096);
+//! assert_eq!(buffer_1.len(), 4_096);
+//! assert_eq!(buffer_0.as_slice(), &expected_byte_string[0..4_096]);
+//! assert_eq!(buffer_1.as_slice(), &expected_byte_string[4_096..8_192]);
 //!
 //! // Check that the original `bytes` buffer is still valid:
-//! assert_eq!(bytes.as_slice(), (0..(LEN as u8)).collect::<Vec<u8>>());
+//! assert_eq!(bytes.as_slice(), &expected_byte_string);
 //!
-//! // Remove the original and check the new buffer:
+//! // Remove the original and check the new buffers again:
 //! drop(bytes);
-//! assert_eq!(a.as_slice(), [4, 5, 6, 7, 8]);
+//! assert_eq!(buffer_0.as_slice(), &expected_byte_string[0..4_096]);
+//! assert_eq!(buffer_1.as_slice(), &expected_byte_string[4_096..8_192]);
 //! ```
 //!
 //! [^o_direct]: For more information on `O_DIRECT`, including the memory alignment requirements,
