@@ -67,15 +67,15 @@
 //! let mut bytes = AlignedBytesMut::new(LEN, ALIGN);
 //!
 //! // Write into the buffer. (In this toy example, we'll write directly into the buffer.
-//! // But in "real" code, we'd pass the pointer to the operating system, which in turn would write
-//! // data into the buffer for us.)
+//! // But in "real" code, we'd pass the pointer to the operating system, which in turn
+//! // would write data into the buffer for us.)
 //! let ptr = bytes.as_mut_ptr();
 //! for i in 0..LEN {
 //!     unsafe { *ptr.offset(i as isize) = i as u8; }
 //! }
 //!
-//! // Freeze (to get a read-only `AlignedBytes`). We `unwrap` because `freeze_and_grow` will fail
-//! // if there's more than one `AlignedBytesMut` referencing our backing buffer.
+//! // Freeze (to get a read-only `AlignedBytes`). We `unwrap` because `freeze_and_grow`
+//! // will fail if there's more than one `AlignedBytesMut` referencing our backing buffer.
 //! let bytes = bytes.freeze_and_grow().unwrap();
 //! let expected_byte_string: Vec<u8> = (0..LEN).map(|i| i as u8).collect();
 //! assert_eq!(bytes.as_slice(), expected_byte_string);
