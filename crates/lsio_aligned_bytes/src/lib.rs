@@ -35,7 +35,8 @@
 //!
 //! Unlike `bytes`, `aligned_bytes` does not use a `vtable`, nor does it allow users to grow the
 //! backing buffers. `aligned_bytes` implements the minimal set of features required for the rest
-//! of the LSIO project!
+//! of the LSIO project! In fact, the only way to write data into an `AlignedBytesMut` is via
+//! [`AlignedBytesMut::as_mut_ptr`] (because that's what the operating system expects!)
 //!
 //! # Examples
 //!
