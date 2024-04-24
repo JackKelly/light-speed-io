@@ -97,24 +97,74 @@
 //! assert_eq!(buffer_1.as_slice(), &expected_byte_string[4_096..8_192]);
 //! ```
 //!
-//! **Use-case 2: The user requests a single 8 GB file.**
+//! **Use-case 2: The user requests a single 8 GiB file.**
 //!
-//! Linux can't read more than 2 GB at once.
+//! Linux can't read more than 2 GiB at once[^linux_read].
 //!
 //! LSIO will:
-//! - Allocate a single 8 GB `AlignedBytesMut`.
-//! - Split this into a new 6 GB `AlignedBytesMut` and the old `AlignedBytesMut` is reduced to 2 GB.
-//!   Both of these buffers must have their starts and ends aligned. Then repeat the process to get 4 x 2 GB `AlignedBytesMut`s.
+//! - Allocate a single 8 GiB `AlignedBytesMut`.
+//! - Split this into a new 6 GiB `AlignedBytesMut` and the old `AlignedBytesMut` is reduced to 2 GiB.
+//!   Both of these buffers must have their starts and ends aligned. Then repeat the process to get 4 x 2 GiB `AlignedBytesMut`s.
 //! - Issue four `read` operations to the OS (one operation per `AlignedBytesMut`)
 //! - When the first, second, and third `read` ops complete, drop their `AlignedBytesMut`
 //!   (but that won't drop the underlying storage, it just removes its reference).
 //! - When the last `read` op completes, `freeze_and_grow` the last `AlignedBytesMut` to get an immutable `AlignedBytes`
-//!   of the 8 GB slice requested by the user. Pass this 8 GB `AlignedBytes` to the user.
+//!   of the 8 GB slice requested by the user. Pass this 8 GiB `AlignedBytes` to the user.
 //!
 //! TODO: Write code sketch for use-case 2!
+//! ```
+//! use lsio_aligned_bytes::AlignedBytesMut;
+//!
+//! // Allocate a single array (for this toy example, we'll just allocate 8 MiB, instead of 8 GiB!)
+//! const MiB: usize = 2_usize.pow(20);
+//! const LEN: usize = 8 * MiB;
+//! const ALIGN: usize = 512;
+//! let mut bytes_3 = AlignedBytesMut::new(LEN, ALIGN);
+//! // `bytes_3` will be the final of four bytes_<n> arrays!
+//!
+//! // Split into a 2 MiB buffer, and a 6 MiB buffer:
+//! let mut bytes_0 = bytes_3.split_to(2 * MiB).unwrap();
+//! assert_eq!(bytes_0.len(), 2 * MiB);
+//! assert_eq!(bytes_3.len(), 6 * MiB);
+//!
+//! // Continue splitting:
+//! let mut bytes_1 = bytes_3.split_to(4 * MiB).unwrap();
+//! let mut bytes_2 = bytes_3.split_to(6 * MiB).unwrap();
+//! assert_eq!(bytes_0.len(), 2 * MiB);
+//! assert_eq!(bytes_1.len(), 2 * MiB);
+//! assert_eq!(bytes_2.len(), 2 * MiB);
+//! assert_eq!(bytes_3.len(), 2 * MiB);
+//!
+//! // Write into the arrays:
+//! // Fill the first 2 MiB with zeros, fill the second 2 MiB with ones, etc.
+//! for i in 0..(2 * MiB) {
+//!     unsafe {
+//!         *bytes_0.as_mut_ptr().offset(i as isize) = 0;
+//!         *bytes_1.as_mut_ptr().offset(i as isize) = 1;
+//!         *bytes_2.as_mut_ptr().offset(i as isize) = 2;
+//!         *bytes_3.as_mut_ptr().offset(i as isize) = 3;
+//!     }
+//! }
+//!
+//! // Drop three of the four AlignedBytesMuts, in prep for freezing:
+//! drop(bytes_0);
+//! drop(bytes_1);
+//! drop(bytes_2);
+//!
+//! let bytes = bytes_3.freeze_and_grow().unwrap();
+//!
+//! let expected: Vec<u8> = (0..LEN).map(|i| (i / (2 * MiB)) as u8).collect();
+//! // We use `Iterator::eq` instead of `assert_eq!` to avoid `assert_eq!` printing out
+//! // 16 million numbers if the arrays aren't exactly equal!
+//! assert!(bytes.as_slice().iter().eq(expected.iter()));
+//!
+//! ```
 //!
 //! [^o_direct]: For more information on `O_DIRECT`, including the memory alignment requirements,
-//! see all the mentions of `O_DIRECT` in the [`open(2)`](https://man7.org/linux/man-pages/man2/open.2.html) man page.
+//!   see all the mentions of `O_DIRECT` in the [`open(2)`](https://man7.org/linux/man-pages/man2/open.2.html) man page.
+//! [^linux_read]: Actually, the limit isn't exactly 2 GiB. On Linux, `read` will transfer at most
+//!   2,147,479,552 bytes. See the [`read`](https://man7.org/linux/man-pages/man2/read.2.html) man
+//!   page!
 //!
 use anyhow;
 use std::{alloc, ops::Range, slice, sync::Arc};
