@@ -97,6 +97,22 @@
 //! assert_eq!(buffer_1.as_slice(), &expected_byte_string[4_096..8_192]);
 //! ```
 //!
+//! **Use-case 2: The user requests a single 8 GB file.**
+//!
+//! Linux can't read more than 2 GB at once.
+//!
+//! LSIO will:
+//! - Allocate a single 8 GB `AlignedBytesMut`.
+//! - Split this into a new 6 GB `AlignedBytesMut` and the old `AlignedBytesMut` is reduced to 2 GB.
+//!   Both of these buffers must have their starts and ends aligned. Then repeat the process to get 4 x 2 GB `AlignedBytesMut`s.
+//! - Issue four `read` operations to the OS (one operation per `AlignedBytesMut`)
+//! - When the first, second, and third `read` ops complete, drop their `AlignedBytesMut`
+//!   (but that won't drop the underlying storage, it just removes its reference).
+//! - When the last `read` op completes, `freeze_and_grow` the last `AlignedBytesMut` to get an immutable `AlignedBytes`
+//!   of the 8 GB slice requested by the user. Pass this 8 GB `AlignedBytes` to the user.
+//!
+//! TODO: Write code sketch for use-case 2!
+//!
 //! [^o_direct]: For more information on `O_DIRECT`, including the memory alignment requirements,
 //! see all the mentions of `O_DIRECT` in the [`open(2)`](https://man7.org/linux/man-pages/man2/open.2.html) man page.
 //!
