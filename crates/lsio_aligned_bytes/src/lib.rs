@@ -1,36 +1,83 @@
-use core::{ops::Range, slice};
-use std::{alloc, sync::Arc};
+#![warn(missing_docs)]
 
-/// A memory buffer allocated on the heap, where the start position and end position of the backing
-/// buffer are both aligned. This is useful for working with O_DIRECT file IO, where the filesystem
-/// will often expect the buffer to be aligned to the logical block size (typically 512 bytes).
-///
-/// # Examples
-///
-/// ## Write into a single `AlignedBytesMut`, freeze, and split the frozen `AlignedBytes`.
-///
-/// ```
-/// use lsio_aligned_bytes::AlignedBytesMut;
-///
-/// const LEN: usize = 32;
-/// const ALIGN: usize = 4;
-/// let mut bytes = AlignedBytesMut::new(LEN, ALIGN);
-///
-/// // Write into the buffer. (Normally, this would be done by the operating system)
-/// let ptr = bytes.as_mut_ptr();
-/// for i in 0..LEN {
-///     unsafe { *ptr.offset(i as isize) = i as u8; }
-/// }
-///
-/// // Freeze (to get a read-only `AlignedBytes`)
-/// let bytes = bytes.freeze_and_grow().unwrap();
-/// assert_eq!(bytes.as_slice(), (0..(LEN as u8)).collect::<Vec<u8>>());
-///
-/// // Split
-/// let a = bytes.slice(4..9);
-/// assert_eq!(a.len(), 5);
-/// assert_eq!(a.as_slice(), [4, 5, 6, 7, 8]);
-/// ```
+//! A memory buffer allocated on the heap.
+//!
+//! The start position and end position of the backing buffer are both aligned in memory. The user
+//! specifies the memory alignment at runtime. This is useful for working with `O_DIRECT` file IO,
+//! where the filesystem will often expect the buffer to be aligned to the logical block size of
+//! the filesystem[^o_direct] (typically 512 bytes).
+//!
+//!
+//! The API is loosely inspired by the [`bytes`](https://docs.rs/bytes/latest/bytes/index.html) crate.
+//! To give a very quick overview of the `bytes` crate: The `bytes` crate has an (immutable)
+//! [`Bytes`](https://docs.rs/bytes/latest/bytes/struct.Bytes.html) struct and a (mutable)
+//! [`BytesMut`](https://docs.rs/bytes/latest/bytes/struct.BytesMut.html) struct. `BytesMut` can be
+//! `split` into multiple non-overlapping owned views into the same backing buffer. The backing
+//! buffer is dropped when all the views referencing that buffer are dropped. `BytesMut` can be
+//! [frozen](https://docs.rs/bytes/latest/bytes/struct.BytesMut.html#method.freeze) to produce an
+//! (immutable) `Bytes` struct which, in turn, can be sliced to produce (potentially overlapping)
+//! owned views of the same backing buffer.
+//!
+//! `aligned_bytes` follows a similar pattern:
+//!
+//! [`AlignedBytesMut`] can be [`AlignedBytesMut::split_to`] to produce multiple non-overlapping mutable
+//! views of the same backing buffer without copying the memory (each `AlignedBytesMut` has its own
+//! `range` (which represents the byte range that this `AlignedBytesMut` has exclusive access to)
+//! and an `Arc<InnerBuffer>`).
+//!
+//! When you have finished writing into the buffer, drop all but one of the `AlignedBytesMut`
+//! objects, and call [`AlignedBytesMut::freeze_and_grow`] on the last `AlignedByteMut`. This will
+//! consume the `AlignedBytesMut` and return an (immutable) [`AlignedBytes`] whose `range` is set
+//! to the full extent of the backing buffer. Then you can [`AlignedBytes::slice`] to get
+//! (potentially overlapping) owned views of the same backing buffer.
+//!
+//! The backing buffer will be dropped when all views into the backing buffer are dropped.
+//!
+//! Unlike `bytes`, `aligned_bytes` does not use a `vtable`, nor does it allow users to grow the
+//! backing buffers. `aligned_bytes` implements the minimal set of features required for the rest
+//! of the LSIO project!
+//!
+//! # Examples
+//!
+//! Write into a single `AlignedBytesMut`, freeze, and split the frozen `AlignedBytes`:
+//!
+//! ```
+//! use lsio_aligned_bytes::AlignedBytesMut;
+//!
+//! const LEN: usize = 32;
+//! const ALIGN: usize = 4;
+//! let mut bytes = AlignedBytesMut::new(LEN, ALIGN);
+//!
+//! // Write into the buffer. (Normally, this would be done by the operating system)
+//! let ptr = bytes.as_mut_ptr();
+//! for i in 0..LEN {
+//!     unsafe { *ptr.offset(i as isize) = i as u8; }
+//! }
+//!
+//! // Freeze (to get a read-only `AlignedBytes`)
+//! let bytes = bytes.freeze_and_grow().unwrap();
+//! assert_eq!(bytes.as_slice(), (0..(LEN as u8)).collect::<Vec<u8>>());
+//!
+//! // Split
+//! let a = bytes.slice(4..9);
+//! assert_eq!(a.len(), 5);
+//! assert_eq!(a.as_slice(), [4, 5, 6, 7, 8]);
+//!
+//! // Check that the original `bytes` buffer is still valid:
+//! assert_eq!(bytes.as_slice(), (0..(LEN as u8)).collect::<Vec<u8>>());
+//!
+//! // Remove the original and check the new buffer:
+//! drop(bytes);
+//! assert_eq!(a.as_slice(), [4, 5, 6, 7, 8]);
+//! ```
+//!
+//! [^o_direct]: For more information on `O_DIRECT`, including the memory alignment requirements,
+//! see all the mentions of `O_DIRECT` in the [`open(2)`](https://man7.org/linux/man-pages/man2/open.2.html) man page.
+//!
+use anyhow;
+use std::{alloc, ops::Range, slice, sync::Arc};
+
+/// A mutable aligned buffer.
 #[derive(Debug)]
 pub struct AlignedBytesMut {
     buf: Arc<InnerBuffer>,
@@ -76,13 +123,18 @@ impl AlignedBytesMut {
     ///
     /// Before calling `split_to`:
     ///
+    /// ```text
     /// Underlying buffer:  0 1 2 3 4 5 6 7 8 9
     /// self.range       :     [2,          8)
+    /// ```
     ///
     /// After calling `split_to(6)`:
     ///
+    /// ```text
+    /// Underlying buffer:  0 1 2 3 4 5 6 7 8 9
     /// self.range       :             [6,  8)
     /// other.range      :     [2,      6)
+    /// ```
     pub fn split_to(&mut self, idx: usize) -> anyhow::Result<Self> {
         if !self.range.contains(&idx) {
             Err(anyhow::format_err!(
