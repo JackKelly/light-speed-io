@@ -289,11 +289,14 @@ pub struct AlignedBytes {
 unsafe impl Send for AlignedBytes {}
 unsafe impl Sync for AlignedBytes {}
 
+/// An immutable view of a memory buffer.
+///
+/// The only way to make is an `AlignedBytes` is using [`AlignedBytesMut::freeze_and_grow`].
 impl AlignedBytes {
     /// Returns a slice of self for the provided range.
     ///
-    /// This will increment the reference count for the underlying memory and return a new `AlignedBytes`
-    /// handle set to the slice.
+    /// This will increment the reference count for the underlying memory buffer
+    /// and return a new `AlignedBytes` handle set to the slice.
     ///
     /// The requested `range` indexes into the entire underlying buffer.
     ///
@@ -314,11 +317,13 @@ impl AlignedBytes {
         self.range.len()
     }
 
+    /// Returns a constant pointer to `self.range.start` of the underlying buffer.
     pub fn as_ptr(&self) -> *const u8 {
         let ptr = self.buf.as_ptr();
         unsafe { ptr.offset(self.range.start as isize) }
     }
 
+    /// Returns an immutable slice of the `range` view of the underlying buffer.
     pub fn as_slice(&self) -> &[u8] {
         unsafe { slice::from_raw_parts(self.as_ptr(), self.len()) }
     }
@@ -326,7 +331,7 @@ impl AlignedBytes {
 
 #[derive(Debug)]
 struct InnerBuffer {
-    buf: *mut u8, // TODO: Use `NotNull`.
+    buf: *mut u8, // TODO: Replace `*mut u8` with `NotNull<u8>`.
     /// `layout.size()` gives the number of bytes _actually_ allocated, which will be
     /// a multiple of `align`.
     layout: alloc::Layout,
