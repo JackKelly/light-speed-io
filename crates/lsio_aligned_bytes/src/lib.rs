@@ -12,7 +12,7 @@
 //! To give a very quick overview of the `bytes` crate: The `bytes` crate has an (immutable)
 //! [`Bytes`](https://docs.rs/bytes/latest/bytes/struct.Bytes.html) struct and a (mutable)
 //! [`BytesMut`](https://docs.rs/bytes/latest/bytes/struct.BytesMut.html) struct. `BytesMut` can be
-//! `split` into multiple non-overlapping owned views into the same backing buffer. The backing
+//! `split` into multiple non-overlapping owned views of the same backing buffer. The backing
 //! buffer is dropped when all the views referencing that buffer are dropped. `BytesMut` can be
 //! [frozen](https://docs.rs/bytes/latest/bytes/struct.BytesMut.html#method.freeze) to produce an
 //! (immutable) `Bytes` struct which, in turn, can be sliced to produce (potentially overlapping)
@@ -23,7 +23,9 @@
 //! [`AlignedBytesMut`] can be [`AlignedBytesMut::split_to`] to produce multiple non-overlapping mutable
 //! views of the same backing buffer without copying the memory (each `AlignedBytesMut` has its own
 //! `range` (which represents the byte range that this `AlignedBytesMut` has exclusive access to)
-//! and an `Arc<InnerBuffer>`).
+//! and an `Arc<InnerBuffer>`). The splitting process guarantees that views cannot overlap, so we
+//! do not have to use locks, whilst allowing multiple threads to write to (non-overlapping regions
+//! of) the same buffer.
 //!
 //! When you have finished writing into the buffer, drop all but one of the `AlignedBytesMut`
 //! objects, and call [`AlignedBytesMut::freeze_and_grow`] on the last `AlignedByteMut`. This will
@@ -52,7 +54,7 @@
 //! - Allocate a single 8,192 byte `AlignedBytesMut`, aligned to 512-bytes.
 //! - Submit a `read` operation to `io_uring` for all 8,192 bytes.
 //! - When the single read op completes, we `freeze_and_grow` the buffer, which consumes the
-//!   `AlignedBytesMut` and returns a 8,192 byte `AlignedBytes`.
+//!   `AlignedBytesMut` and returns an 8,192 byte `AlignedBytes`.
 //! - Split the `AlignedBytes` into two owned `AlignedBytes`, and return these to the user.
 //! - The underlying buffer will be dropped when the user drops the two `AlignedBytes`.
 //!
@@ -80,7 +82,7 @@
 //! let expected_byte_string: Vec<u8> = (0..LEN).map(|i| i as u8).collect();
 //! assert_eq!(bytes.as_slice(), expected_byte_string);
 //!
-//! // Split
+//! // Slice the buffer into two:
 //! let buffer_0 = bytes.slice(0..4_096);
 //! let buffer_1 = bytes.slice(4_096..8_192);
 //! assert_eq!(buffer_0.len(), 4_096);
@@ -91,7 +93,8 @@
 //! // Check that the original `bytes` buffer is still valid:
 //! assert_eq!(bytes.as_slice(), &expected_byte_string);
 //!
-//! // Remove the original and check the new buffers again:
+//! // Remove the original `bytes` and check that the two views of the same buffer
+//! // are still valid:
 //! drop(bytes);
 //! assert_eq!(buffer_0.as_slice(), &expected_byte_string[0..4_096]);
 //! assert_eq!(buffer_1.as_slice(), &expected_byte_string[4_096..8_192]);
@@ -99,19 +102,20 @@
 //!
 //! **Use-case 2: The user requests a single 8 GiB file.**
 //!
-//! Linux can't read more than 2 GiB at once[^linux_read].
+//! Linux can't read more than 2 GiB at once[^linux_read]. So we need to read the 8 GiB files in
+//! multiple chunks.
 //!
 //! LSIO will:
 //! - Allocate a single 8 GiB `AlignedBytesMut`.
-//! - Split this into a new 6 GiB `AlignedBytesMut` and the old `AlignedBytesMut` is reduced to 2 GiB.
-//!   Both of these buffers must have their starts and ends aligned. Then repeat the process to get 4 x 2 GiB `AlignedBytesMut`s.
-//! - Issue four `read` operations to the OS (one operation per `AlignedBytesMut`)
+//! - Split this into a new 2 GiB `AlignedBytesMut` and the old `AlignedBytesMut` is reduced to 6 GiB.
+//!   Both of these buffers must have their starts and ends aligned. Then repeat the process to
+//!   get a total of 4 x 2 GiB `AlignedBytesMut`s.
+//! - Issue four `read` operations to the OS (one operation per `AlignedBytesMut`).
 //! - When the first, second, and third `read` ops complete, drop their `AlignedBytesMut`
 //!   (but that won't drop the underlying storage, it just removes its reference).
 //! - When the last `read` op completes, `freeze_and_grow` the last `AlignedBytesMut` to get an immutable `AlignedBytes`
 //!   of the 8 GB slice requested by the user. Pass this 8 GiB `AlignedBytes` to the user.
 //!
-//! TODO: Write code sketch for use-case 2!
 //! ```
 //! use lsio_aligned_bytes::AlignedBytesMut;
 //!
@@ -183,6 +187,7 @@ unsafe impl Sync for AlignedBytesMut {}
 impl AlignedBytesMut {
     /// Aligns the start and end of the buffer with `align`.
     /// 'align' must not be zero, and must be a power of two.
+    /// `len` is the length of the underlying buffer, in bytes.
     pub fn new(len: usize, align: usize) -> Self {
         let inner_buf = InnerBuffer::new(len, align);
         Self {
@@ -205,10 +210,15 @@ impl AlignedBytesMut {
 
     /// Split this view of the underlying buffer into two views at the given index.
     ///
+    /// This does not allocate a new buffer. Instead, both `AlignedBytesMut` objects reference
+    /// the same underlying backing buffer.
+    ///
+    /// `idx` indexes into the backing buffer.
+    ///
     /// `idx` must not be zero. `idx` must be exactly divisible by the alignment of the underlying
     /// buffer. `idx` must be contained in `self.range`.
     ///
-    /// Afterwards, `self` contains `[idx, range.end)` and the returned `AlignedBytesMut`
+    /// Afterwards, `self` contains `[idx, range.end)`. The returned `AlignedBytesMut`
     /// contains elements `[range.start, idx)`.
     ///
     /// To show this graphically:
@@ -251,7 +261,8 @@ impl AlignedBytesMut {
     }
 
     /// If this is the only `AlignedBytesMut` with access to the underlying buffer
-    /// then `freeze_and_grow` returns a read-only `AlignedBytes` (wrapped in `Ok`), which contains a
+    /// then `freeze_and_grow` consumes `self` and returns a read-only `AlignedBytes`
+    /// (wrapped in `Ok`), which contains a
     /// reference to the underlying buffer, and has its `range` set to the entire byte range
     /// of the underlying buffer. If, on the other hand, other `AlignedBytesMut`s have access to
     /// the underlying then `freeze_and_grow` will return `Err(self)`.
