@@ -10,15 +10,10 @@ license = { workspace = true }
 
 [dependencies]
 anyhow = { workspace = true } 
-bytes =  { workspace = true } 
 crossbeam =  { workspace = true } 
 io-uring =  { workspace = true } 
 libc =  { workspace = true } 
 nix =  { workspace = true } 
-object_store = { workspace = true } 
-snafu = { workspace = true } 
-tokio = { workspace = true } 
-url =  { workspace = true } 
 
 [dev-dependencies]
 criterion = { workspace = true }

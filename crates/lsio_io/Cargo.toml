@@ -13,3 +13,5 @@ authors.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+lsio_aligned_bytes = { path = "../lsio_aligned_bytes" }
+

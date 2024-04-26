@@ -277,17 +277,6 @@ trait UringOp<M> {
         cqe: cqueue::Entry,
         index_of_op: usize,
     ) -> Result<NextStep<M>> {
-        // TODO: Implement a UserData struct that uses From<u64> to convert from cqe.user_data.
-        // See #116.
-        let opcode = get_opcode_from_user_data(cqe.user_data());
-
-        // Check if the CQE reports an error. We can't return the error yet
-        // because we need to know if we're expecting any more CQEs associated with this operation.
-        // NOTE: A big improvement over the previous version of the code is that we can now send
-        // every error that occurs (because we now have a limitless output Channel)!
-        let maybe_error = cqe_error_to_anyhow_error(cqe.result());
-
-        self.process_opcode_and_get_next_step(opcode, maybe_error, index_of_op)
     }
 
     fn process_opcode_and_get_next_step(
@@ -325,8 +314,19 @@ impl<M> UringOperation<M> {
         cqe: cqueue::Entry,
         index_of_op: usize,
     ) -> Result<NextStep<M>> {
+        // TODO: Implement a UserData struct that uses From<u64> to convert from cqe.user_data.
+        // See #116.
+        let opcode = get_opcode_from_user_data(cqe.user_data());
+
+        // Check if the CQE reports an error. We can't return the error yet
+        // because we need to know if we're expecting any more CQEs associated with this operation.
+        // NOTE: A big improvement over the previous version of the code is that we can now send
+        // every error that occurs (because we now have a limitless output Channel)!
+        let maybe_error = cqe_error_to_anyhow_error(cqe.result());
         match &self {
-            Self::GetRange(get_range) => get_range.process_cqe_and_get_next_step(cqe, index_of_op),
+            Self::GetRange(get_range) => {
+                get_range.process_cqe_and_get_next_step(opcode, maybe_error, index_of_op)
+            }
         }
     }
 }
