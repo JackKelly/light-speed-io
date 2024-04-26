@@ -1,0 +1,29 @@
+[package]
+name = "lsio_uring"
+version = "0.0.0"
+publish = false
+authors = { workspace = true }
+edition = { workspace = true }
+homepage = { workspace = true }
+repository = { workspace = true }
+license = { workspace = true }
+
+[dependencies]
+anyhow = { workspace = true } 
+bytes =  { workspace = true } 
+crossbeam =  { workspace = true } 
+io-uring =  { workspace = true } 
+libc =  { workspace = true } 
+nix =  { workspace = true } 
+object_store = { workspace = true } 
+snafu = { workspace = true } 
+tokio = { workspace = true } 
+url =  { workspace = true } 
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]  # Yes, this is supposed to have double square brackets!
+name = "get"
+harness = false
+
