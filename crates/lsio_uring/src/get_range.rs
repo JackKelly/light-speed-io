@@ -40,27 +40,48 @@ impl UringOperation for GetRange {
     fn get_first_step(
         &mut self,
         index_of_op: usize,
-        uring_submission_queue: &VecDeque<squeue::Entry>,
+        local_uring_submission_queue: &mut VecDeque<squeue::Entry>,
     ) {
-        // TODO: Actually, I think these UringOperations should take a reference to the worker
-        // queue, and the output queue. Then we can directly write into those queues!
+        // UringOperations take a reference to the queue.
+        // Then we can directly write into those queues!
         let (entry, buffer) = build_read_range_sqe(index_of_op, &self.file, &self.range);
         self.buffer = Some(buffer);
-        vec![entry]
+        local_uring_submission_queue.push(entry);
     }
 
     fn process_opcode_and_get_next_step(
-        &mut self,
+        self,
+        // TODO: Needs to be renamed, to distinguish from our
+        // `Chunk.user_data`. Maybe rename to `IdxAndOpcode`?
         user_data: &UringUserData,
-        cqe_result: Result<i32>,
-    ) -> Result<NextStep> {
+        cqe_result: &Result<i32>,
+        local_uring_submission_queue: &mut VecDeque<squeue::Entry>,
+        // We don't use `local_worker_queue` in this example. But GetRanges will want to pump out
+        // lots of GetRange ops into the `local_worker_queue`!
+        local_worker_queue: &Worker<Operation>,
+        output_channel: &mut crossbeam::channel::Sender<Result<Output>>,
+    ) -> Option<Operation> {
         match user_data.opcode().value() {
             opcode::Read::CODE => {
                 if let Ok(cqe_result_value) = cqe_result {
-                    // TODO: Check we've read the correct number of bytes.
+                    // TODO: Check we've read the correct number of bytes:
+                    //       Check `cqe_result_value == self.buffer.len()`.
                     // TODO: Retry if we read less data than requested! See issue #100.
-                    // We're not done yet, because we need to wait for the close op.
-                    NextStep::PendingWithOutput(Output::Chunk(self.chunk.take()))
+
+                    output_channel.send(Output::Chunk(Chunk {
+                        buffer: self.buffer.take(),
+                        user_data: self.user_data,
+                    }));
+
+                    // Check if it's time to close the file:
+                    if Arc::strong_count(&self.file) == 1 {
+                        let close_op = Close::new(self.file);
+                        close_op
+                            .get_first_step(user_data.index_of_op(), local_uring_submission_queue);
+                        Some(close_op)
+                    } else {
+                        None
+                    }
                 } else {
                     todo!(); // TODO: Handle when there's an error!
                 }
