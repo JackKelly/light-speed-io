@@ -15,12 +15,14 @@ use std::sync::Arc;
 /// `Chunk` will only ever be _written_ to by a single thread (this should be true even when using
 /// `Merged` byte range). But, it's entirely possible that a single `Chunk` might be _read_ from
 /// multiple threads.
+/// NOTE: Moved to lsio_io/src/lib.rs.
 #[derive(Debug)]
 struct Chunk<M> {
     buffer: Vec<u8>, // TODO: Use `AlignedBuffer`.
     metadata: M,
 }
 
+/// NOTE: Moved to lsio_io/src/lib.rs.
 #[derive(Debug)]
 enum IoOutput<M> {
     Chunk(Chunk<M>),
@@ -30,6 +32,7 @@ enum IoOutput<M> {
 
 /// IO Operations (common to all I/O backends).
 /// This is how the user sends instructions to the I/O backend.
+/// NOTE: Moved to lsio_io/src/lib.rs. And changed into two traits: Reader and Writer.
 #[derive(Debug)]
 enum IoOperation<M> {
     /// Submit a GetRanges operation.
@@ -65,6 +68,8 @@ enum IoOperation<M> {
     },
 }
 
+/// NOTE: This can be simplified. At the moment, I'm not using this, and haven't moved it over to
+/// the new code yet.
 trait OptimiseByteRanges<M> {
     /// Different implementations might require different types to represent the filename.
     /// For example, io_uring uses `Arc<CString>`.
@@ -267,18 +272,11 @@ impl<M> OptimiseByteRanges<M> for UringOptimisedByteRange<M> {
 /// - Cleanly separate the code that implements the state machine for handling each operation.
 /// - Gain the benefits of using the typestate pattern, whilst still allowing us to keep the types
 /// in a vector. See issue #117.
-trait UringOp<M> {
+trait UringOperation<M> {
     /// Notes on the return type:
     /// We could imagine a world in which we want to return a buffer _and_ an error, such as when
     /// io_uring reads less data than is requested. We have simplified, and assumed that this
     /// specific case will always be an error, hence it's fine to return a Result<NextStep>.
-    fn process_cqe_and_get_next_step(
-        &mut self,
-        cqe: cqueue::Entry,
-        index_of_op: usize,
-    ) -> Result<NextStep<M>> {
-    }
-
     fn process_opcode_and_get_next_step(
         &mut self,
         opcode: u8,

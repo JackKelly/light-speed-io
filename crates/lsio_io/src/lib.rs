@@ -23,11 +23,14 @@ pub trait Reader {
     /// that describes the filename that failed. If a subset of the `ranges` results in an error
     /// (e.g. reading beyond end of the file) then the user will receive a mixture of `Ok(Output)`
     /// and `Err`, where the `Err` will include context such as the filename and byte range.
-    fn get_ranges<'life0, 'life1, 'life2>(
+    fn get_ranges(
         &mut self,
-        location: &'life0 Path,
-        ranges: &'life1 [Range<isize>],
-        user_data: &'life2 [u64],
+        // We take ownership because this function returns immediately. If we used references then
+        // there would be nothing to stop the user from dropping the owned objects (and
+        // invalidating the references!).
+        location: Path,
+        ranges: Vec<Range<isize>>,
+        user_data: Vec<u64>,
     ) -> anyhow::Result<()>;
 }
 
@@ -48,4 +51,3 @@ pub enum Output {
     // Other variants could be:
     // `BytesWritten`, `Listing(Vec<FileMetadata>)`, etc.
 }
-
