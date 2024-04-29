@@ -8,12 +8,16 @@ pub enum Operation {
 }
 
 impl Operation {
+    pub(crate) fn get_first_step(&self, index_of_op: usize) -> NextStep {
+        self.get_inner_struct().get_first_step(index_of_op)
+    }
+
     /// If io_uring reports an error, then this function will return an `std::io::Error` with the
     /// context set twice: First to the `Operation`, and then to the `NextStep`.
     pub(crate) fn process_cqe_and_get_next_step(
         &self,
-        cqe: cqueue::Entry,
         index_of_op: usize,
+        cqe: cqueue::Entry,
     ) -> Result<NextStep<M>> {
         let opcode = OpCode::new(cqe.user_data());
 
@@ -40,38 +44,44 @@ impl Operation {
 /// - Cleanly separate the code that implements the state machine for handling each operation.
 /// - Gain the benefits of using the typestate pattern, whilst still allowing us to keep the types
 /// in a vector. See issue #117.
-trait UringOperation<M> {
+trait UringOperation {
+    fn get_first_step(&self, index_of_op: usize) -> Vec<squeue::Entry>;
+
     /// Notes on the return type:
     /// We could imagine a world in which we want to return a buffer _and_ an error, such as when
     /// io_uring reads less data than is requested. We have simplified, and assumed that this
     /// specific case will always be an error, hence it's fine to return a Result<NextStep>.
     fn process_opcode_and_get_next_step(
-        &mut self,
+        &self,
+        index_of_op: usize,
         opcode: OpCode,
         maybe_error: Option<Error>,
-        index_of_op: usize,
-    ) -> Result<NextStep<M>>;
+    ) -> Result<NextStep>;
 }
 
 #[derive(Debug)]
-enum NextStep<M> {
+enum NextStep {
     SubmitEntries(Vec<squeue::Entry>),
     /// We're not completely done yet. For example, perhaps the file hasn't been closed yet.
     /// But the output is ready.
-    PendingWithOutput(IoOutput<M>), // Needs a better name!
+    PendingWithOutput(Output),
     /// We're not done yet. And there's no output ready.
     Pending,
     /// We're done! Remove this operation from the list of ops in flight.
-    DoneWithOutput(IoOutput<M>),
+    DoneWithOutput(Output),
     Done,
 }
 
+#[derive(Debug)]
 struct OpenFile {
     location: CString,
-    size: Option<usize>,
-    file_descriptor: u64, // TODO: Use io_uring's FD type.
+    file_descriptor: types::Fd,
+    size: usize, // We always have to `statx` the file to get the `alignment`, so we'll always get
+    // the size, too.
+    alignment: u32,
 }
 
+#[derive(Debug)]
 struct GetRanges {
     // Creating a new CString allocates memory. And io_uring openat requires a CString.
     // We need to ensure the CString is valid until the completion queue entry arrives.
@@ -82,8 +92,10 @@ struct GetRanges {
     user_data: Vec<u64>,
 }
 
+#[derive(Debug)]
 struct GetRange {
     file: Arc<OpenFile>, // TODO: Replace Arc with Atomic counter?
     range: Range<isize>,
     user_data: u64,
+    buffer: Option<AlignedBytes>, // This is an `Option` so we can `take` it.
 }

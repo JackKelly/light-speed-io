@@ -23,75 +23,77 @@ where
     stat(path).expect("Failed to get filesize!").st_size
 }
 
-pub(super) fn build_openat_sqe(path: &CString, index_of_op: usize) -> Vec<squeue::Entry> {
-    // TODO: Test for these:
-    // - opcode::OpenAt2::CODE
-    // - opcode::Close::CODE
-    // - opcode::Socket::CODE // to ensure fixed table support
-
+pub(crate) fn build_openat_sqe(index_of_op: usize, path: &CString) -> squeue::Entry {
     let user_data = UringUserData::new(index_of_op.try_into().unwrap(), opcode::OpenAt::CODE);
 
     // Prepare the "open" opcode:
     let path_ptr = path.as_ptr();
-    let file_index = types::DestinationSlot::auto_target();
-    let open_op = opcode::OpenAt::new(
-        types::Fd(-1), // dirfd is ignored if the pathname is absolute. See the "openat()" section in https://man7.org/linux/man-pages/man2/openat.2.html
+    opcode::OpenAt::new(
+        // `dirfd` is ignored if the pathname is absolute.
+        // See the "openat()" section in https://man7.org/linux/man-pages/man2/openat.2.html
+        types::Fd(-1),
         path_ptr,
     )
-    .file_index(Some(file_index))
     .flags(libc::O_RDONLY | libc::O_DIRECT)
     .build()
-    .user_data(user_data.into());
-
-    vec![open_op]
+    .user_data(user_data.into())
 }
 
-pub(super) fn create_linked_read_range_close_sqes(
-    path: &CString,
-    range: &Range<isize>,
-    fixed_fd: &types::Fixed,
+pub(crate) fn build_read_range_sqe(
     index_of_op: usize,
-) -> (Vec<squeue::Entry>, operation::OperationOutput) {
-    // Get the start_offset and len of the range:
-    let filesize = if range.start < 0 || range.end < 0 {
-        // Call `get_filesize_bytes` at most once per file!
-        Some(get_filesize_bytes(path.as_c_str()) as isize)
-    } else {
-        None
-    };
+    file: &OpenFile,
+    range: &Range<isize>,
+) -> (squeue::Entry, AlignedBytes) {
     let start_offset = if range.start >= 0 {
         range.start
     } else {
-        // range.start is negative, so we must interpret it as an offset from the end of the file.
-        filesize.unwrap() + range.start
+        // `range.start` is negative. We interpret a negative `range.start`
+        // as an offset from the end of the file.
+        file.size.unwrap() + range.start
     };
+    assert!(start_offset >= 0);
+
     let end_offset = if range.end >= 0 {
         range.end
     } else {
-        // range.end is negative, so we must interpret it as an offset from the end of the file.
-        filesize.unwrap() + range.end + 1
+        // `range.end` is negative. We interpret a negative `range.end`
+        // as an offset from the end of the file, where `range.end = -1` means the last byte.
+        file.size.unwrap() + range.end + 1
     };
-    let len = end_offset - start_offset;
-    assert!(len > 0);
+    assert!(end_offset >= 0);
 
-    // Allocate vector:
-    let mut buffer = AlignedBuffer::new(len as usize, ALIGN, start_offset.try_into().unwrap());
+    let aligned_start_offset = (start_offset / ALIGN) * ALIGN;
+
+    let buf_len = end_offset - aligned_start_offset;
+    assert!(buf_len > 0);
+
+    // Allocate vector. If `buf_len` is not exactly divisible by ALIGN, then
+    // `AlignedBytesMut::new` will extend the length until it is aligned.
+    let mut buffer = AlignedBytesMut::new(buf_len as usize, ALIGN);
+    drop(buf_len); // From now on, use `buffer.len()` as the correct length!
 
     // Prepare the "read" opcode:
-    let read_op = opcode::Read::new(*fixed_fd, buffer.as_ptr(), buffer.aligned_len() as u32)
-        .offset(buffer.aligned_start_offset() as _)
-        .build()
-        .user_data(UringUserData::new(index_of_op.try_into().unwrap(), opcode::Read::CODE).into())
-        .flags(squeue::Flags::IO_HARDLINK); // We need a _hard_ link because read will fail if we read
-                                            // beyond the end of the file, which is very likely to happen when we're using O_DIRECT.
-                                            // When using O_DIRECT, the read length has to be a multiple of ALIGN.
-                                            // Prepare the "close" opcode:
-    let close_op = opcode::Close::new(*fixed_fd)
-        .build()
-        .user_data(UringUserData::new(index_of_op.try_into().unwrap(), opcode::Close::CODE).into());
-
-    (
-        vec![read_op, close_op],
-        operation::OperationOutput::GetRange(buffer),
+    let read_op = opcode::Read::new(
+        *file.fd,
+        buffer.as_mut_ptr(),
+        buffer.len().try_into::<u32>().unwrap(),
     )
+    .offset(aligned_start_offset as _)
+    .build()
+    .user_data(UringUserData::new(index_of_op.try_into().unwrap(), opcode::Read::CODE).into());
+
+    // If the `start_offset` is not aligned, then the start of the buffer will contain data th
+    if aligned_start_offset != start_offset {
+        _ = buffer
+            .split_to(start_offset - aligned_start_offset)
+            .unwrap();
+    }
+
+    // `freeze` the buffer, and set the slice to the slice requested by the user:
+    let start_slice = start_offset - aligned_start_offset;
+    let end_slice = end_offset - aligned_start_offset;
+    let mut buffer = buffer.freeze().unwrap();
+    buffer.set_slice(start_slice..end_slice);
+
+    (read_op, buffer)
 }

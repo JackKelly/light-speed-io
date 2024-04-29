@@ -7,7 +7,6 @@
 //! where the filesystem will often expect the buffer to be aligned to the logical block size of
 //! the filesystem[^o_direct] (typically 512 bytes).
 //!
-//!
 //! The API is loosely inspired by the [`bytes`](https://docs.rs/bytes/latest/bytes/index.html) crate.
 //! To give a very quick overview of the `bytes` crate: The `bytes` crate has an (immutable)
 //! [`Bytes`](https://docs.rs/bytes/latest/bytes/struct.Bytes.html) struct and a (mutable)
@@ -28,10 +27,10 @@
 //! of) the same buffer.
 //!
 //! When you have finished writing into the buffer, drop all but one of the `AlignedBytesMut`
-//! objects, and call [`AlignedBytesMut::freeze_and_grow`] on the last `AlignedByteMut`. This will
-//! consume the `AlignedBytesMut` and return an (immutable) [`AlignedBytes`] whose `range` is set
-//! to the full extent of the backing buffer. Then you can [`AlignedBytes::slice`] to get
-//! (potentially overlapping) owned views of the same backing buffer.
+//! objects, and call [`AlignedBytesMut::freeze`] on the last `AlignedByteMut`. This will
+//! consume the `AlignedBytesMut` and return an (immutable) [`AlignedBytes`]. Then you
+//! can `clone` and [`AlignedBytes::slice`] to get (potentially overlapping) owned views of the
+//! same backing buffer.
 //!
 //! The backing buffer will be dropped when all views into the backing buffer are dropped.
 //!
@@ -53,8 +52,9 @@
 //!   single read operation.
 //! - Allocate a single 8,192 byte `AlignedBytesMut`, aligned to 512-bytes.
 //! - Submit a `read` operation to `io_uring` for all 8,192 bytes.
-//! - When the single read op completes, we `freeze_and_grow` the buffer, which consumes the
-//!   `AlignedBytesMut` and returns an 8,192 byte `AlignedBytes`.
+//! - When the single read op completes, we `freeze` the buffer, which consumes the
+//!   `AlignedBytesMut` and returns an `AlignedBytes`, which we then `reset_slice()` to view the
+//!   entire 8,192 backing buffer.
 //! - Split the `AlignedBytes` into two owned `AlignedBytes`, and return these to the user.
 //! - The underlying buffer will be dropped when the user drops the two `AlignedBytes`.
 //!
@@ -76,15 +76,18 @@
 //!     unsafe { *ptr.offset(i as isize) = i as u8; }
 //! }
 //!
-//! // Freeze (to get a read-only `AlignedBytes`). We `unwrap` because `freeze_and_grow`
+//! // Freeze (to get a read-only `AlignedBytes`). We `unwrap` because `freeze`
 //! // will fail if there's more than one `AlignedBytesMut` referencing our backing buffer.
-//! let bytes = bytes.freeze_and_grow().unwrap();
+//! let mut bytes = bytes.freeze().unwrap();
+//! bytes.reset_slice();
 //! let expected_byte_string: Vec<u8> = (0..LEN).map(|i| i as u8).collect();
 //! assert_eq!(bytes.as_slice(), expected_byte_string);
 //!
-//! // Slice the buffer into two:
-//! let buffer_0 = bytes.slice(0..4_096);
-//! let buffer_1 = bytes.slice(4_096..8_192);
+//! // Slice the buffer into two new buffers:
+//! let mut buffer_0 = bytes.clone();
+//! buffer_0.set_slice(0..4_096);
+//! let mut buffer_1 = bytes.clone();
+//! buffer_1.set_slice(4_096..8_192);
 //! assert_eq!(buffer_0.len(), 4_096);
 //! assert_eq!(buffer_1.len(), 4_096);
 //! assert_eq!(buffer_0.as_slice(), &expected_byte_string[0..4_096]);
@@ -113,8 +116,8 @@
 //! - Issue four `read` operations to the OS (one operation per `AlignedBytesMut`).
 //! - When the first, second, and third `read` ops complete, drop their `AlignedBytesMut`
 //!   (but that won't drop the underlying storage, it just removes its reference).
-//! - When the last `read` op completes, `freeze_and_grow` the last `AlignedBytesMut` to get an immutable `AlignedBytes`
-//!   of the 8 GB slice requested by the user. Pass this 8 GiB `AlignedBytes` to the user.
+//! - When the last `read` op completes, `freeze` the last `AlignedBytesMut` to get an immutable `AlignedBytes`.
+//!   `reset_slice` to get the 8 GB slice requested by the user. Pass this 8 GiB `AlignedBytes` to the user.
 //!
 //! ```
 //! use lsio_aligned_bytes::AlignedBytesMut;
@@ -150,12 +153,14 @@
 //!     }
 //! }
 //!
-//! // Drop three of the four AlignedBytesMuts, in prep for freezing:
+//! // Drop three of the four AlignedBytesMuts, in preparation for freezing:
 //! drop(bytes_0);
 //! drop(bytes_1);
 //! drop(bytes_2);
 //!
-//! let bytes = bytes_3.freeze_and_grow().unwrap();
+//! // Needs to be `mut` so we can `reset_slice()`. Doesn't actually mutate the buffer!
+//! let mut bytes = bytes_3.freeze().unwrap();
+//! bytes.reset_slice();
 //!
 //! let expected: Vec<u8> = (0..LEN).map(|i| (i / (2 * MiB)) as u8).collect();
 //! // We use `Iterator::eq` instead of `assert_eq!` to avoid `assert_eq!` printing out
@@ -261,16 +266,16 @@ impl AlignedBytesMut {
     }
 
     /// If this is the only `AlignedBytesMut` with access to the underlying buffer
-    /// then `freeze_and_grow` consumes `self` and returns a read-only `AlignedBytes`
-    /// (wrapped in `Ok`), which contains a
-    /// reference to the underlying buffer, and has its `range` set to the entire byte range
-    /// of the underlying buffer. If, on the other hand, other `AlignedBytesMut`s have access to
-    /// the underlying then `freeze_and_grow` will return `Err(self)`.
-    pub fn freeze_and_grow(self) -> Result<AlignedBytes, Self> {
+    /// then `freeze` consumes `self` and returns a read-only `AlignedBytes`
+    /// (wrapped in `Ok`), which contains a reference to the underlying buffer,
+    /// and has its `range` set to byte range the `AlignedBytesMut`.
+    /// If, on the other hand, other `AlignedBytesMut`s have access to
+    /// the underlying then `freeze` will return `Err(self)`.
+    pub fn freeze(self) -> Result<AlignedBytes, Self> {
         if Arc::strong_count(&self.buf) == 1 {
             Ok(AlignedBytes {
-                buf: self.buf.clone(),
-                range: 0..self.buf.len(),
+                buf: self.buf,
+                range: self.range,
             })
         } else {
             Err(self)
@@ -291,9 +296,9 @@ unsafe impl Sync for AlignedBytes {}
 
 /// An immutable view of a memory buffer.
 ///
-/// The only way to make is an `AlignedBytes` is using [`AlignedBytesMut::freeze_and_grow`].
+/// The only way to make is an `AlignedBytes` is using [`AlignedBytesMut::freeze`].
 impl AlignedBytes {
-    /// Returns a slice of self for the provided range.
+    /// Returns a new slice of self for the provided range.
     ///
     /// This will increment the reference count for the underlying memory buffer
     /// and return a new `AlignedBytes` handle set to the slice.
@@ -302,13 +307,17 @@ impl AlignedBytes {
     ///
     /// ## Panics
     /// Panics if `range.is_empty()` or if `range.end` > the size of the underlying buffer.
-    pub fn slice(&self, range: Range<usize>) -> Self {
+    pub fn set_slice(&mut self, range: Range<usize>) -> &Self {
         assert!(!range.is_empty());
         assert!(range.end <= self.buf.len());
-        Self {
-            buf: self.buf.clone(),
-            range,
-        }
+        self.range = range;
+        self
+    }
+
+    /// Resets this `AlignedBytes` range to be equal to the total extent of the underlying buffer.
+    pub fn reset_slice(&mut self) -> &Self {
+        self.range = 0..self.buf.len();
+        self
     }
 
     /// The length of the `range` requested by the user. The `range` is a view into the
@@ -399,8 +408,8 @@ mod tests {
         }
         // Read the values back out:
         {
-            let slice1 = aligned_buf1.freeze_and_grow().unwrap();
-            let slice2 = aligned_buf2.freeze_and_grow().unwrap();
+            let slice1 = aligned_buf1.freeze().unwrap();
+            let slice2 = aligned_buf2.freeze().unwrap();
             for i in 0..LEN {
                 assert_eq!(slice1.as_slice()[i], i as u8);
                 assert_eq!(slice2.as_slice()[i], i as u8);

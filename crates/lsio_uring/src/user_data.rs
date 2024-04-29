@@ -12,6 +12,14 @@ impl UringUserData {
     pub(crate) const fn new(index_of_op: u32, op: OpCode) -> Self {
         Self { index_of_op, op }
     }
+
+    pub(crate) const fn index_of_op(&self) -> u32 {
+        self.index_of_op
+    }
+
+    pub(crate) const fn opcode(&self) -> &OpCode {
+        &self.op
+    }
 }
 
 impl From<u64> for UringUserData {
