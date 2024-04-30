@@ -1,6 +1,9 @@
-use std::{ffi::CString, ops::Range};
+use std::ops::Range;
 
-use crate::operation::{NextStep, UringOperation};
+use crate::{
+    open_file::OpenFileBuilder, 
+    operation::{NextStep, UringOperation}, 
+    sqe::{build_openat_sqe, build_statx_sqe}};
 
 #[derive(Debug)]
 pub(crate) struct GetRanges {
@@ -19,6 +22,12 @@ impl UringOperation for GetRanges {
         index_of_op: usize,
         local_uring_submission_queue: &mut io_uring::squeue::SubmissionQueue,
     ) -> Result<(), io_uring::squeue::PushError> {
+        let open_entry = build_openat_sqe(index_of_op, self.open_file_builder.location());
+        let statx_entry = build_statx_sqe(
+            index_of_op, 
+            self.open_file_builder.location(), 
+            self.open_file_builder.get_statx_ptr()
+        );
         unsafe {
             local_uring_submission_queue.push(&open_entry)?;
             local_uring_submission_queue.push(&statx_entry)?;
@@ -40,7 +49,7 @@ impl UringOperation for GetRanges {
                 self.open_file_builder.set_file_descriptor(fd);
             },
             io_uring::opcode::Statx::CODE => {
-                self.open_file_builder.set_from_statx(statx_result);
+                unsafe { self.open_file_builder.assume_statx_is_initialised(); }
             },
             _ => panic!("Unrecognised opcode! {idx_and_opcode:?}");
         };

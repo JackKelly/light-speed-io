@@ -21,7 +21,7 @@ pub(crate) struct OpenFileBuilder {
     location: CString,
     file_descriptor: Option<io_uring::types::Fd>,
     statx: MaybeUninit<libc::statx>,
-    statx_is_initialised: AtomicBool,
+    assume_statx_is_initialised: AtomicBool,
 }
 
 impl OpenFileBuilder {
@@ -30,8 +30,12 @@ impl OpenFileBuilder {
             location,
             file_descriptor: None,
             statx: MaybeUninit::<libc::statx>::uninit(),
-            statx_is_initialised: AtomicBool::new(false),
+            assume_statx_is_initialised: AtomicBool::new(false),
         }
+    }
+
+    pub(crate) const fn location(&self) -> &CString {
+        &self.location
     }
 
     pub(crate) fn set_file_descriptor(&mut self, file_descriptor: io_uring::types::Fd) {
@@ -42,12 +46,13 @@ impl OpenFileBuilder {
         self.statx.as_mut_ptr()
     }
 
-    pub(crate) unsafe fn set_statx_as_initialised(&mut self) {
-        self.statx_is_initialised.store(true, Ordering::Relaxed);
+    pub(crate) unsafe fn assume_statx_is_initialised(&mut self) {
+        self.assume_statx_is_initialised
+            .store(true, Ordering::Relaxed);
     }
 
     pub(crate) fn is_ready(&self) -> bool {
-        self.file_descriptor.is_some() && self.statx_is_initialised.load(Ordering::Relaxed)
+        self.file_descriptor.is_some() && self.assume_statx_is_initialised.load(Ordering::Relaxed)
     }
 
     /// Safety: [`Self::is_ready`] must return `true` before calling `build`!

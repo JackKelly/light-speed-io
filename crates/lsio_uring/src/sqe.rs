@@ -1,5 +1,3 @@
-use io_uring::cqueue;
-use io_uring::opcode;
 use io_uring::squeue;
 use io_uring::types;
 use nix::sys::stat::stat;
@@ -7,7 +5,7 @@ use nix::NixPath;
 use std::ffi::CString;
 use std::ops::Range;
 
-use crate::uring_user_data::UringUserData;
+use crate::{opcode::OpCode, user_data::UringUserData};
 
 fn get_filesize_bytes<P>(path: &P) -> i64
 where
@@ -16,12 +14,15 @@ where
     stat(path).expect("Failed to get filesize!").st_size
 }
 
-pub(crate) fn build_openat_sqe(index_of_op: usize, path: &CString) -> squeue::Entry {
-    let user_data = UringUserData::new(index_of_op.try_into().unwrap(), opcode::OpenAt::CODE);
+pub(crate) fn build_openat_sqe(index_of_op: usize, location: &CString) -> squeue::Entry {
+    let idx_and_opcode = UringUserData::new(
+        index_of_op.try_into().unwrap(),
+        OpCode::new(io_uring::opcode::OpenAt::CODE),
+    );
 
-    // Prepare the "open" opcode:
-    let path_ptr = path.as_ptr();
-    opcode::OpenAt::new(
+    // Prepare the "openat" submission queue entry (SQE):
+    let path_ptr = location.as_ptr();
+    io_uring::opcode::OpenAt::new(
         // `dirfd` is ignored if the pathname is absolute.
         // See the "openat()" section in https://man7.org/linux/man-pages/man2/openat.2.html
         types::Fd(-1),
@@ -29,7 +30,32 @@ pub(crate) fn build_openat_sqe(index_of_op: usize, path: &CString) -> squeue::En
     )
     .flags(libc::O_RDONLY | libc::O_DIRECT)
     .build()
-    .user_data(user_data.into())
+    .user_data(idx_and_opcode.into())
+}
+
+pub(crate) fn build_statx_sqe(
+    index_of_op: usize,
+    location: &CString,
+    statx_ptr: *mut libc::statx,
+) -> squeue::Entry {
+    let idx_and_opcode = UringUserData::new(
+        index_of_op.try_into().unwrap(),
+        OpCode::new(io_uring::opcode::Statx::CODE),
+    );
+
+    // Prepare the "statx" submission queue entry (SQE):
+    let path_ptr = location.as_ptr();
+    io_uring::opcode::Statx::new(
+        // TODO: Check the statement below is still true for statx!
+        // `dirfd` is ignored if the pathname is absolute.
+        // See the "openat()" section in https://man7.org/linux/man-pages/man2/openat.2.html
+        types::Fd(-1),
+        path_ptr,
+        statx_ptr,
+    )
+    .flags(libc::O_RDONLY | libc::O_DIRECT)
+    .build()
+    .user_data(idx_and_opcode.into())
 }
 
 pub(crate) fn build_read_range_sqe(
@@ -66,7 +92,7 @@ pub(crate) fn build_read_range_sqe(
     drop(buf_len); // From now on, use `buffer.len()` as the correct length!
 
     // Prepare the "read" opcode:
-    let read_op = opcode::Read::new(
+    let read_op = io_uring::opcode::Read::new(
         *file.fd,
         buffer.as_mut_ptr(),
         buffer.len().try_into::<u32>().unwrap(),
