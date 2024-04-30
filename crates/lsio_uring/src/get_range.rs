@@ -58,7 +58,7 @@ impl UringOperation for GetRange {
         // lots of GetRange ops into the `local_worker_queue`!
         local_worker_queue: &Worker<Operation>,
         output_channel: &mut crossbeam::channel::Sender<anyhow::Result<Output>>,
-    ) -> Option<Operation> {
+    ) -> NextStep {
         // Check that the opcode of the CQE is what we expected:
         if idx_and_opcode.opcode().value() != io_uring::opcode::Read::CODE {
             panic!("Unrecognised opcode!");
@@ -83,6 +83,6 @@ impl UringOperation for GetRange {
                 output_channel.send(Err(err.context(format!("{self:?}"))));
             }
         };
-        None
+        NextStep::Done
     }
 }
