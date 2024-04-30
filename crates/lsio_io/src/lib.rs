@@ -39,10 +39,10 @@ pub trait Reader {
 /// `Result<Chunk>` is usually what is passed around!).
 #[derive(Debug)]
 pub struct Chunk {
-    buffer: AlignedBytes,
+    pub buffer: AlignedBytes,
     /// `user_data` can be used to uniquely identify each chunk, for example by providing an index
     /// into an array that provides more information about each chunk.
-    user_data: u64,
+    pub user_data: u64,
 }
 
 #[derive(Debug)]

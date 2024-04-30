@@ -9,6 +9,8 @@ repository = { workspace = true }
 license = { workspace = true }
 
 [dependencies]
+lsio_aligned_bytes = { path = "../lsio_aligned_bytes" }
+lsio_io = { path = "../lsio_io" }
 anyhow = { workspace = true } 
 crossbeam =  { workspace = true } 
 io-uring =  { workspace = true } 

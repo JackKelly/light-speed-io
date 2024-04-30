@@ -9,13 +9,6 @@ use std::ops::Range;
 
 use crate::uring_user_data::UringUserData;
 
-fn cqe_error_to_anyhow_error(cqe_result: i64) -> anyhow::Error {
-    let nix_err = nix::Error::from_raw(-cqe_result);
-    anyhow::Error::new(nix_err).context(format!(
-        "{nix_err} (reported by io_uring completion queue entry (CQE))",
-    ))
-}
-
 fn get_filesize_bytes<P>(path: &P) -> i64
 where
     P: ?Sized + NixPath,

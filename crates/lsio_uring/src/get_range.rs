@@ -1,15 +1,21 @@
-use crate::uring::operation::ALIGN;
-use io_uring::{cqueue, opcode, types};
-use std::cmp::max;
-use std::ffi::CString;
-use std::ops::Range;
-use tokio::sync::oneshot;
-
-use crate::operation;
-use crate::uring;
-use crate::uring::operation::{
-    build_openat_sqe, create_linked_read_range_close_sqes, InnerState, NextStep,
+use crate::{
+    open_file::OpenFile,
+    operation::{Operation, UringOperation},
+    sqe::build_read_range_sqe,
+    user_data::UringUserData,
 };
+use crossbeam::deque::Worker;
+use lsio_aligned_bytes::AlignedBytes;
+use lsio_io::{Chunk, Output};
+use std::{ops::Range, sync::Arc};
+
+#[derive(Debug)]
+pub(crate) struct GetRange {
+    file: Arc<OpenFile>, // TODO: Replace Arc with Atomic counter?
+    range: Range<isize>,
+    user_data: u64,
+    buffer: Option<AlignedBytes>, // This is an `Option` so we can `take` it.
+}
 
 impl GetRange {
     pub(crate) fn new(file: Arc<OpenFile>, range: Range<isize>, user_data: u64) -> Self {
@@ -18,18 +24,13 @@ impl GetRange {
             panic!(
                 "`read` will transfer at most 2 GiB but {} bytes were requested. \
                      See https://github.com/JackKelly/light-speed-io/issues/99",
-                len_requested_by_user
+                range.len()
             );
         }
         Self {
             file,
             range,
             user_data,
-            // TODO: Maybe we should actually allocate the buffer _here_? Then `get_first_step`
-            // wouldn't have to take a `mut` ref to `self`. And we're more likely to know the
-            // alignement at runtime at this point in the code? And we could keep track of the
-            // _aligned_ byte range that we read from disk; and the byte range requested by the
-            // user.
             buffer: None,
         }
     }
@@ -40,53 +41,48 @@ impl UringOperation for GetRange {
     fn get_first_step(
         &mut self,
         index_of_op: usize,
-        local_uring_submission_queue: &mut VecDeque<squeue::Entry>,
-    ) {
-        // UringOperations take a reference to the queue.
-        // Then we can directly write into those queues!
+        local_uring_submission_queue: &mut io_uring::squeue::SubmissionQueue,
+    ) -> Result<(), io_uring::squeue::PushError> {
         let (entry, buffer) = build_read_range_sqe(index_of_op, &self.file, &self.range);
         self.buffer = Some(buffer);
-        local_uring_submission_queue.push(entry);
+        unsafe { local_uring_submission_queue.push(&entry) } // TODO: Does `entry` have to stay
+                                                             // alive for longer?
     }
 
     fn process_opcode_and_get_next_step(
         self,
-        // TODO: Needs to be renamed, to distinguish from our
-        // `Chunk.user_data`. Maybe rename to `IdxAndOpcode`?
-        user_data: &UringUserData,
-        cqe_result: &Result<i32>,
-        local_uring_submission_queue: &mut VecDeque<squeue::Entry>,
+        idx_and_opcode: &UringUserData,
+        cqe_result: &anyhow::Result<i32>,
+        local_uring_submission_queue: &mut io_uring::squeue::SubmissionQueue,
         // We don't use `local_worker_queue` in this example. But GetRanges will want to pump out
         // lots of GetRange ops into the `local_worker_queue`!
         local_worker_queue: &Worker<Operation>,
-        output_channel: &mut crossbeam::channel::Sender<Result<Output>>,
+        output_channel: &mut crossbeam::channel::Sender<anyhow::Result<Output>>,
     ) -> Option<Operation> {
-        match user_data.opcode().value() {
-            opcode::Read::CODE => {
-                if let Ok(cqe_result_value) = cqe_result {
-                    // TODO: Check we've read the correct number of bytes:
-                    //       Check `cqe_result_value == self.buffer.len()`.
-                    // TODO: Retry if we read less data than requested! See issue #100.
+        // Check that the opcode of the CQE is what we expected:
+        if idx_and_opcode.opcode().value() != io_uring::opcode::Read::CODE {
+            panic!("Unrecognised opcode!");
+        }
+        match cqe_result {
+            Ok(cqe_result_value) => {
+                // TODO: Check we've read the correct number of bytes:
+                //       Check `cqe_result_value == self.buffer.len()`.
+                // TODO: Retry if we read less data than requested! See issue #100.
 
-                    output_channel.send(Output::Chunk(Chunk {
-                        buffer: self.buffer.take(),
-                        user_data: self.user_data,
-                    }));
+                output_channel.send(Ok(Output::Chunk(Chunk {
+                    buffer: self.buffer.take().unwrap(),
+                    user_data: self.user_data,
+                })));
 
-                    // Check if it's time to close the file:
-                    if Arc::strong_count(&self.file) == 1 {
-                        let close_op = Close::new(self.file);
-                        close_op
-                            .get_first_step(user_data.index_of_op(), local_uring_submission_queue);
-                        Some(close_op)
-                    } else {
-                        None
-                    }
-                } else {
-                    todo!(); // TODO: Handle when there's an error!
+                // Check if it's time to close the file:
+                if Arc::strong_count(&self.file) == 1 {
+                    local_worker_queue.push(Close::new(self.file));
                 }
             }
-            _ => panic!("Unrecognised opcode!"),
-        }
+            Err(err) => {
+                output_channel.send(Err(err.context(format!("{self:?}"))));
+            }
+        };
+        None
     }
 }
