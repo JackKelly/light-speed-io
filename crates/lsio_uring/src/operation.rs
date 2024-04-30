@@ -31,6 +31,18 @@ impl Operation {
             output_channel,
         )
     }
+
+    fn apply_func_to_all_inner_structs<F, R>(&mut self, mut f: F) -> R
+    where
+        F: FnMut(&mut dyn UringOperation) -> R,
+    {
+        use Operation::*;
+        match self {
+            GetRanges(s) => f(s),
+            GetRange(s) => f(s),
+            Close(s) => f(s),
+        }
+    }
 }
 
 impl UringOperation for Operation {
@@ -39,16 +51,13 @@ impl UringOperation for Operation {
         index_of_op: usize,
         local_uring_submission_queue: &mut io_uring::squeue::SubmissionQueue,
     ) -> Result<(), io_uring::squeue::PushError> {
-        use Operation::*;
-        match self {
-            // TODO: Use a Rust macro to reduce the code duplication in this `match` block.
-            GetRanges(s) => s.get_first_step(index_of_op, local_uring_submission_queue),
-            GetRange(s) => s.get_first_step(index_of_op, local_uring_submission_queue),
-        }
+        self.apply_func_to_all_inner_structs(|s| {
+            UringOperation::get_first_step(s, index_of_op, local_uring_submission_queue)
+        })
     }
 
     fn process_opcode_and_get_next_step(
-        self,
+        &self,
         // TODO: Needs to be renamed, to distinguish from our
         // `Chunk.user_data`. Maybe rename to `IdxAndOpcode`?
         idx_and_opcode: &UringUserData,
@@ -57,24 +66,16 @@ impl UringOperation for Operation {
         local_worker_queue: &Worker<Operation>,
         output_channel: &mut crossbeam::channel::Sender<anyhow::Result<lsio_io::Output>>,
     ) -> Option<Operation> {
-        use Operation::*;
-        match self {
-            // TODO: Use a Rust macro to reduce the code duplication in this `match` block.
-            GetRanges(s) => s.process_opcode_and_get_next_step(
+        self.apply_func_to_all_inner_structs(|s| {
+            UringOperation::process_opcode_and_get_next_step(
+                s,
                 idx_and_opcode,
                 cqe_result,
                 local_uring_submission_queue,
                 local_worker_queue,
                 output_channel,
-            ),
-            GetRange(s) => s.process_opcode_and_get_next_step(
-                idx_and_opcode,
-                cqe_result,
-                local_uring_submission_queue,
-                local_worker_queue,
-                output_channel,
-            ),
-        }
+            )
+        })
     }
 }
 /// ------------------ COMMON TO ALL URING OPERATIONS ---------------------
@@ -91,14 +92,10 @@ pub(crate) trait UringOperation {
     ) -> Result<(), io_uring::squeue::PushError>;
 
     fn process_opcode_and_get_next_step(
-        self,
-        // TODO: Needs to be renamed, to distinguish from our
-        // `Chunk.user_data`. Maybe rename to `IdxAndOpcode`?
+        &self,
         idx_and_opcode: &UringUserData,
         cqe_result: &anyhow::Result<i32>,
         local_uring_submission_queue: &mut io_uring::squeue::SubmissionQueue,
-        // We don't use `local_worker_queue` in this example. But GetRanges will want to pump out
-        // lots of GetRange ops into the `local_worker_queue`!
         local_worker_queue: &Worker<Operation>,
         output_channel: &mut crossbeam::channel::Sender<anyhow::Result<lsio_io::Output>>,
     ) -> Option<Operation>;

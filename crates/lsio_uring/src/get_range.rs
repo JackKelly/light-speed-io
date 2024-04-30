@@ -50,7 +50,7 @@ impl UringOperation for GetRange {
     }
 
     fn process_opcode_and_get_next_step(
-        self,
+        &self,
         idx_and_opcode: &UringUserData,
         cqe_result: &anyhow::Result<i32>,
         local_uring_submission_queue: &mut io_uring::squeue::SubmissionQueue,
