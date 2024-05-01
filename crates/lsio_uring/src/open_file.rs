@@ -15,6 +15,20 @@ pub(crate) struct OpenFile {
     alignment: u32,
 }
 
+impl OpenFile {
+    pub(crate) fn file_descriptor(&self) -> &io_uring::types::Fd {
+        &self.file_descriptor
+    }
+
+    pub(crate) fn size(&self) -> u64 {
+        self.size
+    }
+
+    pub(crate) fn alignment(&self) -> u32 {
+        self.alignment
+    }
+}
+
 /// Used to build an [`OpenFile`].
 #[derive(Debug)]
 pub(crate) struct OpenFileBuilder {
@@ -65,7 +79,7 @@ impl OpenFileBuilder {
             file_descriptor: self.file_descriptor.unwrap(),
             size: statx.stx_size,
             alignment: statx.stx_dio_mem_align,
-            // TODO: Maybe also use statx.stx_dio_offset_align.
+            // TODO: Maybe also use `statx.stx_dio_offset_align`.
         }
     }
 }

@@ -1,18 +1,16 @@
 use io_uring::squeue;
 use io_uring::types;
+use lsio_aligned_bytes::AlignedBytes;
+use lsio_aligned_bytes::AlignedBytesMut;
 use nix::sys::stat::stat;
 use nix::NixPath;
 use std::ffi::CString;
 use std::ops::Range;
 
+use crate::open_file::OpenFile;
 use crate::{opcode::OpCode, user_data::UringUserData};
 
-fn get_filesize_bytes<P>(path: &P) -> i64
-where
-    P: ?Sized + NixPath,
-{
-    stat(path).expect("Failed to get filesize!").st_size
-}
+const ALIGN: i64 = 512; // TODO: Get ALIGN at runtime from statx.
 
 pub(crate) fn build_openat_sqe(index_of_op: usize, location: &CString) -> squeue::Entry {
     let idx_and_opcode = UringUserData::new(
@@ -61,14 +59,15 @@ pub(crate) fn build_statx_sqe(
 pub(crate) fn build_read_range_sqe(
     index_of_op: usize,
     file: &OpenFile,
-    range: &Range<isize>,
+    range: &Range<i64>,
 ) -> (squeue::Entry, AlignedBytes) {
+    let filesize: i64 = file.size().try_into().unwrap();
     let start_offset = if range.start >= 0 {
         range.start
     } else {
         // `range.start` is negative. We interpret a negative `range.start`
         // as an offset from the end of the file.
-        file.size.unwrap() + range.start
+        filesize + range.start
     };
     assert!(start_offset >= 0);
 
@@ -77,7 +76,7 @@ pub(crate) fn build_read_range_sqe(
     } else {
         // `range.end` is negative. We interpret a negative `range.end`
         // as an offset from the end of the file, where `range.end = -1` means the last byte.
-        file.size.unwrap() + range.end + 1
+        filesize + range.end + 1
     };
     assert!(end_offset >= 0);
 
@@ -88,29 +87,36 @@ pub(crate) fn build_read_range_sqe(
 
     // Allocate vector. If `buf_len` is not exactly divisible by ALIGN, then
     // `AlignedBytesMut::new` will extend the length until it is aligned.
-    let mut buffer = AlignedBytesMut::new(buf_len as usize, ALIGN);
+    let mut buffer = AlignedBytesMut::new(buf_len as usize, ALIGN.try_into().unwrap());
     drop(buf_len); // From now on, use `buffer.len()` as the correct length!
 
     // Prepare the "read" opcode:
     let read_op = io_uring::opcode::Read::new(
-        *file.fd,
+        *file.file_descriptor(),
         buffer.as_mut_ptr(),
-        buffer.len().try_into::<u32>().unwrap(),
+        buffer.len().try_into().unwrap(),
     )
     .offset(aligned_start_offset as _)
     .build()
-    .user_data(UringUserData::new(index_of_op.try_into().unwrap(), opcode::Read::CODE).into());
+    .user_data(
+        UringUserData::new(
+            index_of_op.try_into().unwrap(),
+            OpCode::new(io_uring::opcode::Read::CODE),
+        )
+        .into(),
+    );
 
-    // If the `start_offset` is not aligned, then the start of the buffer will contain data th
+    // If the `start_offset` is not aligned, then the start of the buffer will contain data that
+    // the user did not request.
     if aligned_start_offset != start_offset {
         _ = buffer
-            .split_to(start_offset - aligned_start_offset)
+            .split_to((start_offset - aligned_start_offset).try_into().unwrap())
             .unwrap();
     }
 
     // `freeze` the buffer, and set the slice to the slice requested by the user:
-    let start_slice = start_offset - aligned_start_offset;
-    let end_slice = end_offset - aligned_start_offset;
+    let start_slice: usize = (start_offset - aligned_start_offset).try_into().unwrap();
+    let end_slice: usize = (end_offset - aligned_start_offset).try_into().unwrap();
     let mut buffer = buffer.freeze().unwrap();
     buffer.set_slice(start_slice..end_slice);
 

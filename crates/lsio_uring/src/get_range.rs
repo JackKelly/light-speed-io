@@ -1,6 +1,6 @@
 use crate::{
     open_file::OpenFile,
-    operation::{Operation, UringOperation},
+    operation::{NextStep, Operation, UringOperation},
     sqe::build_read_range_sqe,
     user_data::UringUserData,
 };
@@ -50,7 +50,7 @@ impl UringOperation for GetRange {
     }
 
     fn process_opcode_and_get_next_step(
-        &self,
+        &mut self,
         idx_and_opcode: &UringUserData,
         cqe_result: &anyhow::Result<i32>,
         local_uring_submission_queue: &mut io_uring::squeue::SubmissionQueue,
@@ -63,24 +63,19 @@ impl UringOperation for GetRange {
         if idx_and_opcode.opcode().value() != io_uring::opcode::Read::CODE {
             panic!("Unrecognised opcode!");
         }
-        match cqe_result {
-            Ok(cqe_result_value) => {
-                // TODO: Check we've read the correct number of bytes:
-                //       Check `cqe_result_value == self.buffer.len()`.
-                // TODO: Retry if we read less data than requested! See issue #100.
+        if let Ok(cqe_result_value) = cqe_result {
+            // TODO: Check we've read the correct number of bytes:
+            //       Check `cqe_result_value == self.buffer.len()`.
+            // TODO: Retry if we read less data than requested! See issue #100.
 
-                output_channel.send(Ok(Output::Chunk(Chunk {
-                    buffer: self.buffer.take().unwrap(),
-                    user_data: self.user_data,
-                })));
+            output_channel.send(Ok(Output::Chunk(Chunk {
+                buffer: self.buffer.take().unwrap(),
+                user_data: self.user_data,
+            })));
 
-                // Check if it's time to close the file:
-                if Arc::strong_count(&self.file) == 1 {
-                    local_worker_queue.push(Close::new(self.file));
-                }
-            }
-            Err(err) => {
-                output_channel.send(Err(err.context(format!("{self:?}"))));
+            // Check if it's time to close the file:
+            if Arc::strong_count(&self.file) == 1 {
+                local_worker_queue.push(Operation::Close(Close::new(self.file.file_descriptor())));
             }
         };
         NextStep::Done
