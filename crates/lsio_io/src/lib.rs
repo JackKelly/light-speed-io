@@ -3,6 +3,10 @@
 use lsio_aligned_bytes::AlignedBytes;
 use std::{ops::Range, path::Path};
 
+// TODO: Consider how to *group* instructions, such that LSIO guarantees that all operations in
+// group _n_ will be completed before any operations in group _n+1_ are started. See:
+// https://github.com/JackKelly/light-speed-io/issues/68
+
 pub trait Reader {
     /// Submit a GetRanges operation.
     ///
