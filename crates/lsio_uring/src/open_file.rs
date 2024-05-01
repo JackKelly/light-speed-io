@@ -1,8 +1,4 @@
-use std::{
-    ffi::CString,
-    mem::MaybeUninit,
-    sync::atomic::{AtomicBool, Ordering},
-};
+use std::ffi::CString;
 
 #[derive(Debug)]
 pub(crate) struct OpenFile {
@@ -34,8 +30,8 @@ impl OpenFile {
 pub(crate) struct OpenFileBuilder {
     location: CString,
     file_descriptor: Option<io_uring::types::Fd>,
-    statx: MaybeUninit<libc::statx>,
-    assume_statx_is_initialised: AtomicBool,
+    statx: libc::statx,
+    assume_statx_is_initialised: bool,
 }
 
 impl OpenFileBuilder {
@@ -43,8 +39,8 @@ impl OpenFileBuilder {
         Self {
             location,
             file_descriptor: None,
-            statx: MaybeUninit::<libc::statx>::uninit(),
-            assume_statx_is_initialised: AtomicBool::new(false),
+            statx: unsafe { std::mem::zeroed() },
+            assume_statx_is_initialised: false,
         }
     }
 
@@ -57,28 +53,26 @@ impl OpenFileBuilder {
     }
 
     pub(crate) fn get_statx_ptr(&self) -> *mut libc::statx {
-        self.statx.as_mut_ptr()
+        &mut self.statx as *mut libc::statx
     }
 
     pub(crate) unsafe fn assume_statx_is_initialised(&mut self) {
-        self.assume_statx_is_initialised
-            .store(true, Ordering::Relaxed);
+        self.assume_statx_is_initialised = true;
     }
 
     pub(crate) fn is_ready(&self) -> bool {
-        self.file_descriptor.is_some() && self.assume_statx_is_initialised.load(Ordering::Relaxed)
+        self.file_descriptor.is_some() && self.assume_statx_is_initialised
     }
 
     /// Safety: [`Self::is_ready`] must return `true` before calling `build`!
     /// Panics: If `build` is called while [`Self::is_ready`] is still false.
     pub(crate) fn build(self) -> OpenFile {
         assert!(self.is_ready());
-        let statx = unsafe { self.statx.assume_init() };
         OpenFile {
             location: self.location,
             file_descriptor: self.file_descriptor.unwrap(),
-            size: statx.stx_size,
-            alignment: statx.stx_dio_mem_align,
+            size: self.statx.stx_size,
+            alignment: self.statx.stx_dio_mem_align,
             // TODO: Maybe also use `statx.stx_dio_offset_align`.
         }
     }

@@ -2,16 +2,17 @@ use io_uring::squeue;
 use io_uring::types;
 use lsio_aligned_bytes::AlignedBytes;
 use lsio_aligned_bytes::AlignedBytesMut;
-use nix::sys::stat::stat;
-use nix::NixPath;
 use std::ffi::CString;
 use std::ops::Range;
 
 use crate::open_file::OpenFile;
 use crate::{opcode::OpCode, user_data::UringUserData};
 
-const ALIGN: i64 = 512; // TODO: Get ALIGN at runtime from statx.
+const ALIGN: isize = 512; // TODO: Get ALIGN at runtime from statx.
 
+/// # Documentation about the openat operation in io_uring:
+/// - https://man7.org/linux/man-pages/man2/openat.2.html
+/// - https://man7.org/linux/man-pages/man3/io_uring_prep_openat.3.html
 pub(crate) fn build_openat_sqe(index_of_op: usize, location: &CString) -> squeue::Entry {
     let idx_and_opcode = UringUserData::new(
         index_of_op.try_into().unwrap(),
@@ -31,6 +32,16 @@ pub(crate) fn build_openat_sqe(index_of_op: usize, location: &CString) -> squeue
     .user_data(idx_and_opcode.into())
 }
 
+/// Build a `statx` submission queue entry (SQE).
+///
+/// # Safety
+/// Assumes the struct that `statx_ptr` points to exists and has been zeroed.
+///
+/// # Documentation about the statx operation in io_uring:
+/// - https://man7.org/linux/man-pages/man2/statx.2.html
+/// - https://man7.org/linux/man-pages/man3/io_uring_prep_statx.3.html
+/// - https://docs.rs/io-uring/latest/io_uring/opcode/struct.Statx.html
+/// - https://docs.rs/libc/latest/libc/struct.statx.html
 pub(crate) fn build_statx_sqe(
     index_of_op: usize,
     location: &CString,
@@ -44,14 +55,15 @@ pub(crate) fn build_statx_sqe(
     // Prepare the "statx" submission queue entry (SQE):
     let path_ptr = location.as_ptr();
     io_uring::opcode::Statx::new(
-        // TODO: Check the statement below is still true for statx!
-        // `dirfd` is ignored if the pathname is absolute.
-        // See the "openat()" section in https://man7.org/linux/man-pages/man2/openat.2.html
+        // `dirfd` is ignored if the pathname is absolute. See:
+        // https://man7.org/linux/man-pages/man2/statx.2.html
         types::Fd(-1),
         path_ptr,
-        statx_ptr,
+        statx_ptr as *mut _,
     )
-    .flags(libc::O_RDONLY | libc::O_DIRECT)
+    // See here for a description of the flags for statx:
+    // https://man7.org/linux/man-pages/man2/statx.2.html
+    .mask(libc::STATX_SIZE | libc::STATX_DIOALIGN)
     .build()
     .user_data(idx_and_opcode.into())
 }
@@ -59,9 +71,9 @@ pub(crate) fn build_statx_sqe(
 pub(crate) fn build_read_range_sqe(
     index_of_op: usize,
     file: &OpenFile,
-    range: &Range<i64>,
+    range: &Range<isize>,
 ) -> (squeue::Entry, AlignedBytes) {
-    let filesize: i64 = file.size().try_into().unwrap();
+    let filesize: isize = file.size().try_into().unwrap();
     let start_offset = if range.start >= 0 {
         range.start
     } else {
