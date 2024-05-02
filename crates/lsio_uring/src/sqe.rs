@@ -134,3 +134,18 @@ pub(crate) fn build_read_range_sqe(
 
     (read_op, buffer)
 }
+
+pub(crate) fn build_close_sqe(
+    index_of_op: usize,
+    file_descriptor: io_uring::types::Fd,
+) -> squeue::Entry {
+    io_uring::opcode::Close::new(file_descriptor)
+        .build()
+        .user_data(
+            UringUserData::new(
+                index_of_op.try_into().unwrap(),
+                OpCode::new(io_uring::opcode::Close::CODE),
+            )
+            .into(),
+        )
+}
