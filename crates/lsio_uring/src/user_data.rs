@@ -9,8 +9,11 @@ pub(crate) struct UringUserData {
 }
 
 impl UringUserData {
-    pub(crate) const fn new(index_of_op: u32, op: OpCode) -> Self {
-        Self { index_of_op, op }
+    pub(crate) const fn new(index_of_op: usize, op: u8) -> Self {
+        Self {
+            index_of_op: index_of_op.try_into().unwrap(),
+            op: OpCode::new(op),
+        }
     }
 
     pub(crate) const fn index_of_op(&self) -> u32 {
@@ -32,7 +35,6 @@ impl From<u64> for UringUserData {
 
 impl Into<u64> for UringUserData {
     fn into(self) -> u64 {
-        assert!(self.index_of_op < u32::MAX);
         let index_of_op: u64 = (self.index_of_op as u64) << 32;
         index_of_op | self.op.value() as u64
     }
@@ -41,17 +43,15 @@ impl Into<u64> for UringUserData {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use io_uring::opcode;
 
     #[test]
     fn test_uring_user_data_round_trip() {
-        const INDEX: u32 = 100;
-        const OPCODE: OpCode = OpCode::new(opcode::Read::CODE);
+        const INDEX: usize = 100;
+        const OPCODE: u8 = io_uring::opcode::Read::CODE;
         let uring_user_data = UringUserData::new(INDEX, OPCODE);
-        println!("{uring_user_data:?}");
         let user_data_u64: u64 = uring_user_data.into();
         let uring_user_data = UringUserData::from(user_data_u64);
-        assert_eq!(uring_user_data.index_of_op, INDEX);
-        assert_eq!(uring_user_data.op, OPCODE);
+        assert_eq!(uring_user_data.index_of_op, INDEX as u32);
+        assert_eq!(uring_user_data.op, OpCode::new(OPCODE));
     }
 }

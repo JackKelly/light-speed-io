@@ -6,7 +6,7 @@ use std::ffi::CString;
 use std::ops::Range;
 
 use crate::open_file::OpenFile;
-use crate::{opcode::OpCode, user_data::UringUserData};
+use crate::user_data::UringUserData;
 
 const ALIGN: isize = 512; // TODO: Get ALIGN at runtime from statx.
 
@@ -14,10 +14,7 @@ const ALIGN: isize = 512; // TODO: Get ALIGN at runtime from statx.
 /// - https://man7.org/linux/man-pages/man2/openat.2.html
 /// - https://man7.org/linux/man-pages/man3/io_uring_prep_openat.3.html
 pub(crate) fn build_openat_sqe(index_of_op: usize, location: &CString) -> squeue::Entry {
-    let idx_and_opcode = UringUserData::new(
-        index_of_op.try_into().unwrap(),
-        OpCode::new(io_uring::opcode::OpenAt::CODE),
-    );
+    let idx_and_opcode = UringUserData::new(index_of_op, io_uring::opcode::OpenAt::CODE);
 
     // Prepare the "openat" submission queue entry (SQE):
     let path_ptr = location.as_ptr();
@@ -47,10 +44,7 @@ pub(crate) fn build_statx_sqe(
     location: &CString,
     statx_ptr: *mut libc::statx,
 ) -> squeue::Entry {
-    let idx_and_opcode = UringUserData::new(
-        index_of_op.try_into().unwrap(),
-        OpCode::new(io_uring::opcode::Statx::CODE),
-    );
+    let idx_and_opcode = UringUserData::new(index_of_op, io_uring::opcode::Statx::CODE);
 
     // Prepare the "statx" submission queue entry (SQE):
     let path_ptr = location.as_ptr();
@@ -110,13 +104,7 @@ pub(crate) fn build_read_range_sqe(
     )
     .offset(aligned_start_offset as _)
     .build()
-    .user_data(
-        UringUserData::new(
-            index_of_op.try_into().unwrap(),
-            OpCode::new(io_uring::opcode::Read::CODE),
-        )
-        .into(),
-    );
+    .user_data(UringUserData::new(index_of_op, io_uring::opcode::Read::CODE).into());
 
     // If the `start_offset` is not aligned, then the start of the buffer will contain data that
     // the user did not request.
@@ -141,11 +129,5 @@ pub(crate) fn build_close_sqe(
 ) -> squeue::Entry {
     io_uring::opcode::Close::new(file_descriptor)
         .build()
-        .user_data(
-            UringUserData::new(
-                index_of_op.try_into().unwrap(),
-                OpCode::new(io_uring::opcode::Close::CODE),
-            )
-            .into(),
-        )
+        .user_data(UringUserData::new(index_of_op, io_uring::opcode::Close::CODE).into())
 }
