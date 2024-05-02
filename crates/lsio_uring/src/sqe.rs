@@ -14,19 +14,16 @@ const ALIGN: isize = 512; // TODO: Get ALIGN at runtime from statx.
 /// - https://man7.org/linux/man-pages/man2/openat.2.html
 /// - https://man7.org/linux/man-pages/man3/io_uring_prep_openat.3.html
 pub(crate) fn build_openat_sqe(index_of_op: usize, location: &CString) -> squeue::Entry {
-    let idx_and_opcode = UringUserData::new(index_of_op, io_uring::opcode::OpenAt::CODE);
-
     // Prepare the "openat" submission queue entry (SQE):
-    let path_ptr = location.as_ptr();
     io_uring::opcode::OpenAt::new(
         // `dirfd` is ignored if the pathname is absolute.
         // See the "openat()" section in https://man7.org/linux/man-pages/man2/openat.2.html
         types::Fd(-1),
-        path_ptr,
+        location.as_ptr(),
     )
     .flags(libc::O_RDONLY | libc::O_DIRECT)
     .build()
-    .user_data(idx_and_opcode.into())
+    .user_data(UringUserData::new(index_of_op, io_uring::opcode::OpenAt::CODE).into())
 }
 
 /// Build a `statx` submission queue entry (SQE).
@@ -44,22 +41,19 @@ pub(crate) fn build_statx_sqe(
     location: &CString,
     statx_ptr: *mut libc::statx,
 ) -> squeue::Entry {
-    let idx_and_opcode = UringUserData::new(index_of_op, io_uring::opcode::Statx::CODE);
-
     // Prepare the "statx" submission queue entry (SQE):
-    let path_ptr = location.as_ptr();
     io_uring::opcode::Statx::new(
         // `dirfd` is ignored if the pathname is absolute. See:
         // https://man7.org/linux/man-pages/man2/statx.2.html
         types::Fd(-1),
-        path_ptr,
+        location.as_ptr(),
         statx_ptr as *mut _,
     )
     // See here for a description of the flags for statx:
     // https://man7.org/linux/man-pages/man2/statx.2.html
     .mask(libc::STATX_SIZE | libc::STATX_DIOALIGN)
     .build()
-    .user_data(idx_and_opcode.into())
+    .user_data(UringUserData::new(index_of_op, io_uring::opcode::Statx::CODE).into())
 }
 
 pub(crate) fn build_read_range_sqe(
