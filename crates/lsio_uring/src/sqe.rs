@@ -6,6 +6,7 @@ use std::ffi::CString;
 use std::ops::Range;
 
 use crate::open_file::OpenFile;
+use crate::open_file::OpenFileBuilder;
 use crate::user_data::UringUserData;
 
 const ALIGN: isize = 512; // TODO: Get ALIGN at runtime from statx.
@@ -38,16 +39,15 @@ pub(crate) fn build_openat_sqe(index_of_op: usize, location: &CString) -> squeue
 /// - https://docs.rs/libc/latest/libc/struct.statx.html
 pub(crate) fn build_statx_sqe(
     index_of_op: usize,
-    location: &CString,
-    statx_ptr: *mut libc::statx,
+    open_file_builder: &mut OpenFileBuilder,
 ) -> squeue::Entry {
     // Prepare the "statx" submission queue entry (SQE):
     io_uring::opcode::Statx::new(
         // `dirfd` is ignored if the pathname is absolute. See:
         // https://man7.org/linux/man-pages/man2/statx.2.html
         types::Fd(-1),
-        location.as_ptr(),
-        statx_ptr as *mut _,
+        open_file_builder.location().as_ptr(),
+        open_file_builder.get_statx_ptr() as *mut _,
     )
     // See here for a description of the flags for statx:
     // https://man7.org/linux/man-pages/man2/statx.2.html

@@ -39,7 +39,7 @@ impl GetRanges {
     // io_uring can't process multiple range requests in a single op. So, once we've opened the
     // file and gotten its metadata, we need to submit one `Operation::GetRange` per byte range.
     fn submit_get_range_ops(
-        self,
+        &self,
         local_worker_queue: &crossbeam::deque::Worker<crate::operation::Operation>,
     ) {
         let file = Arc::new(self.open_file_builder.build());
@@ -57,11 +57,7 @@ impl UringOperation for GetRanges {
         local_uring_submission_queue: &mut io_uring::squeue::SubmissionQueue,
     ) -> Result<(), io_uring::squeue::PushError> {
         let open_entry = build_openat_sqe(index_of_op, self.open_file_builder.location());
-        let statx_entry = build_statx_sqe(
-            index_of_op,
-            self.open_file_builder.location(),
-            self.open_file_builder.get_statx_ptr(),
-        );
+        let statx_entry = build_statx_sqe(index_of_op, &mut self.open_file_builder);
         unsafe {
             local_uring_submission_queue.push(&open_entry)?;
             local_uring_submission_queue.push(&statx_entry)?;

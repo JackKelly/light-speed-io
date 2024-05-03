@@ -52,7 +52,7 @@ impl OpenFileBuilder {
         self.file_descriptor = Some(file_descriptor);
     }
 
-    pub(crate) fn get_statx_ptr(&self) -> *mut libc::statx {
+    pub(crate) fn get_statx_ptr(&mut self) -> *mut libc::statx {
         &mut self.statx as *mut libc::statx
     }
 

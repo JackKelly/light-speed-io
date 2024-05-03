@@ -9,7 +9,7 @@ pub(crate) struct UringUserData {
 }
 
 impl UringUserData {
-    pub(crate) const fn new(index_of_op: usize, op: u8) -> Self {
+    pub(crate) fn new(index_of_op: usize, op: u8) -> Self {
         Self {
             index_of_op: index_of_op.try_into().unwrap(),
             op: OpCode::new(op),
