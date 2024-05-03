@@ -22,11 +22,9 @@ impl Operation {
         output_channel: &mut crossbeam::channel::Sender<anyhow::Result<lsio_io::Output>>,
     ) -> NextStep {
         let idx_and_opcode = UringUserData::from(cqe.user_data());
-        let error_context = || format!("idx_and_opcode: {idx_and_opcode:?}. cqe: {cqe:?}");
-        let cqe_result = cqe_error_to_anyhow_error(cqe.result(), error_context);
         self.process_opcode_and_submit_next_step(
             &idx_and_opcode,
-            &cqe_result,
+            cqe.result(),
             local_uring_submission_queue,
             local_worker_queue,
             output_channel,
@@ -60,13 +58,14 @@ impl UringOperation for Operation {
     fn process_opcode_and_submit_next_step(
         &mut self,
         idx_and_opcode: &UringUserData,
-        cqe_result: &anyhow::Result<i32>,
+        cqe_result: i32,
         local_uring_submission_queue: &mut io_uring::squeue::SubmissionQueue,
         local_worker_queue: &Worker<Operation>,
         output_channel: &mut crossbeam::channel::Sender<anyhow::Result<lsio_io::Output>>,
     ) -> NextStep {
         self.apply_func_to_all_inner_structs(|s| {
-            UringOperation::send_error_or_process_opcode_and_get_next_step(
+            UringOperation::maybe_send_error(s, idx_and_opcode, cqe_result, output_channel);
+            UringOperation::process_opcode_and_submit_next_step(
                 s,
                 idx_and_opcode,
                 cqe_result,
@@ -91,34 +90,31 @@ pub(crate) trait UringOperation: std::fmt::Debug {
         local_uring_submission_queue: &mut io_uring::squeue::SubmissionQueue,
     ) -> Result<(), io_uring::squeue::PushError>;
 
-    fn send_error_or_process_opcode_and_get_next_step(
-        &mut self,
-        idx_and_opcode: &UringUserData,
-        cqe_result: &anyhow::Result<i32>,
-        local_uring_submission_queue: &mut io_uring::squeue::SubmissionQueue,
-        local_worker_queue: &Worker<Operation>,
-        output_channel: &mut crossbeam::channel::Sender<anyhow::Result<lsio_io::Output>>,
-    ) -> NextStep {
-        if let Err(err) = cqe_result {
-            output_channel.send(Err(err.context(format!("{self:?}"))));
-        }
-        self.process_opcode_and_submit_next_step(
-            idx_and_opcode,
-            cqe_result,
-            local_uring_submission_queue,
-            local_worker_queue,
-            output_channel,
-        )
-    }
-
     fn process_opcode_and_submit_next_step(
         &mut self,
         idx_and_opcode: &UringUserData,
-        cqe_result: &anyhow::Result<i32>,
+        cqe_result: i32,
         local_uring_submission_queue: &mut io_uring::squeue::SubmissionQueue,
         local_worker_queue: &Worker<Operation>,
         output_channel: &mut crossbeam::channel::Sender<anyhow::Result<lsio_io::Output>>,
     ) -> NextStep;
+
+    fn maybe_send_error(
+        &self,
+        idx_and_opcode: &UringUserData,
+        cqe_result: i32,
+        output_channel: &mut crossbeam::channel::Sender<anyhow::Result<lsio_io::Output>>,
+    ) {
+        if cqe_result < 0 {
+            let nix_err = nix::Error::from_raw(-cqe_result);
+            let context = format!(
+                "{nix_err} (reported by io_uring completion queue entry (CQE)). More details: \
+                    idx_and_opcode: {idx_and_opcode:?}. cqe_result: {cqe_result}. self: {self:?}",
+            );
+            let err = Err(anyhow::Error::new(nix_err).context(context));
+            output_channel.send(err);
+        }
+    }
 }
 
 pub(crate) enum NextStep {

@@ -28,7 +28,7 @@ impl UringOperation for Close {
     fn process_opcode_and_submit_next_step(
         &mut self,
         idx_and_opcode: &crate::user_data::UringUserData,
-        _cqe_result: &anyhow::Result<i32>,
+        _cqe_result: i32,
         _local_uring_submission_queue: &mut io_uring::squeue::SubmissionQueue,
         _local_worker_queue: &crossbeam::deque::Worker<crate::operation::Operation>,
         _output_channel: &mut crossbeam::channel::Sender<anyhow::Result<lsio_io::Output>>,

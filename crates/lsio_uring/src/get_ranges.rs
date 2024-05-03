@@ -72,17 +72,17 @@ impl UringOperation for GetRanges {
     fn process_opcode_and_submit_next_step(
         &mut self,
         idx_and_opcode: &crate::user_data::UringUserData,
-        cqe_result: &anyhow::Result<i32>,
-        local_uring_submission_queue: &mut io_uring::squeue::SubmissionQueue,
+        cqe_result: i32,
+        _local_uring_submission_queue: &mut io_uring::squeue::SubmissionQueue,
         local_worker_queue: &crossbeam::deque::Worker<crate::operation::Operation>,
-        output_channel: &mut crossbeam::channel::Sender<anyhow::Result<lsio_io::Output>>,
+        _output_channel: &mut crossbeam::channel::Sender<anyhow::Result<lsio_io::Output>>,
     ) -> NextStep {
         self.n_cqes_received += 1;
-        if let Ok(cqe_result_value) = cqe_result {
+        if cqe_result >= 0 {
             match idx_and_opcode.opcode().value() {
                 io_uring::opcode::OpenAt::CODE => {
                     self.open_file_builder
-                        .set_file_descriptor(io_uring::types::Fd(*cqe_result_value));
+                        .set_file_descriptor(io_uring::types::Fd(cqe_result));
                 }
                 io_uring::opcode::Statx::CODE => {
                     unsafe {

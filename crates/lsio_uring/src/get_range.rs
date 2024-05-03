@@ -53,7 +53,7 @@ impl UringOperation for GetRange {
     fn process_opcode_and_submit_next_step(
         &mut self,
         idx_and_opcode: &UringUserData,
-        cqe_result: &anyhow::Result<i32>,
+        cqe_result: i32,
         local_uring_submission_queue: &mut io_uring::squeue::SubmissionQueue,
         // We don't use `local_worker_queue` in this example. But GetRanges will want to pump out
         // lots of GetRange ops into the `local_worker_queue`!
@@ -64,7 +64,7 @@ impl UringOperation for GetRange {
         if idx_and_opcode.opcode().value() != io_uring::opcode::Read::CODE {
             panic!("Unrecognised opcode!");
         }
-        if let Ok(_cqe_result_value) = cqe_result {
+        if cqe_result >= 0 {
             // TODO: Check we've read the correct number of bytes:
             //       Check `cqe_result_value == self.buffer.len()`.
             // TODO: Retry if we read less data than requested! See issue #100.
