@@ -51,7 +51,7 @@ impl GetRanges {
 }
 
 impl UringOperation for GetRanges {
-    fn get_first_step(
+    fn submit_first_step(
         &mut self,
         index_of_op: usize,
         local_uring_submission_queue: &mut io_uring::squeue::SubmissionQueue,
@@ -69,7 +69,7 @@ impl UringOperation for GetRanges {
         Ok(())
     }
 
-    fn process_opcode_and_get_next_step(
+    fn process_opcode_and_submit_next_step(
         &mut self,
         idx_and_opcode: &crate::user_data::UringUserData,
         cqe_result: &anyhow::Result<i32>,

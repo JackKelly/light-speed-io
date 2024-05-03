@@ -1,6 +1,6 @@
 use crossbeam::deque::Worker;
 
-use crate::{get_range::GetRange, get_ranges::GetRanges, user_data::UringUserData};
+use crate::{close::Close, get_range::GetRange, get_ranges::GetRanges, user_data::UringUserData};
 
 /// We keep a `Tracker<Operation>` in each thread to track progress of each operation:
 #[derive(Debug)]
@@ -24,7 +24,7 @@ impl Operation {
         let idx_and_opcode = UringUserData::from(cqe.user_data());
         let error_context = || format!("idx_and_opcode: {idx_and_opcode:?}. cqe: {cqe:?}");
         let cqe_result = cqe_error_to_anyhow_error(cqe.result(), error_context);
-        self.process_opcode_and_get_next_step(
+        self.process_opcode_and_submit_next_step(
             &idx_and_opcode,
             &cqe_result,
             local_uring_submission_queue,
@@ -47,17 +47,17 @@ impl Operation {
 }
 
 impl UringOperation for Operation {
-    fn get_first_step(
+    fn submit_first_step(
         &mut self,
         index_of_op: usize,
         local_uring_submission_queue: &mut io_uring::squeue::SubmissionQueue,
     ) -> Result<(), io_uring::squeue::PushError> {
         self.apply_func_to_all_inner_structs(|s| {
-            UringOperation::get_first_step(s, index_of_op, local_uring_submission_queue)
+            UringOperation::submit_first_step(s, index_of_op, local_uring_submission_queue)
         })
     }
 
-    fn process_opcode_and_get_next_step(
+    fn process_opcode_and_submit_next_step(
         &mut self,
         idx_and_opcode: &UringUserData,
         cqe_result: &anyhow::Result<i32>,
@@ -85,7 +85,7 @@ impl UringOperation for Operation {
 /// - Gain the benefits of using the typestate pattern, whilst still allowing us to keep the types
 /// in a vector. See issue #117.
 pub(crate) trait UringOperation: std::fmt::Debug {
-    fn get_first_step(
+    fn submit_first_step(
         &mut self,
         index_of_op: usize,
         local_uring_submission_queue: &mut io_uring::squeue::SubmissionQueue,
@@ -102,7 +102,7 @@ pub(crate) trait UringOperation: std::fmt::Debug {
         if let Err(err) = cqe_result {
             output_channel.send(Err(err.context(format!("{self:?}"))));
         }
-        self.process_opcode_and_get_next_step(
+        self.process_opcode_and_submit_next_step(
             idx_and_opcode,
             cqe_result,
             local_uring_submission_queue,
@@ -111,7 +111,7 @@ pub(crate) trait UringOperation: std::fmt::Debug {
         )
     }
 
-    fn process_opcode_and_get_next_step(
+    fn process_opcode_and_submit_next_step(
         &mut self,
         idx_and_opcode: &UringUserData,
         cqe_result: &anyhow::Result<i32>,
@@ -124,6 +124,7 @@ pub(crate) trait UringOperation: std::fmt::Debug {
 pub(crate) enum NextStep {
     Pending,
     Done,
+    ReplaceWith(Operation),
 }
 
 fn cqe_error_to_anyhow_error(cqe_result: i32, context: impl Fn() -> String) -> anyhow::Result<i32> {

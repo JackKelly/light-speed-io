@@ -1,4 +1,5 @@
 // mod worker;
+pub(crate) mod close;
 pub(crate) mod get_range;
 pub(crate) mod get_ranges;
 pub(crate) mod opcode;

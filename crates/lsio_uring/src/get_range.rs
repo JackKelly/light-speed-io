@@ -1,4 +1,5 @@
 use crate::{
+    close::Close,
     open_file::OpenFile,
     operation::{NextStep, Operation, UringOperation},
     sqe::build_read_range_sqe,
@@ -38,7 +39,7 @@ impl GetRange {
 
 impl UringOperation for GetRange {
     /// This method assume that the file has already been opened (by the [`GetRanges`] operation).
-    fn get_first_step(
+    fn submit_first_step(
         &mut self,
         index_of_op: usize,
         local_uring_submission_queue: &mut io_uring::squeue::SubmissionQueue,
@@ -49,21 +50,21 @@ impl UringOperation for GetRange {
                                                              // alive for longer?
     }
 
-    fn process_opcode_and_get_next_step(
+    fn process_opcode_and_submit_next_step(
         &mut self,
         idx_and_opcode: &UringUserData,
         cqe_result: &anyhow::Result<i32>,
         local_uring_submission_queue: &mut io_uring::squeue::SubmissionQueue,
         // We don't use `local_worker_queue` in this example. But GetRanges will want to pump out
         // lots of GetRange ops into the `local_worker_queue`!
-        local_worker_queue: &Worker<Operation>,
+        _local_worker_queue: &Worker<Operation>,
         output_channel: &mut crossbeam::channel::Sender<anyhow::Result<Output>>,
     ) -> NextStep {
         // Check that the opcode of the CQE is what we expected:
         if idx_and_opcode.opcode().value() != io_uring::opcode::Read::CODE {
             panic!("Unrecognised opcode!");
         }
-        if let Ok(cqe_result_value) = cqe_result {
+        if let Ok(_cqe_result_value) = cqe_result {
             // TODO: Check we've read the correct number of bytes:
             //       Check `cqe_result_value == self.buffer.len()`.
             // TODO: Retry if we read less data than requested! See issue #100.
@@ -72,12 +73,26 @@ impl UringOperation for GetRange {
                 buffer: self.buffer.take().unwrap(),
                 user_data: self.user_data,
             })));
-
-            // Check if it's time to close the file:
-            if Arc::strong_count(&self.file) == 1 {
-                local_worker_queue.push(Operation::Close(Close::new(self.file.file_descriptor())));
-            }
         };
-        NextStep::Done
+        // Check if it's time to close the file:
+        match Arc::try_unwrap(self.file) {
+            Ok(file) => {
+                // `Arc::try_unwrap` returns `Ok<T>` if the Arc has exactly one strong reference.
+                // In our case, that means that we're the last operation on this file, so it's time
+                // to close this file.
+                let mut close_op = Close::new(file);
+                close_op
+                    .submit_first_step(
+                        idx_and_opcode.index_of_op() as _,
+                        local_uring_submission_queue,
+                    )
+                    .unwrap();
+                NextStep::ReplaceWith(Operation::Close(close_op))
+            }
+            Err(file) => {
+                self.file = file;
+                NextStep::Done
+            }
+        }
     }
 }

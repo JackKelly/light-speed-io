@@ -117,6 +117,8 @@ pub(crate) fn build_read_range_sqe(
     (read_op, buffer)
 }
 
+/// # Documentation about the `close` operation:
+/// - https://man7.org/linux/man-pages/man2/close.2.html
 pub(crate) fn build_close_sqe(
     index_of_op: usize,
     file_descriptor: io_uring::types::Fd,
