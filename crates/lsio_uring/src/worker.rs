@@ -1,65 +1,55 @@
-use io_uring::cqueue;
-use io_uring::squeue;
-use io_uring::IoUring;
-use std::collections::VecDeque;
-use std::sync::mpsc::TryRecvError;
-use std::sync::mpsc::{Receiver, RecvError};
+use std::iter;
 
-use crate::object_store_adapter::OpAndOutputChan;
-use crate::tracker::Tracker;
-use crate::{operation, uring};
+use crossbeam::deque;
+use io_uring::{cqueue, squeue};
 
-const MAX_FILES_TO_REGISTER: usize = 16;
-const MAX_ENTRIES_PER_CHAIN: usize = 2; // Maximum number of io_uring entries per io_uring chain.
-const SQ_RING_SIZE: usize = MAX_FILES_TO_REGISTER * MAX_ENTRIES_PER_CHAIN; // TODO: Allow the user to configure SQ_RING_SIZE.
+use crate::{
+    operation::{NextStep, Operation},
+    tracker::Tracker,
+};
 
-pub struct Worker {
-    ring: IoUring,
-    n_files_registered: usize,
+const MAX_ENTRIES_AT_ONCE: usize = 2;
+const SQ_RING_SIZE: usize = 32;
 
-    // These are the `squeue::Entry`s generated within this thread.
-    // Each inner `Vec<Entry>` will be submitted in one go. Each chain of linked entries
-    // must be in its own inner `Vec<Entry>`.
-    internal_op_queue: VecDeque<Vec<squeue::Entry>>,
+pub struct UringWorker<'a> {
+    uring: io_uring::IoUring,
+    ops_in_flight: Tracker<Operation>,
 
-    // These are the tasks that the user submits via `rx`.
-    user_tasks_in_flight: Tracker<Box<dyn uring::Operation + Send>>,
+    // Queues for work stealing
+    global_queue: &'a deque::Injector<Operation>,
+    local_queue: deque::Worker<Operation>,
+    stealers: &'a [deque::Stealer<Operation>],
 }
 
-impl Worker {
-    #[allow(clippy::assertions_on_constants)]
-    pub fn new() -> Self {
-        assert!(MAX_ENTRIES_PER_CHAIN < SQ_RING_SIZE);
+impl<'a> UringWorker<'a> {
+    pub fn new(
+        global_queue: &'a deque::Injector<Operation>,
+        local_queue: deque::Worker<Operation>,
+        stealers: &'a [deque::Stealer<Operation>],
+    ) -> Self {
+        assert!(MAX_ENTRIES_AT_ONCE < SQ_RING_SIZE);
 
-        let ring: IoUring<squeue::Entry, cqueue::Entry> = io_uring::IoUring::builder()
-            .setup_sqpoll(1000) // The kernel sqpoll thread will sleep after this many milliseconds.
+        let ring: io_uring::IoUring<squeue::Entry, cqueue::Entry> = io_uring::IoUring::builder()
             // TODO: Allow the user to decide whether sqpoll is used.
+            .setup_sqpoll(1000) // The kernel sqpoll thread will sleep after this many milliseconds.
             .build(SQ_RING_SIZE as _)
             .expect("Failed to initialise io_uring.");
 
         assert_eq!(ring.params().cq_entries(), ring.params().sq_entries() * 2);
 
-        // Register "fixed" file descriptors, for use in chaining SQ entries.
-        // io_uring supports a max of 16 registered ring descriptors. See:
-        // https://manpages.debian.org/unstable/liburing-dev/io_uring_register.2.en.html#IORING_REGISTER_RING_FDS
-        ring.submitter()
-            .register_files_sparse(MAX_FILES_TO_REGISTER as _)
-            .expect("Failed to register files!");
-
         Self {
-            ring,
-            n_files_registered: 0,
-            internal_op_queue: VecDeque::with_capacity(SQ_RING_SIZE),
-            user_tasks_in_flight: Tracker::new(SQ_RING_SIZE),
+            uring: ring,
+            ops_in_flight: Tracker::new(SQ_RING_SIZE),
+            global_queue,
+            local_queue,
+            stealers,
         }
     }
 
     /// The main loop for the thread.
-    pub(crate) fn worker_thread_func(&mut self, mut rx: Receiver<OpAndOutputChan>) {
+    pub(crate) fn worker_thread_func(&mut self) {
         loop {
-            // The internal queue always takes precedence over the injector queue.
-            self.move_entries_from_internal_queue_to_uring_sq();
-
+            let op = self.find_op();
             // If there's space in io_uring's SQ, then add SQEs from the injector queue:
             if self
                 .move_entries_from_injector_queue_to_uring_sq(&mut rx)
@@ -71,7 +61,28 @@ impl Worker {
             self.submit_and_maybe_wait();
             self.process_uring_cq();
         }
-        assert!(self.user_tasks_in_flight.is_empty());
+        assert!(self.ops_in_flight.is_empty());
+    }
+
+    fn find_op(&mut self) -> Option<Operation> {
+        // Adapted from the example code here:
+        // https://docs.rs/crossbeam-deque/latest/crossbeam_deque/#examples
+
+        // Pop a task from the local queue, if not empty.
+        self.local_queue.pop().or_else(|| {
+            // Otherwise, we need to look for a task elsewhere.
+            iter::repeat_with(|| {
+                // Try stealing a batch of tasks from the global queue.
+                self.global_queue
+                    .steal_batch_and_pop(&self.local_queue)
+                    // Or try stealing a task from one of the other threads.
+                    .or_else(|| self.stealers.iter().map(|s| s.steal()).collect())
+            })
+            // Loop while no task was stolen and any steal operation needs to be retried.
+            .find(|s| !s.is_retry())
+            // Extract the stolen task, if there is one.
+            .and_then(|s| s.success())
+        })
     }
 
     /// Keep io_uring's submission queue topped up from this thread's internal queue.
@@ -82,7 +93,7 @@ impl Worker {
                 None => break,
                 Some(entries) => {
                     unsafe {
-                        self.ring
+                        self.uring
                             .submission()
                             .push_multiple(entries.as_slice())
                             .unwrap()
@@ -100,7 +111,7 @@ impl Worker {
         // TODO: The `n_files_registered < MAX_FILES_TO_REGISTER` check is only appropriate while
         // Operations are only ever `get` Operations.
         while !self.uring_is_full() && self.n_files_registered < MAX_FILES_TO_REGISTER {
-            let op = if self.user_tasks_in_flight.is_empty() {
+            let op = if self.ops_in_flight.is_empty() {
                 // There are no tasks in flight in io_uring, so all that's
                 // left to do is to block and wait for more `Operations` from the user.
                 match rx.recv() {
@@ -123,7 +134,7 @@ impl Worker {
             };
 
             // Build one or more `squeue::Entry`, submit to io_uring, and stash the op for access later.
-            let index_of_op = self.user_tasks_in_flight.get_next_index().unwrap();
+            let index_of_op = self.ops_in_flight.get_next_index().unwrap();
             let entries = match op.next_step(index_of_op) {
                 uring::NextStep::SubmitEntries {
                     entries,
@@ -137,33 +148,33 @@ impl Worker {
                 _ => panic!("next_step should only return first entries here!"),
             };
             unsafe {
-                self.ring
+                self.uring
                     .submission()
                     .push_multiple(entries.as_slice())
                     .unwrap()
             };
-            self.user_tasks_in_flight.put(index_of_op, op);
+            self.ops_in_flight.put(index_of_op, op);
         }
         Ok(())
     }
 
     fn submit_and_maybe_wait(&mut self) {
-        if self.ring.completion().is_empty() && !self.user_tasks_in_flight.is_empty() {
-            self.ring.submit_and_wait(1).unwrap();
+        if self.uring.completion().is_empty() && !self.ops_in_flight.is_empty() {
+            self.uring.submit_and_wait(1).unwrap();
         } else {
             // We need to call `ring.submit()` the first time we submit. And, if sqpoll is enabled, then
             // we also need to call `ring.submit()` to waken the kernel polling thread.
             // `ring.submit()` is basically a no-op if the kernel's sqpoll thread is still awake.
-            self.ring.submit().unwrap();
+            self.uring.submit().unwrap();
         }
     }
 
     fn process_uring_cq(&mut self) {
-        for cqe in self.ring.completion() {
+        for cqe in self.uring.completion() {
             // user_data holds the io_uring opcode in the lower 32 bits,
             // and holds the index_of_op in the upper 32 bits.
             let index_of_op = (cqe.user_data() >> 32) as usize;
-            let op = self.user_tasks_in_flight.as_mut(index_of_op).unwrap();
+            let op = self.ops_in_flight.as_mut(index_of_op).unwrap();
             op.process_cqe(cqe);
             match op.next_step(index_of_op) {
                 uring::NextStep::SubmitEntries {
@@ -179,7 +190,7 @@ impl Worker {
                 uring::NextStep::Done {
                     unregister_file: unregisters_file,
                 } => {
-                    self.user_tasks_in_flight.remove(index_of_op).unwrap();
+                    self.ops_in_flight.remove(index_of_op).unwrap();
                     if unregisters_file {
                         self.n_files_registered -= 1;
                     }
@@ -190,10 +201,10 @@ impl Worker {
     }
 
     fn sq_len_plus_cq_len(&self) -> usize {
-        unsafe { self.ring.submission_shared().len() + self.ring.completion_shared().len() }
+        unsafe { self.uring.submission_shared().len() + self.uring.completion_shared().len() }
     }
 
     fn uring_is_full(&self) -> bool {
-        self.sq_len_plus_cq_len() >= SQ_RING_SIZE - MAX_ENTRIES_PER_CHAIN
+        self.sq_len_plus_cq_len() >= SQ_RING_SIZE - MAX_ENTRIES_AT_ONCE
     }
 }
