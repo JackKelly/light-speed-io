@@ -106,6 +106,9 @@ pub(crate) trait UringOperation: std::fmt::Debug {
         output_channel: &mut crossbeam::channel::Sender<anyhow::Result<lsio_io::Output>>,
     ) {
         if cqe_result < 0 {
+            // TODO: We probably want a custom Error struct (or enum?) which has machine-readable
+            // fields for filename, byte_range(s), user_data, error code, opcode. But this
+            // `anyhow::Error` will do for now.
             let nix_err = nix::Error::from_raw(-cqe_result);
             let context = format!(
                 "{nix_err} (reported by io_uring completion queue entry (CQE)). More details: \
