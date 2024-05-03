@@ -89,7 +89,8 @@ impl UringOperation for GetRanges {
             };
         };
 
-        if self.n_cqes_received >= N_CQES_EXPECTED {
+        assert!(self.n_cqes_received <= N_CQES_EXPECTED);
+        if self.n_cqes_received == N_CQES_EXPECTED {
             if self.open_file_builder.is_ready() {
                 self.submit_get_range_ops(local_worker_queue);
                 NextStep::Done
