@@ -51,7 +51,7 @@ impl UringOperation for GetRange {
     }
 
     fn process_opcode_and_submit_next_step(
-        &mut self,
+        mut self,
         idx_and_opcode: &UringUserData,
         cqe_result: i32,
         local_uring_submission_queue: &mut io_uring::squeue::SubmissionQueue,
@@ -69,10 +69,12 @@ impl UringOperation for GetRange {
             //       Check `cqe_result_value == self.buffer.len()`.
             // TODO: Retry if we read less data than requested! See issue #100.
 
-            output_channel.send(Ok(Output::Chunk(Chunk {
-                buffer: self.buffer.take().unwrap(),
-                user_data: self.user_data,
-            })));
+            output_channel
+                .send(Ok(Output::Chunk(Chunk {
+                    buffer: self.buffer.take().unwrap(),
+                    user_data: self.user_data,
+                })))
+                .unwrap();
         };
         // Check if it's time to close the file:
         match Arc::try_unwrap(self.file) {

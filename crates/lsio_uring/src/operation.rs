@@ -11,11 +11,8 @@ pub(crate) enum Operation {
 }
 
 impl Operation {
-    /// If io_uring reports an error, then this function will return an `std::io::Error` with the
-    /// context set twice: First to the `Operation`, and then to the `NextStep`.
     pub(crate) fn process_cqe_and_get_next_step(
-        &mut self,
-        index_of_op: usize,
+        self,
         cqe: &io_uring::cqueue::Entry,
         local_uring_submission_queue: &mut io_uring::squeue::SubmissionQueue,
         local_worker_queue: &Worker<Operation>,
@@ -56,7 +53,7 @@ impl UringOperation for Operation {
     }
 
     fn process_opcode_and_submit_next_step(
-        &mut self,
+        mut self,
         idx_and_opcode: &UringUserData,
         cqe_result: i32,
         local_uring_submission_queue: &mut io_uring::squeue::SubmissionQueue,
@@ -65,15 +62,35 @@ impl UringOperation for Operation {
     ) -> NextStep {
         self.apply_func_to_all_inner_structs(|s| {
             UringOperation::maybe_send_error(s, idx_and_opcode, cqe_result, output_channel);
-            UringOperation::process_opcode_and_submit_next_step(
-                s,
+        });
+
+        // We can't use `apply_func_to_all_inner_structs` for
+        // `UringOperation::process_opcode_and_submit_next_step` because it takes ownership of `self`.
+        use Operation::*;
+        match self {
+            GetRanges(s) => s.process_opcode_and_submit_next_step(
                 idx_and_opcode,
                 cqe_result,
                 local_uring_submission_queue,
                 local_worker_queue,
                 output_channel,
-            )
-        })
+            ),
+            GetRange(s) => s.process_opcode_and_submit_next_step(
+                idx_and_opcode,
+                cqe_result,
+                local_uring_submission_queue,
+                local_worker_queue,
+                output_channel,
+            ),
+
+            Close(s) => s.process_opcode_and_submit_next_step(
+                idx_and_opcode,
+                cqe_result,
+                local_uring_submission_queue,
+                local_worker_queue,
+                output_channel,
+            ),
+        }
     }
 }
 
@@ -91,7 +108,7 @@ pub(crate) trait UringOperation: std::fmt::Debug {
     ) -> Result<(), io_uring::squeue::PushError>;
 
     fn process_opcode_and_submit_next_step(
-        &mut self,
+        self,
         idx_and_opcode: &UringUserData,
         cqe_result: i32,
         local_uring_submission_queue: &mut io_uring::squeue::SubmissionQueue,
@@ -115,13 +132,13 @@ pub(crate) trait UringOperation: std::fmt::Debug {
                     idx_and_opcode: {idx_and_opcode:?}. cqe_result: {cqe_result}. self: {self:?}",
             );
             let err = Err(anyhow::Error::new(nix_err).context(context));
-            output_channel.send(err);
+            output_channel.send(err).unwrap();
         }
     }
 }
 
 pub(crate) enum NextStep {
-    Pending,
+    Pending(Operation), // Return Self
     Done,
     ReplaceWith(Operation),
 }

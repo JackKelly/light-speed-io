@@ -82,13 +82,17 @@ pub(crate) fn build_read_range_sqe(
 
     let aligned_start_offset = (start_offset / ALIGN) * ALIGN;
 
-    let buf_len = end_offset - aligned_start_offset;
-    assert!(buf_len > 0);
+    let mut buffer;
+    {
+        let buf_len = end_offset - aligned_start_offset;
+        assert!(buf_len > 0);
 
-    // Allocate vector. If `buf_len` is not exactly divisible by ALIGN, then
-    // `AlignedBytesMut::new` will extend the length until it is aligned.
-    let mut buffer = AlignedBytesMut::new(buf_len as usize, ALIGN.try_into().unwrap());
-    drop(buf_len); // From now on, use `buffer.len()` as the correct length!
+        // Allocate vector. If `buf_len` is not exactly divisible by ALIGN, then
+        // `AlignedBytesMut::new` will extend the length until it is aligned.
+        buffer = AlignedBytesMut::new(buf_len as usize, ALIGN.try_into().unwrap());
+        // From now on, use `buffer.len()` as the correct length!
+        // This code is in its own scope so that `buf_len` cannot be used in subsequent code.
+    }
 
     // Prepare the "read" opcode:
     let read_op = io_uring::opcode::Read::new(

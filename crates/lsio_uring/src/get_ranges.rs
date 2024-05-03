@@ -39,7 +39,7 @@ impl GetRanges {
     // io_uring can't process multiple range requests in a single op. So, once we've opened the
     // file and gotten its metadata, we need to submit one `Operation::GetRange` per byte range.
     fn submit_get_range_ops(
-        &self,
+        self,
         local_worker_queue: &crossbeam::deque::Worker<crate::operation::Operation>,
     ) {
         let file = Arc::new(self.open_file_builder.build());
@@ -66,7 +66,7 @@ impl UringOperation for GetRanges {
     }
 
     fn process_opcode_and_submit_next_step(
-        &mut self,
+        mut self,
         idx_and_opcode: &crate::user_data::UringUserData,
         cqe_result: i32,
         _local_uring_submission_queue: &mut io_uring::squeue::SubmissionQueue,
@@ -99,7 +99,8 @@ impl UringOperation for GetRanges {
                 NextStep::Done
             }
         } else {
-            NextStep::Pending
+            // We're expecting one more CQE.
+            NextStep::Pending(Operation::GetRanges(self))
         }
     }
 }

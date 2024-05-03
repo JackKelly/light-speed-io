@@ -26,7 +26,7 @@ impl UringOperation for Close {
     }
 
     fn process_opcode_and_submit_next_step(
-        &mut self,
+        self,
         idx_and_opcode: &crate::user_data::UringUserData,
         _cqe_result: i32,
         _local_uring_submission_queue: &mut io_uring::squeue::SubmissionQueue,
