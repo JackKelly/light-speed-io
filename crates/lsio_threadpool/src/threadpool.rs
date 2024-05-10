@@ -23,7 +23,7 @@ fn threadpool<T, I>(
     keep_running: &AtomicBool,
     task: T,
 ) where
-    T: FnMut(WorkStealer<I>, &AtomicBool, mpsc::Sender<ThreadPoolCommand>) + Send + Clone,
+    T: FnMut(WorkStealer<I>, &AtomicBool) + Send + Clone,
     I: Send,
 {
     let (tx, rx) = mpsc::channel::<ThreadPoolCommand>();
@@ -64,12 +64,15 @@ fn threadpool<T, I>(
 
         // Worker threads:
         for i in 0..n_threads {
-            let work_stealer =
-                WorkStealer::new(injector, local_queues[i].take().unwrap(), &stealers);
+            let work_stealer = WorkStealer::new(
+                tx.clone(),
+                injector,
+                local_queues[i].take().unwrap(),
+                &stealers,
+            );
 
-            let tx_clone = tx.clone();
             let mut task_clone = task.clone();
-            s.spawn(move || (task_clone)(work_stealer, keep_running, tx_clone));
+            s.spawn(move || (task_clone)(work_stealer, keep_running));
         }
 
         drop(tx);
@@ -97,9 +100,7 @@ mod tests {
                     N_THREADS,
                     &injector,
                     &keep_running,
-                    move |mut work_stealer: WorkStealer<usize>,
-                          keep_running: &AtomicBool,
-                          _tx: mpsc::Sender<ThreadPoolCommand>| {
+                    move |mut work_stealer: WorkStealer<usize>, keep_running: &AtomicBool| {
                         while keep_running.load(atomic::Ordering::Relaxed) {
                             match work_stealer.find_task() {
                                 Some(task) => {

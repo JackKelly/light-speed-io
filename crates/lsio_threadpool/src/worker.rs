@@ -1,12 +1,16 @@
-use std::iter;
+use std::{iter, sync::mpsc, thread};
 
 use crossbeam::deque;
+
+use crate::threadpool::ThreadPoolCommand;
 
 /// This object doesn't implement the actual worker loop.
 pub struct WorkStealer<'a, T>
 where
     T: Send,
 {
+    tx_to_threadpool: mpsc::Sender<ThreadPoolCommand>,
+
     /// Queues for implementing work-stealing:
     injector: &'a deque::Injector<T>,
     local_queue: deque::Worker<T>,
@@ -18,11 +22,13 @@ where
     T: Send,
 {
     pub fn new(
+        tx_to_threadpool: mpsc::Sender<ThreadPoolCommand>,
         injector: &'a deque::Injector<T>,
         local_queue: deque::Worker<T>,
         stealers: &'a [deque::Stealer<T>],
     ) -> Self {
         Self {
+            tx_to_threadpool,
             injector,
             local_queue,
             stealers,
@@ -47,5 +53,20 @@ where
             // Extract the stolen task, if there is one.
             .and_then(|s| s.success())
         })
+    }
+
+    pub fn park(&self) {
+        self.tx_to_threadpool
+            .send(ThreadPoolCommand::ThreadIsParked(thread::current()))
+            .unwrap();
+        thread::park();
+    }
+
+    pub fn unpark_other_threads(&self) {
+        let n = self.local_queue.len();
+        if n > 1 {
+            self.tx_to_threadpool
+                .send(ThreadPoolCommand::WakeAtMostNThreads(n as _));
+        }
     }
 }
