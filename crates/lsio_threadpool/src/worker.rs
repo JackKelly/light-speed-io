@@ -105,6 +105,7 @@ mod tests {
         let stop = AtomicBool::new(false);
         let (channel_to_threadpool, _threadpool_rx) = mpsc::channel();
         const N_THREADS: usize = 4;
+        const N_TASKS: usize = N_THREADS * 10;
 
         // Create work stealing queues:
         let global_queue: deque::Injector<usize> = deque::Injector::new();
@@ -117,6 +118,8 @@ mod tests {
             .collect();
 
         thread::scope(|s| {
+            let (output_tx, output_rx) = mpsc::channel();
+
             // Spawn N_THREADS threads
             for i in 0..N_THREADS {
                 let mut work_stealer = WorkStealer::new(
@@ -127,11 +130,13 @@ mod tests {
                     &stealers,
                 );
 
+                let my_output_tx = output_tx.clone();
                 s.spawn(move || {
                     while !work_stealer.stop() {
                         match work_stealer.find_task() {
                             Some(task) => {
-                                println!("thread: {:?}; task:{task}", thread::current().id())
+                                println!("thread: {:?}; task:{task}", thread::current().id());
+                                my_output_tx.send(task).unwrap();
                             }
                             None => continue,
                         };
@@ -139,15 +144,24 @@ mod tests {
                 });
             }
 
+            drop(output_tx);
+
             // Push "tasks" onto the global queue:
-            for i in 0..N_THREADS * 10 {
+            for i in 0..N_TASKS {
                 global_queue.push(i);
             }
 
             // Kill all the worker threads after a little while:
-            s.spawn(|| {
-                thread::sleep(Duration::from_millis(100));
-                stop.store(true, atomic::Ordering::Relaxed);
+            let stop_ref = &stop;
+            s.spawn(move || {
+                let mut outputs = Vec::with_capacity(N_TASKS);
+                for _ in 0..N_TASKS {
+                    outputs.push(output_rx.recv().unwrap());
+                }
+                stop_ref.store(true, atomic::Ordering::Relaxed);
+                outputs.sort();
+                assert!(outputs.into_iter().eq(0..N_TASKS));
+                assert!(output_rx.try_recv().is_err());
             });
         });
     }
