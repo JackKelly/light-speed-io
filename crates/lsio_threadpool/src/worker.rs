@@ -17,7 +17,7 @@ use crate::threadpool::ThreadPoolCommand::{self, *};
 /// helper methods in the `WorkerThread`.
 pub struct WorkerThread<'a, T> {
     /// Shared across threads. Set to `true` to stop threads gracefully.
-    stop: AtomicBool,
+    stop: &'a AtomicBool,
 
     /// Send instructions to the `ThreadPool`.
     channel_to_threadpool: mpsc::Sender<ThreadPoolCommand>,
@@ -30,16 +30,17 @@ pub struct WorkerThread<'a, T> {
 
 impl<'a, T> WorkerThread<'a, T> {
     pub fn new(
-        stop: AtomicBool,
-        threadpool_chan: mpsc::Sender<ThreadPoolCommand>,
+        stop: &'a AtomicBool,
+        channel_to_threadpool: mpsc::Sender<ThreadPoolCommand>,
         global_queue: &'a deque::Injector<T>,
+        local_queue: deque::Worker<T>,
         stealers: &'a [deque::Stealer<T>],
     ) -> Self {
         Self {
-            channel_to_threadpool: threadpool_chan,
             stop,
+            channel_to_threadpool,
             global_queue,
-            local_queue: deque::Worker::new_fifo(),
+            local_queue,
             stealers,
         }
     }
@@ -48,9 +49,9 @@ impl<'a, T> WorkerThread<'a, T> {
         self.stop.load(atomic::Ordering::Relaxed)
     }
 
-    pub fn maybe_wake_other_threads(&self) {
-        if self.local_queue.len() > 1 {
-            let n = self.local_queue.len();
+    pub fn ask_to_wake_other_threads(&self) {
+        let n = self.local_queue.len();
+        if n > 1 {
             self.channel_to_threadpool
                 .send(WakeAtMostNThreads(n as _))
                 .unwrap();
@@ -69,6 +70,8 @@ impl<'a, T> WorkerThread<'a, T> {
         global: &deque::Injector<T>,
         stealers: &[deque::Stealer<T>],
     ) -> Option<T> {
+        // Adapted from https://docs.rs/crossbeam-deque/latest/crossbeam_deque/#examples
+
         // Pop a task from the local queue, if not empty.
         local.pop().or_else(|| {
             // Otherwise, we need to look for a task elsewhere.
