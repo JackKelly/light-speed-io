@@ -55,6 +55,11 @@ where
         })
     }
 
+    pub fn push(&self, task: T) {
+        self.local_queue.push(task);
+        self.maybe_unpark_other_threads();
+    }
+
     pub fn park(&self) {
         self.tx_to_threadpool
             .send(ThreadPoolCommand::ThreadIsParked(thread::current()))
@@ -62,11 +67,13 @@ where
         thread::park();
     }
 
-    pub fn unpark_other_threads(&self) {
+    pub fn maybe_unpark_other_threads(&self) {
         let n = self.local_queue.len();
+        // TODO: Also check `at_least_one_thread_is_parked`.
         if n > 1 {
             self.tx_to_threadpool
-                .send(ThreadPoolCommand::WakeAtMostNThreads(n as _));
+                .send(ThreadPoolCommand::WakeAtMostNThreads(n as _))
+                .unwrap();
         }
     }
 }

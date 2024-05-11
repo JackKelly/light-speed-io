@@ -2,7 +2,7 @@ use std::{
     collections::VecDeque,
     sync::{
         atomic::{self, AtomicBool},
-        mpsc,
+        mpsc, Arc,
     },
     thread::{self, Thread},
     time::Duration,
@@ -17,7 +17,7 @@ pub(crate) enum ThreadPoolCommand {
     ThreadIsParked(Thread),
 }
 
-fn threadpool<T, I>(
+pub fn threadpool<T, I>(
     n_threads: usize,
     injector: &deque::Injector<I>,
     keep_running: &AtomicBool,
@@ -135,5 +135,53 @@ mod tests {
                 assert!(output_rx.try_recv().is_err());
             });
         });
+    }
+}
+
+// New design ideas:
+pub struct ThreadPool<T> {
+    injector: deque::Injector<T>,
+    keep_running: AtomicBool,
+    chan_to_park_manager: mpsc::Sender<ThreadPoolCommand>,
+    at_least_one_thread_is_parked: AtomicBool,
+}
+
+impl<T> ThreadPool<T> {
+    /// Starts threadpool. Each thread will run `task` exactly once.
+    /// Typically, `task` will begin with any necessary setup (e.g. instantiating objects for that
+    /// thread) and will then enter a loop, something like:
+    /// `while keep_running.load(Relaxed) { /* do work */ }`.
+    /// `new` also starts a separate thread which is responsible for tracking which threads are
+    /// parked (and passes that thread references to keep_running and
+    /// at_least_one_thread_is_parked).
+    pub fn new<OP>(n_threads: usize, op: OP) -> Self {
+        todo!();
+        // But how to launch worker threads (which might last longer than `ThreadPool`),
+        // whilst still sharing access to `injector` etc.? I think there are two approaches:
+        // 1) Move the relevant objects into a single `launcher` thread's stack. And then call
+        //    `thread::scope` from the `launcher` thread.
+        // 2) Wrap all `ThreadPool` members (except chan_to_park_manager) in `Arc`s.
+        //    And clone these when we share with other threads. This does require some heap
+        //    allocations. But only once (at setup), and only a tiny number (the number of
+        //    threads), so I think it's probably best to use `Arc`s. This also makes it easy to
+        //    `clone` entire ThreadPool objects, to share between threads.
+    }
+
+    pub fn push(&self, task: T) {
+        self.injector.push(task);
+        if self
+            .at_least_one_thread_is_parked
+            .load(atomic::Ordering::Relaxed)
+        {
+            self.chan_to_park_manager
+                .send(ThreadPoolCommand::WakeAtMostNThreads(1))
+                .unwrap();
+        }
+    }
+}
+
+impl<T> Drop for ThreadPool<T> {
+    fn drop(&mut self) {
+        self.keep_running.store(false, atomic::Ordering::Relaxed);
     }
 }
