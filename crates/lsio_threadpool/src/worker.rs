@@ -1,35 +1,36 @@
-use std::{iter, sync::mpsc, thread};
+use std::{
+    iter,
+    sync::{atomic::Ordering::Relaxed, Arc},
+    thread,
+};
 
 use crossbeam::deque;
 
-use crate::threadpool::ThreadPoolCommand;
+use crate::threadpool::{ParkManagerCommand, Shared};
 
 /// This object doesn't implement the actual worker loop.
-pub struct WorkStealer<'a, T>
+pub struct WorkerThread<T>
 where
     T: Send,
 {
-    tx_to_threadpool: mpsc::Sender<ThreadPoolCommand>,
+    shared: Shared<T>,
 
     /// Queues for implementing work-stealing:
-    injector: &'a deque::Injector<T>,
     local_queue: deque::Worker<T>,
-    stealers: &'a [deque::Stealer<T>],
+    stealers: Arc<Vec<deque::Stealer<T>>>,
 }
 
-impl<'a, T> WorkStealer<'a, T>
+impl<T> WorkerThread<T>
 where
     T: Send,
 {
     pub fn new(
-        tx_to_threadpool: mpsc::Sender<ThreadPoolCommand>,
-        injector: &'a deque::Injector<T>,
+        shared: Shared<T>,
         local_queue: deque::Worker<T>,
-        stealers: &'a [deque::Stealer<T>],
+        stealers: Arc<Vec<deque::Stealer<T>>>,
     ) -> Self {
         Self {
-            tx_to_threadpool,
-            injector,
+            shared,
             local_queue,
             stealers,
         }
@@ -43,7 +44,8 @@ where
             // Otherwise, we need to look for a task elsewhere.
             iter::repeat_with(|| {
                 // Try stealing a batch of tasks from the global queue.
-                self.injector
+                self.shared
+                    .injector
                     .steal_batch_and_pop(&self.local_queue)
                     // Or try stealing a task from one of the other threads.
                     .or_else(|| self.stealers.iter().map(|s| s.steal()).collect())
@@ -61,8 +63,9 @@ where
     }
 
     pub fn park(&self) {
-        self.tx_to_threadpool
-            .send(ThreadPoolCommand::ThreadIsParked(thread::current()))
+        self.shared
+            .chan_to_park_manager
+            .send(ParkManagerCommand::ThreadIsParked(thread::current()))
             .unwrap();
         thread::park();
     }
@@ -70,9 +73,10 @@ where
     pub fn maybe_unpark_other_threads(&self) {
         let n = self.local_queue.len();
         // TODO: Also check `at_least_one_thread_is_parked`.
-        if n > 1 {
-            self.tx_to_threadpool
-                .send(ThreadPoolCommand::WakeAtMostNThreads(n as _))
+        if self.shared.at_least_one_thread_is_parked.load(Relaxed) && n > 1 {
+            self.shared
+                .chan_to_park_manager
+                .send(ParkManagerCommand::WakeAtMostNThreads(n as _))
                 .unwrap();
         }
     }

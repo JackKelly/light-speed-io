@@ -1,82 +1,203 @@
 use std::{
     collections::VecDeque,
     sync::{
-        atomic::{self, AtomicBool},
-        mpsc, Arc,
+        atomic::{self, AtomicBool, Ordering::Relaxed},
+        mpsc::{self, RecvError},
+        Arc,
     },
-    thread::{self, Thread},
-    time::Duration,
+    thread::{self, JoinHandle, Thread},
 };
 
 use crossbeam::deque;
 
-use crate::worker::WorkStealer;
+use crate::worker::WorkerThread;
 
-pub(crate) enum ThreadPoolCommand {
+pub(crate) enum ParkManagerCommand {
     WakeAtMostNThreads(u32),
     ThreadIsParked(Thread),
+    Stop,
 }
 
-pub fn threadpool<T, I>(
-    n_threads: usize,
-    injector: &deque::Injector<I>,
-    keep_running: &AtomicBool,
-    task: T,
-) where
-    T: FnMut(WorkStealer<I>, &AtomicBool) + Send + Clone,
-    I: Send,
-{
-    let (tx, rx) = mpsc::channel::<ThreadPoolCommand>();
+struct ParkManager {
+    rx: mpsc::Receiver<ParkManagerCommand>,
+    at_least_one_thread_is_parked: Arc<AtomicBool>,
+    parked_threads: VecDeque<Thread>,
+}
 
-    // Create work stealing queues:
-    let mut local_queues: Vec<Option<deque::Worker<I>>> = (0..n_threads)
-        .map(|_| Some(deque::Worker::new_fifo()))
-        .collect();
-    let stealers: Vec<_> = local_queues
-        .iter()
-        .map(|local_queue| local_queue.as_ref().unwrap().stealer())
-        .collect();
+impl ParkManager {
+    pub(crate) fn start(
+        rx: mpsc::Receiver<ParkManagerCommand>,
+        at_least_one_thread_is_parked: Arc<AtomicBool>,
+        n_worker_threads: usize,
+    ) -> JoinHandle<()> {
+        let mut park_manager = Self {
+            rx,
+            at_least_one_thread_is_parked,
+            parked_threads: VecDeque::with_capacity(n_worker_threads),
+        };
+        thread::spawn(move || park_manager.main_loop())
+    }
 
-    thread::scope(|s| {
-        // Manager thread:
-        s.spawn(move || {
-            let mut parked_threads = VecDeque::<Thread>::with_capacity(n_threads);
-            while keep_running.load(atomic::Ordering::Relaxed) {
-                match rx.recv_timeout(Duration::from_millis(100)) {
-                    Ok(command) => match command {
-                        ThreadPoolCommand::ThreadIsParked(thread) => {
-                            parked_threads.push_back(thread);
-                        }
-                        ThreadPoolCommand::WakeAtMostNThreads(n) => {
-                            for _ in 0..n {
-                                match parked_threads.pop_front() {
-                                    Some(thread) => thread.unpark(),
-                                    None => break,
-                                }
-                            }
-                        }
-                    },
-                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
-                    Err(mpsc::RecvTimeoutError::Timeout) => (),
-                }
+    fn main_loop(&mut self) {
+        use ParkManagerCommand::*;
+        loop {
+            match self.rx.recv() {
+                Ok(cmd) => match cmd {
+                    ThreadIsParked(t) => self.thread_is_parked(t),
+                    WakeAtMostNThreads(n) => self.wake_at_most_n_threads(n),
+                    Stop => break,
+                },
+                Err(RecvError) => break,
             }
-        });
+        }
+    }
 
-        // Worker threads:
-        for i in 0..n_threads {
-            let work_stealer = WorkStealer::new(
-                tx.clone(),
-                injector,
+    fn thread_is_parked(&mut self, t: Thread) {
+        self.at_least_one_thread_is_parked.store(true, Relaxed);
+        debug_assert!(!self.parked_threads.iter().any(|pt| pt.id() == t.id()));
+        self.parked_threads.push_back(t);
+    }
+
+    fn wake_at_most_n_threads(&mut self, n: u32) {
+        for _ in 0..n {
+            match self.parked_threads.pop_front() {
+                Some(thread) => thread.unpark(),
+                None => break,
+            }
+        }
+        if self.parked_threads.is_empty() {
+            self.at_least_one_thread_is_parked.store(false, Relaxed);
+        }
+    }
+}
+
+/// Shared with worker threads
+#[derive(Debug)]
+pub(crate) struct Shared<T>
+where
+    T: Send,
+{
+    pub(crate) injector: Arc<deque::Injector<T>>,
+    pub(crate) keep_running: Arc<AtomicBool>,
+    pub(crate) chan_to_park_manager: mpsc::Sender<ParkManagerCommand>,
+    pub(crate) at_least_one_thread_is_parked: Arc<AtomicBool>,
+}
+
+impl<T> Clone for Shared<T>
+where
+    T: Send,
+{
+    fn clone(&self) -> Self {
+        Self {
+            injector: Arc::clone(&self.injector),
+            keep_running: Arc::clone(&self.keep_running),
+            chan_to_park_manager: self.chan_to_park_manager.clone(),
+            at_least_one_thread_is_parked: Arc::clone(&self.at_least_one_thread_is_parked),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct ThreadPool<T>
+where
+    T: Send,
+{
+    /// thread_handles includes all the worker threads and the park manager thread:
+    thread_handles: Vec<JoinHandle<()>>,
+    shared: Shared<T>,
+}
+
+impl<T> ThreadPool<T>
+where
+    T: Send,
+{
+    /// Starts threadpool. Each thread will run `op` exactly once.
+    /// Typically, `op` will begin with any necessary setup (e.g. instantiating objects for that
+    /// thread) and will then enter a loop, something like:
+    /// `while keep_running.load(Relaxed) { /* do work */ }`.
+    /// `new` also starts a separate thread which is responsible for tracking which threads are
+    /// parked (and passes that thread references to keep_running and
+    /// at_least_one_thread_is_parked).
+    pub fn new<OP>(n_worker_threads: usize, op: OP) -> Self
+    where
+        // OP: FnMut(WorkerThread<T>) + Send + Clone,
+        OP: Fn() + Clone + Send,
+    {
+        let (chan_to_park_manager, rx_for_park_manager) = mpsc::channel();
+        let shared = Shared {
+            injector: Arc::new(deque::Injector::new()),
+            keep_running: Arc::new(AtomicBool::new(true)),
+            chan_to_park_manager,
+            at_least_one_thread_is_parked: Arc::new(AtomicBool::new(false)),
+        };
+
+        // thread_handles includes all the worker threads plus the park manager thread:
+        let mut thread_handles = Vec::with_capacity(n_worker_threads + 1);
+
+        // Spawn ParkManager thread:
+        thread_handles.push(ParkManager::start(
+            rx_for_park_manager,
+            Arc::clone(&shared.at_least_one_thread_is_parked),
+            n_worker_threads,
+        ));
+
+        // Spawn WorkerThreads:
+        // Create work stealing queues:
+        let mut local_queues: Vec<Option<deque::Worker<T>>> = (0..n_worker_threads)
+            .map(|_| Some(deque::Worker::new_fifo()))
+            .collect();
+        let stealers: Arc<Vec<_>> = Arc::new(
+            local_queues
+                .iter()
+                .map(|local_queue| local_queue.as_ref().unwrap().stealer())
+                .collect(),
+        );
+        for i in 0..n_worker_threads {
+            let work_stealer = WorkerThread::new(
+                shared.clone(),
                 local_queues[i].take().unwrap(),
-                &stealers,
+                Arc::clone(&stealers),
             );
 
-            let mut task_clone = task.clone();
-            s.spawn(move || (task_clone)(work_stealer, keep_running));
+            let op_clone = op.clone();
+            let handle = thread::spawn(move || {
+                (op_clone)();
+            });
+            thread_handles.push(handle);
         }
 
-        drop(tx);
-    });
+        Self {
+            thread_handles,
+            shared,
+        }
+    }
+
+    pub fn push(&self, task: T) {
+        self.shared.injector.push(task);
+        if self.shared.at_least_one_thread_is_parked.load(Relaxed) {
+            self.shared
+                .chan_to_park_manager
+                .send(ParkManagerCommand::WakeAtMostNThreads(1))
+                .unwrap();
+        }
+    }
+}
+
+impl<T> Drop for ThreadPool<T>
+where
+    T: Send,
+{
+    fn drop(&mut self) {
+        self.shared
+            .keep_running
+            .store(false, atomic::Ordering::Relaxed);
+        self.shared
+            .chan_to_park_manager
+            .send(ParkManagerCommand::Stop);
+        for handle in self.thread_handles.drain(..) {
+            handle.join().unwrap();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -100,7 +221,7 @@ mod tests {
                     N_THREADS,
                     &injector,
                     &keep_running,
-                    move |mut work_stealer: WorkStealer<usize>, keep_running: &AtomicBool| {
+                    move |mut work_stealer: WorkerThread<usize>, keep_running: &AtomicBool| {
                         while keep_running.load(atomic::Ordering::Relaxed) {
                             match work_stealer.find_task() {
                                 Some(task) => {
@@ -135,53 +256,5 @@ mod tests {
                 assert!(output_rx.try_recv().is_err());
             });
         });
-    }
-}
-
-// New design ideas:
-pub struct ThreadPool<T> {
-    injector: deque::Injector<T>,
-    keep_running: AtomicBool,
-    chan_to_park_manager: mpsc::Sender<ThreadPoolCommand>,
-    at_least_one_thread_is_parked: AtomicBool,
-}
-
-impl<T> ThreadPool<T> {
-    /// Starts threadpool. Each thread will run `task` exactly once.
-    /// Typically, `task` will begin with any necessary setup (e.g. instantiating objects for that
-    /// thread) and will then enter a loop, something like:
-    /// `while keep_running.load(Relaxed) { /* do work */ }`.
-    /// `new` also starts a separate thread which is responsible for tracking which threads are
-    /// parked (and passes that thread references to keep_running and
-    /// at_least_one_thread_is_parked).
-    pub fn new<OP>(n_threads: usize, op: OP) -> Self {
-        todo!();
-        // But how to launch worker threads (which might last longer than `ThreadPool`),
-        // whilst still sharing access to `injector` etc.? I think there are two approaches:
-        // 1) Move the relevant objects into a single `launcher` thread's stack. And then call
-        //    `thread::scope` from the `launcher` thread.
-        // 2) Wrap all `ThreadPool` members (except chan_to_park_manager) in `Arc`s.
-        //    And clone these when we share with other threads. This does require some heap
-        //    allocations. But only once (at setup), and only a tiny number (the number of
-        //    threads), so I think it's probably best to use `Arc`s. This also makes it easy to
-        //    `clone` entire ThreadPool objects, to share between threads.
-    }
-
-    pub fn push(&self, task: T) {
-        self.injector.push(task);
-        if self
-            .at_least_one_thread_is_parked
-            .load(atomic::Ordering::Relaxed)
-        {
-            self.chan_to_park_manager
-                .send(ThreadPoolCommand::WakeAtMostNThreads(1))
-                .unwrap();
-        }
-    }
-}
-
-impl<T> Drop for ThreadPool<T> {
-    fn drop(&mut self) {
-        self.keep_running.store(false, atomic::Ordering::Relaxed);
     }
 }
