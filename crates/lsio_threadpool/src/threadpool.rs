@@ -1,7 +1,7 @@
 use std::{
     collections::VecDeque,
     sync::{
-        atomic::{self, AtomicBool, Ordering::Relaxed},
+        atomic::{AtomicBool, Ordering::Relaxed},
         mpsc::{self, RecvError},
         Arc,
     },
@@ -35,7 +35,10 @@ impl ParkManager {
             at_least_one_thread_is_parked,
             parked_threads: VecDeque::with_capacity(n_worker_threads),
         };
-        thread::spawn(move || park_manager.main_loop())
+        thread::Builder::new()
+            .name("ParkManager".to_string())
+            .spawn(move || park_manager.main_loop())
+            .expect("Failed to spawn the ParkManager thread!")
     }
 
     fn main_loop(&mut self) {
@@ -83,6 +86,19 @@ where
     pub(crate) at_least_one_thread_is_parked: Arc<AtomicBool>,
 }
 
+impl<T> Shared<T>
+where
+    T: Send,
+{
+    pub(crate) fn unpark_at_most_n_threads(&self, n: u32) {
+        if self.at_least_one_thread_is_parked.load(Relaxed) {
+            self.chan_to_park_manager
+                .send(ParkManagerCommand::WakeAtMostNThreads(n))
+                .unwrap();
+        }
+    }
+}
+
 impl<T> Clone for Shared<T>
 where
     T: Send,
@@ -102,26 +118,24 @@ pub struct ThreadPool<T>
 where
     T: Send,
 {
-    /// thread_handles includes all the worker threads and the park manager thread:
+    /// thread_handles includes the worker threads and the ParkManager thread
     thread_handles: Vec<JoinHandle<()>>,
     shared: Shared<T>,
 }
 
 impl<T> ThreadPool<T>
 where
-    T: Send,
+    T: Send + 'static,
 {
     /// Starts threadpool. Each thread will run `op` exactly once.
     /// Typically, `op` will begin with any necessary setup (e.g. instantiating objects for that
     /// thread) and will then enter a loop, something like:
     /// `while keep_running.load(Relaxed) { /* do work */ }`.
     /// `new` also starts a separate thread which is responsible for tracking which threads are
-    /// parked (and passes that thread references to keep_running and
-    /// at_least_one_thread_is_parked).
+    /// parked
     pub fn new<OP>(n_worker_threads: usize, op: OP) -> Self
     where
-        // OP: FnMut(WorkerThread<T>) + Send + Clone,
-        OP: Fn() + Clone + Send,
+        OP: Fn(WorkerThread<T>) + Send + Clone + 'static,
     {
         let (chan_to_park_manager, rx_for_park_manager) = mpsc::channel();
         let shared = Shared {
@@ -131,7 +145,7 @@ where
             at_least_one_thread_is_parked: Arc::new(AtomicBool::new(false)),
         };
 
-        // thread_handles includes all the worker threads plus the park manager thread:
+        // thread_handles includes all the worker threads and the Park Manager.
         let mut thread_handles = Vec::with_capacity(n_worker_threads + 1);
 
         // Spawn ParkManager thread:
@@ -141,30 +155,28 @@ where
             n_worker_threads,
         ));
 
-        // Spawn WorkerThreads:
         // Create work stealing queues:
-        let mut local_queues: Vec<Option<deque::Worker<T>>> = (0..n_worker_threads)
-            .map(|_| Some(deque::Worker::new_fifo()))
+        let mut local_queues: Vec<deque::Worker<T>> = (0..n_worker_threads)
+            .map(|_| deque::Worker::new_fifo())
             .collect();
-        let stealers: Arc<Vec<_>> = Arc::new(
+        let stealers: Arc<Vec<deque::Stealer<T>>> = Arc::new(
             local_queues
                 .iter()
-                .map(|local_queue| local_queue.as_ref().unwrap().stealer())
+                .map(|local_queue| local_queue.stealer())
                 .collect(),
         );
-        for i in 0..n_worker_threads {
+
+        // Spawn worker threads:
+        thread_handles.extend((0..n_worker_threads).map(|_| {
             let work_stealer = WorkerThread::new(
                 shared.clone(),
-                local_queues[i].take().unwrap(),
+                local_queues.pop().unwrap(),
                 Arc::clone(&stealers),
             );
 
             let op_clone = op.clone();
-            let handle = thread::spawn(move || {
-                (op_clone)();
-            });
-            thread_handles.push(handle);
-        }
+            thread::spawn(move || (op_clone)(work_stealer))
+        }));
 
         Self {
             thread_handles,
@@ -174,12 +186,7 @@ where
 
     pub fn push(&self, task: T) {
         self.shared.injector.push(task);
-        if self.shared.at_least_one_thread_is_parked.load(Relaxed) {
-            self.shared
-                .chan_to_park_manager
-                .send(ParkManagerCommand::WakeAtMostNThreads(1))
-                .unwrap();
-        }
+        self.shared.unpark_at_most_n_threads(1);
     }
 }
 
@@ -188,13 +195,13 @@ where
     T: Send,
 {
     fn drop(&mut self) {
-        self.shared
-            .keep_running
-            .store(false, atomic::Ordering::Relaxed);
+        self.shared.keep_running.store(false, Relaxed);
         self.shared
             .chan_to_park_manager
-            .send(ParkManagerCommand::Stop);
+            .send(ParkManagerCommand::Stop)
+            .unwrap();
         for handle in self.thread_handles.drain(..) {
+            handle.thread().unpark();
             handle.join().unwrap();
         }
     }

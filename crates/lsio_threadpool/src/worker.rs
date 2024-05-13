@@ -24,7 +24,7 @@ impl<T> WorkerThread<T>
 where
     T: Send,
 {
-    pub fn new(
+    pub(crate) fn new(
         shared: Shared<T>,
         local_queue: deque::Worker<T>,
         stealers: Arc<Vec<deque::Stealer<T>>>,
@@ -72,12 +72,8 @@ where
 
     pub fn maybe_unpark_other_threads(&self) {
         let n = self.local_queue.len();
-        // TODO: Also check `at_least_one_thread_is_parked`.
-        if self.shared.at_least_one_thread_is_parked.load(Relaxed) && n > 1 {
-            self.shared
-                .chan_to_park_manager
-                .send(ParkManagerCommand::WakeAtMostNThreads(n as _))
-                .unwrap();
+        if n > 1 {
+            self.shared.unpark_at_most_n_threads(n as _);
         }
     }
 }
