@@ -29,7 +29,10 @@ impl<T> ThreadPool<T>
 where
     T: Send + 'static,
 {
-    /// Starts threadpool. Each thread will run `op` exactly once.
+    /// Starts a new threadpool with `n_worker_threads` threads. Also clones and runs `op` on
+    /// each thread. `op` takes one argument: a `WorkerThread<T>` which provides helpful methods
+    /// for the task.
+    ///
     /// Typically, `op` will begin with any necessary setup (e.g. instantiating objects for that
     /// thread) and will then enter a loop, something like:
     /// `while keep_running.load(Relaxed) { /* do work */ }`.
@@ -112,58 +115,45 @@ where
 #[cfg(test)]
 
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     #[test]
     fn test_threadpool() {
         const N_THREADS: usize = 4;
         const N_TASKS: usize = 32;
-        let keep_running = AtomicBool::new(true);
-        let injector = deque::Injector::<usize>::new();
 
-        thread::scope(|s| {
-            let (output_tx, output_rx) = mpsc::channel::<usize>();
+        let (output_tx, output_rx) = mpsc::channel::<usize>();
 
-            // Start threadpool of workers:
-            s.spawn(|| {
-                threadpool(
-                    N_THREADS,
-                    &injector,
-                    &keep_running,
-                    move |mut work_stealer: WorkerThread<usize>, keep_running: &AtomicBool| {
-                        while keep_running.load(atomic::Ordering::Relaxed) {
-                            match work_stealer.find_task() {
-                                Some(task) => {
-                                    println!("thread: {:?}; task:{task}", thread::current().id());
-                                    output_tx.send(task).unwrap();
-                                }
-                                None => continue,
-                            };
-                        }
-                    },
-                );
-            });
-
-            // Wait a moment for all the threads to "come up":
-            thread::sleep(Duration::from_millis(10));
-
-            // Push tasks onto the global injector queue:
-            for i in 0..N_TASKS {
-                injector.push(i);
+        let pool = ThreadPool::new(N_THREADS, move |mut work_stealer: WorkerThread<usize>| {
+            while work_stealer.keep_running() {
+                match work_stealer.find_task() {
+                    Some(task) => {
+                        println!("thread: {:?}; task:{task}", thread::current().id());
+                        output_tx.send(task).unwrap();
+                    }
+                    None => continue,
+                };
             }
-
-            // Collect outputs and stop the work when all the outputs arrive:
-            let keep_running_ref = &keep_running;
-            s.spawn(move || {
-                let mut outputs = Vec::with_capacity(N_TASKS);
-                for _ in 0..N_TASKS {
-                    outputs.push(output_rx.recv().unwrap());
-                }
-                keep_running_ref.store(false, atomic::Ordering::Relaxed);
-                outputs.sort();
-                assert!(outputs.into_iter().eq(0..N_TASKS));
-                assert!(output_rx.try_recv().is_err());
-            });
         });
+
+        // Wait a moment for all the threads to "come up":
+        thread::sleep(Duration::from_millis(10));
+
+        // Push tasks onto the global injector queue:
+        for i in 0..N_TASKS {
+            pool.push(i);
+        }
+
+        // Collect outputs and stop the work when all the outputs arrive:
+        let mut outputs = Vec::with_capacity(N_TASKS);
+        for _ in 0..N_TASKS {
+            outputs.push(output_rx.recv().unwrap());
+        }
+        drop(pool);
+        outputs.sort();
+        assert!(outputs.into_iter().eq(0..N_TASKS));
+        assert!(output_rx.try_recv().is_err());
     }
 }

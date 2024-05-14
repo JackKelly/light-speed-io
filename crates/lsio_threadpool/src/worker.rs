@@ -1,4 +1,8 @@
-use std::{iter, sync::Arc, thread};
+use std::{
+    iter,
+    sync::{atomic::Ordering::Relaxed, Arc},
+    thread,
+};
 
 use crossbeam::deque;
 
@@ -32,6 +36,7 @@ where
         }
     }
 
+    /// Get the next task to work on. This function never blocks.
     pub fn find_task(&mut self) -> Option<T> {
         // Adapted from https://docs.rs/crossbeam-deque/latest/crossbeam_deque/#examples
 
@@ -53,6 +58,9 @@ where
         })
     }
 
+    /// Push a task onto this thread's local queue of tasks.
+    ///
+    /// Tasks on the local queue may be stolen by other threads!
     pub fn push(&self, task: T) {
         self.local_queue.push(task);
         self.maybe_unpark_other_threads();
@@ -71,5 +79,10 @@ where
         if n > 1 {
             self.shared.unpark_at_most_n_threads(n as _);
         }
+    }
+
+    /// Returns true if the task should keep running.
+    pub fn keep_running(&self) -> bool {
+        self.shared.keep_running.load(Relaxed)
     }
 }
