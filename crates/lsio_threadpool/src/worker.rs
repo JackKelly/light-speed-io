@@ -37,7 +37,7 @@ where
     }
 
     /// Get the next task to work on. This function never blocks.
-    pub fn find_task(&mut self) -> Option<T> {
+    pub fn find_task(&self) -> Option<T> {
         // Adapted from https://docs.rs/crossbeam-deque/latest/crossbeam_deque/#examples
 
         // Pop a task from the local queue, if not empty.

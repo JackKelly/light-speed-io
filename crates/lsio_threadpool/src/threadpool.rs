@@ -115,7 +115,7 @@ where
 #[cfg(test)]
 
 mod tests {
-    use std::time::Duration;
+    use std::{sync::mpsc::TryRecvError, time::Duration};
 
     use super::*;
 
@@ -126,14 +126,17 @@ mod tests {
 
         let (output_tx, output_rx) = mpsc::channel::<usize>();
 
-        let pool = ThreadPool::new(N_THREADS, move |mut work_stealer: WorkerThread<usize>| {
-            while work_stealer.keep_running() {
-                match work_stealer.find_task() {
+        let pool = ThreadPool::new(N_THREADS, move |worker_thread: WorkerThread<usize>| {
+            while worker_thread.keep_running() {
+                match worker_thread.find_task() {
                     Some(task) => {
-                        println!("thread: {:?}; task:{task}", thread::current().id());
+                        println!("{:?} task:{task}", thread::current().id());
                         output_tx.send(task).unwrap();
                     }
-                    None => continue,
+                    None => {
+                        println!("{:?} PARKING", thread::current().id());
+                        worker_thread.park();
+                    }
                 };
             }
         });
@@ -144,16 +147,24 @@ mod tests {
         // Push tasks onto the global injector queue:
         for i in 0..N_TASKS {
             pool.push(i);
+            if i == N_TASKS / 2 {
+                // Wait a moment to let the worker threads park, to check they wake up again!
+                thread::sleep(Duration::from_millis(10));
+            }
         }
 
         // Collect outputs and stop the work when all the outputs arrive:
-        let mut outputs = Vec::with_capacity(N_TASKS);
-        for _ in 0..N_TASKS {
-            outputs.push(output_rx.recv().unwrap());
-        }
-        drop(pool);
+        let mut outputs: Vec<usize> = output_rx.iter().take(N_TASKS).collect();
         outputs.sort();
         assert!(outputs.into_iter().eq(0..N_TASKS));
-        assert!(output_rx.try_recv().is_err());
+        assert!(matches!(
+            output_rx.try_recv().unwrap_err(),
+            TryRecvError::Empty
+        ));
+        drop(pool);
+        assert!(matches!(
+            output_rx.try_recv().unwrap_err(),
+            TryRecvError::Disconnected
+        ));
     }
 }
