@@ -35,9 +35,25 @@ where
     ///
     /// Typically, `op` will begin with any necessary setup (e.g. instantiating objects for that
     /// thread) and will then enter a loop, something like:
-    /// `while keep_running.load(Relaxed) { /* do work */ }`.
-    /// `new` also starts a separate thread which is responsible for tracking which threads are
-    /// parked
+    ///
+    /// ```
+    /// use lsio_threadpool::threadpool::ThreadPool;
+    /// const N_THREADS: usize = 4;
+    /// let pool = ThreadPool::new(N_THREADS, |worker_thread| {
+    ///     while worker_thread.keep_running() {
+    ///         match worker_thread.find_task() {
+    ///             Some(task) => process_task(task),
+    ///             None => worker_thread.park(),
+    ///         }
+    ///     }
+    /// });
+    ///
+    /// fn process_task(task: u8) {
+    ///     /* do something */
+    /// }
+    /// ```
+    ///
+    /// `new` also starts a separate thread which is responsible for tracking parked threads.
     pub fn new<OP>(n_worker_threads: usize, op: OP) -> Self
     where
         OP: Fn(WorkerThread<T>) + Send + Clone + 'static,
