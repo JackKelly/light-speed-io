@@ -70,7 +70,12 @@ where
         self.shared
             .chan_to_park_manager
             .send(ParkManagerCommand::ThreadIsParked(thread::current()))
-            .unwrap();
+            .unwrap_or_else(|e| {
+                panic!(
+                    "failed to send ThreadIsParked({:?}) message to ParkManager! {e:?}",
+                    thread::current(),
+                )
+            });
         thread::park();
     }
 

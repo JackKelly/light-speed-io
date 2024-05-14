@@ -20,8 +20,8 @@ pub struct ThreadPool<T>
 where
     T: Send,
 {
-    /// thread_handles includes the worker threads and the ParkManager thread
-    thread_handles: Vec<JoinHandle<()>>,
+    worker_thread_handles: Vec<JoinHandle<()>>,
+    park_manager_thread_handle: Option<JoinHandle<()>>,
     shared: SharedState<T>,
 }
 
@@ -50,11 +50,8 @@ where
             at_least_one_thread_is_parked: Arc::new(AtomicBool::new(false)),
         };
 
-        // thread_handles includes all the worker threads and the Park Manager.
-        let mut thread_handles = Vec::with_capacity(n_worker_threads + 1);
-
         // Spawn ParkManager thread:
-        thread_handles.push(ParkManager::start(
+        let park_manager_thread_handle = Some(ParkManager::start(
             rx_for_park_manager,
             Arc::clone(&shared.at_least_one_thread_is_parked),
             n_worker_threads,
@@ -72,19 +69,22 @@ where
         );
 
         // Spawn worker threads:
-        thread_handles.extend((0..n_worker_threads).map(|_| {
-            let work_stealer = WorkerThread::new(
-                shared.clone(),
-                local_queues.pop().unwrap(),
-                Arc::clone(&stealers),
-            );
+        let worker_thread_handles = (0..n_worker_threads)
+            .map(|_| {
+                let work_stealer = WorkerThread::new(
+                    shared.clone(),
+                    local_queues.pop().unwrap(),
+                    Arc::clone(&stealers),
+                );
 
-            let op_clone = op.clone();
-            thread::spawn(move || (op_clone)(work_stealer))
-        }));
+                let op_clone = op.clone();
+                thread::spawn(move || (op_clone)(work_stealer))
+            })
+            .collect();
 
         Self {
-            thread_handles,
+            worker_thread_handles,
+            park_manager_thread_handle,
             shared,
         }
     }
@@ -100,15 +100,23 @@ where
     T: Send,
 {
     fn drop(&mut self) {
+        // Stop and join the worker threads:
         self.shared.keep_running.store(false, Relaxed);
+        for handle in self.worker_thread_handles.drain(..) {
+            handle.thread().unpark();
+            handle.join().unwrap();
+        }
+
+        // Stop and join the ParkManager:
         self.shared
             .chan_to_park_manager
             .send(ParkManagerCommand::Stop)
             .unwrap();
-        for handle in self.thread_handles.drain(..) {
-            handle.thread().unpark();
-            handle.join().unwrap();
-        }
+        self.park_manager_thread_handle
+            .take()
+            .unwrap()
+            .join()
+            .unwrap();
     }
 }
 
