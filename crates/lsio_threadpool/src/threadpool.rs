@@ -123,42 +123,66 @@ where
 #[cfg(test)]
 
 mod tests {
-    use std::{sync::mpsc::TryRecvError, time::Duration};
+    use std::{
+        collections::HashMap,
+        sync::{mpsc::TryRecvError, Mutex},
+        thread::ThreadId,
+        time::Duration,
+    };
 
     use super::*;
+
+    fn add_one_to_hash(hash: &Arc<Mutex<HashMap<ThreadId, usize>>>) {
+        let mut log = hash.lock().unwrap();
+        log.entry(thread::current().id())
+            .and_modify(|count| *count += 1)
+            .or_insert(1);
+    }
 
     #[test]
     fn test_threadpool() {
         const N_THREADS: usize = 4;
-        const N_TASKS: usize = 32;
+        const MULTIPLIER: usize = 8;
+        const N_TASKS: usize = N_THREADS * MULTIPLIER;
 
         let (output_tx, output_rx) = mpsc::channel::<usize>();
 
-        let pool = ThreadPool::new(N_THREADS, move |worker_thread: WorkerThread<usize>| {
-            while worker_thread.keep_running() {
-                match worker_thread.find_task() {
-                    Some(task) => {
-                        println!("{:?} task:{task}", thread::current().id());
-                        output_tx.send(task).unwrap();
-                    }
-                    None => {
-                        println!("{:?} PARKING", thread::current().id());
-                        worker_thread.park();
-                    }
-                };
+        // This HashMap maps from ThreadId to the number of times that thread gets Some(task).
+        let n_tasks_per_thread = Arc::new(Mutex::new(HashMap::new()));
+
+        // This HashMap maps from ThreadId to the number of times that thread has parked.
+        let n_parks_per_thread = Arc::new(Mutex::new(HashMap::new()));
+
+        let pool = ThreadPool::new(N_THREADS, {
+            let n_tasks_per_thread = Arc::clone(&n_tasks_per_thread);
+            let n_parks_per_thread = Arc::clone(&n_parks_per_thread);
+            move |worker_thread: WorkerThread<usize>| {
+                while worker_thread.keep_running() {
+                    match worker_thread.find_task() {
+                        Some(task) => {
+                            output_tx.send(task).unwrap();
+                            add_one_to_hash(&n_tasks_per_thread);
+                            // Give other threads a chance to do work. Without this `sleep`,
+                            // one thread tends to to the majority of the work!
+                            thread::sleep(Duration::from_micros(1));
+                        }
+                        None => {
+                            add_one_to_hash(&n_parks_per_thread);
+                            worker_thread.park();
+                        }
+                    };
+                }
             }
         });
 
-        // Wait a moment for all the threads to "come up":
-        thread::sleep(Duration::from_millis(10));
-
         // Push tasks onto the global injector queue:
         for i in 0..N_TASKS {
-            pool.push(i);
-            if i == N_TASKS / 2 {
+            if i % N_THREADS == 0 {
                 // Wait a moment to let the worker threads park, to check they wake up again!
+                // Also wait at the start, to let the worker threads "come up".
                 thread::sleep(Duration::from_millis(10));
             }
+            pool.push(i);
         }
 
         // Collect outputs and stop the work when all the outputs arrive:
@@ -174,5 +198,28 @@ mod tests {
             output_rx.try_recv().unwrap_err(),
             TryRecvError::Disconnected
         ));
+
+        // Check the n_tasks_per_thread and n_parks_per_thread statistics:
+        let unwrap_and_check_len = |log: Arc<Mutex<HashMap<ThreadId, usize>>>| {
+            let log = Mutex::into_inner(Arc::into_inner(log).unwrap()).unwrap();
+            assert_eq!(log.len(), N_THREADS);
+            log
+        };
+        let n_tasks_per_thread = unwrap_and_check_len(n_tasks_per_thread);
+        let n_parks_per_thread = unwrap_and_check_len(n_parks_per_thread);
+
+        const MIN_TASKS_PER_THREAD: usize = 2;
+        for (thread_id, n_tasks) in n_tasks_per_thread.iter() {
+            assert!(
+                *n_tasks >= MIN_TASKS_PER_THREAD,
+                "{thread_id:?} only did {n_tasks} tasks, which is < the threshold {MIN_TASKS_PER_THREAD} tasks!"
+            );
+        }
+        for (thread_id, n_parks) in n_parks_per_thread.iter() {
+            assert!(
+                *n_parks == MULTIPLIER || *n_parks == MULTIPLIER + 1,
+                "{thread_id:?} did not park the correct number of times!"
+            );
+        }
     }
 }
