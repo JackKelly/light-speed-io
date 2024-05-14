@@ -31,7 +31,7 @@ where
 {
     /// Starts a new threadpool with `n_worker_threads` threads. Also clones and runs `op` on
     /// each thread. `op` takes one argument: a `WorkerThread<T>` which provides helpful methods
-    /// for the task.
+    /// for the operation.
     ///
     /// Typically, `op` will begin with any necessary setup (e.g. instantiating objects for that
     /// thread) and will then enter a loop, something like:
@@ -40,9 +40,14 @@ where
     /// use lsio_threadpool::threadpool::ThreadPool;
     /// const N_THREADS: usize = 4;
     /// let pool = ThreadPool::new(N_THREADS, |worker_thread| {
+    ///     /* Optional: Configure per-thread state. */
+    ///
     ///     while worker_thread.keep_running() {
     ///         match worker_thread.find_task() {
-    ///             Some(task) => process_task(task),
+    ///             Some(task) => {
+    ///                 process_task(task);
+    ///                 /* optionally submit new tasks: worker_thread.push(new_task) */
+    ///             },
     ///             None => worker_thread.park(),
     ///         }
     ///     }
