@@ -1,19 +1,15 @@
-use std::{
-    iter,
-    sync::{atomic::Ordering::Relaxed, Arc},
-    thread,
-};
+use std::{iter, sync::Arc, thread};
 
 use crossbeam::deque;
 
-use crate::threadpool::{ParkManagerCommand, Shared};
+use crate::{park_manager::ParkManagerCommand, shared_state::SharedState};
 
 /// This object doesn't implement the actual worker loop.
 pub struct WorkerThread<T>
 where
     T: Send,
 {
-    shared: Shared<T>,
+    shared: SharedState<T>,
 
     /// Queues for implementing work-stealing:
     local_queue: deque::Worker<T>,
@@ -25,7 +21,7 @@ where
     T: Send,
 {
     pub(crate) fn new(
-        shared: Shared<T>,
+        shared: SharedState<T>,
         local_queue: deque::Worker<T>,
         stealers: Arc<Vec<deque::Stealer<T>>>,
     ) -> Self {
