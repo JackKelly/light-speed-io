@@ -1,3 +1,5 @@
+#![doc = include_str!("../README.md")]
+
 pub(crate) mod close;
 pub(crate) mod get_range;
 pub(crate) mod get_ranges;
