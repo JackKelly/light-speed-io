@@ -9,16 +9,14 @@ repository = { workspace = true }
 license = { workspace = true }
 
 [dependencies]
+lsio_aligned_bytes = { path = "../lsio_aligned_bytes" }
+lsio_io = { path = "../lsio_io" }
+lsio_threadpool = { path = "../lsio_threadpool" }
 anyhow = { workspace = true } 
-bytes =  { workspace = true } 
-crossbeam =  { workspace = true } 
+crossbeam-channel =  { workspace = true }
 io-uring =  { workspace = true } 
 libc =  { workspace = true } 
 nix =  { workspace = true } 
-object_store = { workspace = true } 
-snafu = { workspace = true } 
-tokio = { workspace = true } 
-url =  { workspace = true } 
 
 [dev-dependencies]
 criterion = { workspace = true }
