@@ -1,4 +1,4 @@
-//! Provides a common framework for all LSIO IO backends.
+#![doc = include_str!("../README.md")]
 
 use lsio_aligned_bytes::AlignedBytes;
 use std::{ops::Range, path::Path};
@@ -7,6 +7,7 @@ use std::{ops::Range, path::Path};
 // group _n_ will be completed before any operations in group _n+1_ are started. See:
 // https://github.com/JackKelly/light-speed-io/issues/68
 
+/// Methods for IO backends that can read from IO.
 pub trait Reader {
     /// Submit a GetRanges operation.
     ///
@@ -38,9 +39,9 @@ pub trait Reader {
     ) -> anyhow::Result<()>;
 }
 
-/// `Chunk` is used throughout the LSIO stack. It is the unit of data that's passed from the I/O
-/// layer, to the compute layer, and to the application layer. (To be more precise:
-/// `Result<Chunk>` is usually what is passed around!).
+/// `Chunk` is used throughout the LSIO stack. It is passed from the I/O layer to
+/// the compute layer, and to the application layer. (To be more precise: `Result<Chunk>` is usually
+/// what is passed around!).
 #[derive(Debug)]
 pub struct Chunk {
     pub buffer: AlignedBytes,
@@ -49,6 +50,7 @@ pub struct Chunk {
     pub user_data: u64,
 }
 
+/// Holds the data that is output from each IO operation.
 #[derive(Debug)]
 pub enum Output {
     Chunk(Chunk),
