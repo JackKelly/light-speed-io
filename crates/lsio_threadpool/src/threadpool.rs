@@ -7,7 +7,7 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-use crossbeam::deque;
+use crossbeam_deque as deque;
 
 use crate::{
     park_manager::{ParkManager, ParkManagerCommand},
@@ -29,15 +29,17 @@ impl<T> ThreadPool<T>
 where
     T: Send + 'static,
 {
-    /// Starts a new threadpool with `n_worker_threads` threads. Also clones and runs `op` on
-    /// each thread. `op` takes one argument: a `WorkerThread<T>` which provides helpful methods
-    /// for the operation.
+    /// Starts a new threadpool with `n_worker_threads` threads and runs a clone of `op` on
+    /// each thread. `op` takes one argument: a [`WorkerThread<T>`] which provides helpful methods
+    /// for the operation. The threadpool will be shutdown when the threadpool goes out of scope.
     ///
-    /// Typically, `op` will begin with any necessary setup (e.g. instantiating objects for that
-    /// thread) and will then enter a loop, something like:
+    /// `new` also starts a separate thread which is responsible for tracking parked threads.
+    ///
+    /// Typically, `op` will begin with any necessary setup (e.g. instantiating objects that will
+    /// live for the lifetime of the thread) and will then enter a loop, something like:
     ///
     /// ```
-    /// use lsio_threadpool::threadpool::ThreadPool;
+    /// use lsio_threadpool::ThreadPool;
     /// const N_THREADS: usize = 4;
     /// let pool = ThreadPool::new(N_THREADS, |worker_thread| {
     ///     /* Optional: Configure per-thread state. */
@@ -46,8 +48,12 @@ where
     ///         match worker_thread.find_task() {
     ///             Some(task) => {
     ///                 process_task(task);
-    ///                 /* optionally submit new tasks: worker_thread.push(new_task) */
+    ///                 // Optionally submit new tasks:
+    ///                 // `worker_thread.push(new_task)`
+    ///                 // Tasks might be "stolen" by other threads.
     ///             },
+    ///             // Park the thread. The thread will be registered with the [`ParkManager`]
+    ///             // and will be unparked if sufficient numbers of new tasks are submitted.
     ///             None => worker_thread.park(),
     ///         }
     ///     }
@@ -56,9 +62,11 @@ where
     /// fn process_task(task: u8) {
     ///     /* do something */
     /// }
+    ///
+    /// // `pool`'s threads will be shut down (by `ThreadPool` setting
+    /// // `worker_thread.keep_running()` to false) when `pool` goes out of scope.
     /// ```
     ///
-    /// `new` also starts a separate thread which is responsible for tracking parked threads.
     pub fn new<OP>(n_worker_threads: usize, op: OP) -> Self
     where
         OP: Fn(WorkerThread<T>) + Send + Clone + 'static,

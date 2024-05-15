@@ -1,4 +1,7 @@
 mod park_manager;
 mod shared_state;
-pub mod threadpool;
-pub(crate) mod worker;
+mod threadpool;
+mod worker;
+
+pub use threadpool::ThreadPool;
+pub use worker::WorkerThread;

@@ -4,7 +4,7 @@ use std::{
     thread,
 };
 
-use crossbeam::deque;
+use crossbeam_deque as deque;
 
 use crate::{park_manager::ParkManagerCommand, shared_state::SharedState};
 

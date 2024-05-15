@@ -12,7 +12,8 @@ license = { workspace = true }
 lsio_aligned_bytes = { path = "../lsio_aligned_bytes" }
 lsio_io = { path = "../lsio_io" }
 anyhow = { workspace = true } 
-crossbeam =  { workspace = true } 
+crossbeam-channel =  { workspace = true }
+crossbeam-deque = { workspace = true } # TODO: Remove this?
 io-uring =  { workspace = true } 
 libc =  { workspace = true } 
 nix =  { workspace = true } 

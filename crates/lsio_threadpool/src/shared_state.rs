@@ -3,7 +3,7 @@ use std::sync::{
     mpsc, Arc,
 };
 
-use crossbeam::deque;
+use crossbeam_deque as deque;
 
 use crate::park_manager::ParkManagerCommand;
 
