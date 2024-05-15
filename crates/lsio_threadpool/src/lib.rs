@@ -1,3 +1,5 @@
+#![doc = include_str!("../README.md")]
+
 mod park_manager;
 mod shared_state;
 mod threadpool;

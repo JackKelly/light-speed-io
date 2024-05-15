@@ -8,7 +8,12 @@ use crossbeam_deque as deque;
 
 use crate::{park_manager::ParkManagerCommand, shared_state::SharedState};
 
-/// This object doesn't implement the actual worker loop.
+/// Provides methods that allow user-defined closures to find new tasks to work on,
+/// submit new tasks, park this thread, and check if the closure should continue looping.
+///
+/// Uses do not construct `WorkerThread`s. Instead, [`ThreadPool::new`](crate::ThreadPool::new)
+/// creates one `WorkerThread` per thread, and passes that thread's `WorkerThread` to the
+/// user-supplied closure for that thread.
 pub struct WorkerThread<T>
 where
     T: Send,
@@ -58,14 +63,15 @@ where
         })
     }
 
-    /// Push a task onto this thread's local queue of tasks.
-    ///
-    /// Tasks on the local queue may be stolen by other threads!
-    pub fn push(&self, task: T) {
-        self.local_queue.push(task);
-        self.maybe_unpark_other_threads();
+    /// Returns true if the task should keep running.
+    pub fn keep_running(&self) -> bool {
+        self.shared.keep_running.load(Relaxed)
     }
 
+    /// Park this thread.
+    ///
+    /// Before parking, this function will register this thread with the `ParkManager`
+    /// so that this thread can be automatically unparked when necessary.
     pub fn park(&self) {
         self.shared
             .chan_to_park_manager
@@ -79,15 +85,18 @@ where
         thread::park();
     }
 
-    pub fn maybe_unpark_other_threads(&self) {
+    /// Push a task onto this thread's local queue of tasks.
+    ///
+    /// Tasks on the local queue may be stolen by other threads!
+    pub fn push(&self, task: T) {
+        self.local_queue.push(task);
+        self.maybe_unpark_other_threads();
+    }
+
+    fn maybe_unpark_other_threads(&self) {
         let n = self.local_queue.len();
         if n > 1 {
             self.shared.unpark_at_most_n_threads(n as _);
         }
-    }
-
-    /// Returns true if the task should keep running.
-    pub fn keep_running(&self) -> bool {
-        self.shared.keep_running.load(Relaxed)
     }
 }

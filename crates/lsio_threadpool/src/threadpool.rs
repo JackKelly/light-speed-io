@@ -15,6 +15,7 @@ use crate::{
     worker::WorkerThread,
 };
 
+/// Manages a pool of worker threads. Each worker thread runs a clone of a user-supplied closure.
 #[derive(Debug)]
 pub struct ThreadPool<T>
 where
@@ -31,9 +32,13 @@ where
 {
     /// Starts a new threadpool with `n_worker_threads` threads and runs a clone of `op` on
     /// each thread. `op` takes one argument: a [`WorkerThread<T>`] which provides helpful methods
-    /// for the operation. The threadpool will be shutdown when the threadpool goes out of scope.
+    /// for the operation. Worker threads will shutdown when the `ThreadPool` goes out of scope.
     ///
     /// `new` also starts a separate thread which is responsible for tracking parked threads.
+    ///
+    /// Note that the `'static` lifetime constraint for `OP` basically just means that `op` can't
+    /// capture any non-`'static` references. It's perfectly fine for `op` to capture owned types
+    /// (such as `Vec`), as long as those owned types don't include any non-`'static` references.
     ///
     /// Typically, `op` will begin with any necessary setup (e.g. instantiating objects that will
     /// live for the lifetime of the thread) and will then enter a loop, something like:
@@ -52,8 +57,11 @@ where
     ///                 // `worker_thread.push(new_task)`
     ///                 // Tasks might be "stolen" by other threads.
     ///             },
-    ///             // Park the thread. The thread will be registered with the [`ParkManager`]
-    ///             // and will be unparked if sufficient numbers of new tasks are submitted.
+    ///
+    ///             // Park the thread. `worker_thread.park` automatically registers this worker
+    ///             // thread with the `ParkManager`. The thread will be automatically unparked if
+    ///             // necessary. As a user of the `lsio_threadpool` library, you don't have to
+    ///             // unpark threads manually!
     ///             None => worker_thread.park(),
     ///         }
     ///     }
@@ -118,6 +126,11 @@ where
         }
     }
 
+    /// Push a task from outside the threadpool into the global
+    /// "[injector](crossbeam_deque::Injector)" queue.
+    /// This is how users of `ThreadPool` submit tasks to the threadpool.
+    ///
+    /// `push` will automatically unpark worker threads if necessary.
     pub fn push(&self, task: T) {
         self.shared.injector.push(task);
         self.shared.unpark_at_most_n_threads(1);
