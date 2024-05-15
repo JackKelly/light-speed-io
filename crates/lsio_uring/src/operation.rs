@@ -11,23 +11,6 @@ pub(crate) enum Operation {
 }
 
 impl Operation {
-    pub(crate) fn process_cqe_and_get_next_step(
-        self,
-        cqe: &io_uring::cqueue::Entry,
-        local_uring_submission_queue: &mut io_uring::squeue::SubmissionQueue,
-        worker_thread: &WorkerThread<Operation>,
-        output_channel: &mut crossbeam_channel::Sender<anyhow::Result<lsio_io::Output>>,
-    ) -> NextStep {
-        let idx_and_opcode = UringUserData::from(cqe.user_data());
-        self.process_opcode_and_submit_next_step(
-            &idx_and_opcode,
-            cqe.result(),
-            local_uring_submission_queue,
-            worker_thread,
-            output_channel,
-        )
-    }
-
     fn apply_func_to_all_inner_structs<F, R>(&mut self, mut f: F) -> R
     where
         F: FnMut(&mut dyn UringOperation) -> R,

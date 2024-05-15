@@ -1,7 +1,7 @@
 #![doc = include_str!("../README.md")]
 
 use lsio_aligned_bytes::AlignedBytes;
-use std::{ops::Range, path::Path};
+use std::ops::Range;
 
 // TODO: Consider how to *group* instructions, such that LSIO guarantees that all operations in
 // group _n_ will be completed before any operations in group _n+1_ are started. See:
@@ -33,7 +33,7 @@ pub trait Reader {
         // We take ownership because this function returns immediately. If we used references then
         // there would be nothing to stop the user from dropping the owned objects (and
         // invalidating the references!).
-        location: Path,
+        location: &std::path::Path,
         ranges: Vec<Range<isize>>,
         user_data: Vec<u64>,
     ) -> anyhow::Result<()>;
