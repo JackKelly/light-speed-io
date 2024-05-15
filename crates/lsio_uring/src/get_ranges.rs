@@ -1,5 +1,7 @@
 use std::{ffi::CString, iter::zip, ops::Range, sync::Arc};
 
+use lsio_threadpool::WorkerThread;
+
 use crate::{
     get_range::GetRange,
     open_file::OpenFileBuilder,
@@ -11,22 +13,18 @@ const N_CQES_EXPECTED: u8 = 2; // We're expecting CQEs for `openat` and `statx`.
 
 #[derive(Debug)]
 pub(crate) struct GetRanges {
-    // Creating a new CString allocates memory. And io_uring openat requires a CString.
-    // We need to ensure the CString is valid until the completion queue entry arrives.
-    // So we keep the CString here, in the `Operation`. This `location` hasn't yet been
-    // opened, which is why it's not yet an [`OpenFile`].
     open_file_builder: OpenFileBuilder,
     ranges: Vec<Range<isize>>,
     user_data: Vec<u64>,
 
     // If both CQEs succeed then we'll capture their outputs in `open_file_builder`. But, in case
-    // one or more CQEs reports a failure, we need an additional mechanism to track which CQEs
+    // one or more CQEs reports a failure, we need an additional mechanism to track how many CQEs
     // we've received.
     n_cqes_received: u8,
 }
 
 impl GetRanges {
-    fn new(location: CString, ranges: Vec<Range<isize>>, user_data: Vec<u64>) -> Self {
+    pub(crate) fn new(location: CString, ranges: Vec<Range<isize>>, user_data: Vec<u64>) -> Self {
         assert_eq!(ranges.len(), user_data.len());
         Self {
             open_file_builder: OpenFileBuilder::new(location),
@@ -38,14 +36,11 @@ impl GetRanges {
 
     // io_uring can't process multiple range requests in a single op. So, once we've opened the
     // file and gotten its metadata, we need to submit one `Operation::GetRange` per byte range.
-    fn submit_get_range_ops(
-        self,
-        local_worker_queue: &crossbeam::deque::Worker<crate::operation::Operation>,
-    ) {
+    fn submit_get_range_ops(self, worker_thread: &WorkerThread<Operation>) {
         let file = Arc::new(self.open_file_builder.build());
         for (range, user_data) in zip(self.ranges, self.user_data) {
             let get_range_op = GetRange::new(file.clone(), range, user_data);
-            local_worker_queue.push(Operation::GetRange(get_range_op));
+            worker_thread.push(Operation::GetRange(get_range_op));
         }
     }
 }
@@ -70,8 +65,8 @@ impl UringOperation for GetRanges {
         idx_and_opcode: &crate::user_data::UringUserData,
         cqe_result: i32,
         _local_uring_submission_queue: &mut io_uring::squeue::SubmissionQueue,
-        local_worker_queue: &crossbeam::deque::Worker<crate::operation::Operation>,
-        _output_channel: &mut crossbeam::channel::Sender<anyhow::Result<lsio_io::Output>>,
+        worker_thread: &WorkerThread<Operation>,
+        _output_channel: &mut crossbeam_channel::Sender<anyhow::Result<lsio_io::Output>>,
     ) -> NextStep {
         self.n_cqes_received += 1;
         if cqe_result >= 0 {
@@ -92,7 +87,7 @@ impl UringOperation for GetRanges {
         assert!(self.n_cqes_received <= N_CQES_EXPECTED);
         if self.n_cqes_received == N_CQES_EXPECTED {
             if self.open_file_builder.is_ready() {
-                self.submit_get_range_ops(local_worker_queue);
+                self.submit_get_range_ops(worker_thread);
                 NextStep::Done
             } else {
                 // We've seen all the CQEs we were expecting, but `open_file_builder` isn't ready. So

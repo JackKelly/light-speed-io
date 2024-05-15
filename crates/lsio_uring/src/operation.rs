@@ -1,4 +1,4 @@
-use crossbeam::deque::Worker;
+use lsio_threadpool::WorkerThread;
 
 use crate::{close::Close, get_range::GetRange, get_ranges::GetRanges, user_data::UringUserData};
 
@@ -15,15 +15,15 @@ impl Operation {
         self,
         cqe: &io_uring::cqueue::Entry,
         local_uring_submission_queue: &mut io_uring::squeue::SubmissionQueue,
-        local_worker_queue: &Worker<Operation>,
-        output_channel: &mut crossbeam::channel::Sender<anyhow::Result<lsio_io::Output>>,
+        worker_thread: &WorkerThread<Operation>,
+        output_channel: &mut crossbeam_channel::Sender<anyhow::Result<lsio_io::Output>>,
     ) -> NextStep {
         let idx_and_opcode = UringUserData::from(cqe.user_data());
         self.process_opcode_and_submit_next_step(
             &idx_and_opcode,
             cqe.result(),
             local_uring_submission_queue,
-            local_worker_queue,
+            worker_thread,
             output_channel,
         )
     }
@@ -57,29 +57,31 @@ impl UringOperation for Operation {
         idx_and_opcode: &UringUserData,
         cqe_result: i32,
         local_uring_submission_queue: &mut io_uring::squeue::SubmissionQueue,
-        local_worker_queue: &Worker<Operation>,
-        output_channel: &mut crossbeam::channel::Sender<anyhow::Result<lsio_io::Output>>,
+        worker_thread: &WorkerThread<Operation>,
+        output_channel: &mut crossbeam_channel::Sender<anyhow::Result<lsio_io::Output>>,
     ) -> NextStep {
         self.apply_func_to_all_inner_structs(|s| {
             UringOperation::maybe_send_error(s, idx_and_opcode, cqe_result, output_channel);
         });
 
         // We can't use `apply_func_to_all_inner_structs` for
-        // `UringOperation::process_opcode_and_submit_next_step` because it takes ownership of `self`.
+        // `UringOperation::process_opcode_and_submit_next_step` because
+        // `process_opcode_and_submit_next_step` takes ownership of `self`, and the compiler
+        // doesn't know the size of `self`.
         use Operation::*;
         match self {
             GetRanges(s) => s.process_opcode_and_submit_next_step(
                 idx_and_opcode,
                 cqe_result,
                 local_uring_submission_queue,
-                local_worker_queue,
+                worker_thread,
                 output_channel,
             ),
             GetRange(s) => s.process_opcode_and_submit_next_step(
                 idx_and_opcode,
                 cqe_result,
                 local_uring_submission_queue,
-                local_worker_queue,
+                worker_thread,
                 output_channel,
             ),
 
@@ -87,7 +89,7 @@ impl UringOperation for Operation {
                 idx_and_opcode,
                 cqe_result,
                 local_uring_submission_queue,
-                local_worker_queue,
+                worker_thread,
                 output_channel,
             ),
         }
@@ -112,15 +114,15 @@ pub(crate) trait UringOperation: std::fmt::Debug {
         idx_and_opcode: &UringUserData,
         cqe_result: i32,
         local_uring_submission_queue: &mut io_uring::squeue::SubmissionQueue,
-        local_worker_queue: &Worker<Operation>,
-        output_channel: &mut crossbeam::channel::Sender<anyhow::Result<lsio_io::Output>>,
+        worker_thread: &WorkerThread<Operation>,
+        output_channel: &mut crossbeam_channel::Sender<anyhow::Result<lsio_io::Output>>,
     ) -> NextStep;
 
     fn maybe_send_error(
         &self,
         idx_and_opcode: &UringUserData,
         cqe_result: i32,
-        output_channel: &mut crossbeam::channel::Sender<anyhow::Result<lsio_io::Output>>,
+        output_channel: &mut crossbeam_channel::Sender<anyhow::Result<lsio_io::Output>>,
     ) {
         if cqe_result < 0 {
             // TODO: We probably want a custom Error struct (or enum?) which has machine-readable

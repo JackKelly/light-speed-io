@@ -5,9 +5,9 @@ use crate::{
     sqe::build_read_range_sqe,
     user_data::UringUserData,
 };
-use crossbeam::deque::Worker;
 use lsio_aligned_bytes::AlignedBytes;
 use lsio_io::{Chunk, Output};
+use lsio_threadpool::WorkerThread;
 use std::{ops::Range, sync::Arc};
 
 #[derive(Debug)]
@@ -57,8 +57,8 @@ impl UringOperation for GetRange {
         local_uring_submission_queue: &mut io_uring::squeue::SubmissionQueue,
         // We don't use `local_worker_queue` in this example. But GetRanges will want to pump out
         // lots of GetRange ops into the `local_worker_queue`!
-        _local_worker_queue: &Worker<Operation>,
-        output_channel: &mut crossbeam::channel::Sender<anyhow::Result<Output>>,
+        _worker_thread: &WorkerThread<Operation>,
+        output_channel: &mut crossbeam_channel::Sender<anyhow::Result<Output>>,
     ) -> NextStep {
         // Check that the opcode of the CQE is what we expected:
         if idx_and_opcode.opcode().value() != io_uring::opcode::Read::CODE {

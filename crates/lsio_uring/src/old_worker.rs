@@ -64,27 +64,6 @@ impl<'a> UringWorker<'a> {
         assert!(self.ops_in_flight.is_empty());
     }
 
-    fn find_op(&mut self) -> Option<Operation> {
-        // Adapted from the example code here:
-        // https://docs.rs/crossbeam-deque/latest/crossbeam_deque/#examples
-
-        // Pop a task from the local queue, if not empty.
-        self.local_queue.pop().or_else(|| {
-            // Otherwise, we need to look for a task elsewhere.
-            iter::repeat_with(|| {
-                // Try stealing a batch of tasks from the global queue.
-                self.global_queue
-                    .steal_batch_and_pop(&self.local_queue)
-                    // Or try stealing a task from one of the other threads.
-                    .or_else(|| self.stealers.iter().map(|s| s.steal()).collect())
-            })
-            // Loop while no task was stolen and any steal operation needs to be retried.
-            .find(|s| !s.is_retry())
-            // Extract the stolen task, if there is one.
-            .and_then(|s| s.success())
-        })
-    }
-
     /// Keep io_uring's submission queue topped up from this thread's internal queue.
     /// The internal queue always takes precedence over tasks from the user.
     fn move_entries_from_internal_queue_to_uring_sq(&mut self) {
