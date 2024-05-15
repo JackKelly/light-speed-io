@@ -36,7 +36,7 @@ impl UringOperation for Operation {
     }
 
     fn process_opcode_and_submit_next_step(
-        mut self,
+        &mut self,
         idx_and_opcode: &UringUserData,
         cqe_result: i32,
         local_uring_submission_queue: &mut io_uring::squeue::SubmissionQueue,
@@ -45,37 +45,15 @@ impl UringOperation for Operation {
     ) -> NextStep {
         self.apply_func_to_all_inner_structs(|s| {
             UringOperation::maybe_send_error(s, idx_and_opcode, cqe_result, output_channel);
-        });
-
-        // We can't use `apply_func_to_all_inner_structs` for
-        // `UringOperation::process_opcode_and_submit_next_step` because
-        // `process_opcode_and_submit_next_step` takes ownership of `self`, and the compiler
-        // doesn't know the size of `self`.
-        use Operation::*;
-        match self {
-            GetRanges(s) => s.process_opcode_and_submit_next_step(
+            UringOperation::process_opcode_and_submit_next_step(
+                s,
                 idx_and_opcode,
                 cqe_result,
                 local_uring_submission_queue,
                 worker_thread,
                 output_channel,
-            ),
-            GetRange(s) => s.process_opcode_and_submit_next_step(
-                idx_and_opcode,
-                cqe_result,
-                local_uring_submission_queue,
-                worker_thread,
-                output_channel,
-            ),
-
-            Close(s) => s.process_opcode_and_submit_next_step(
-                idx_and_opcode,
-                cqe_result,
-                local_uring_submission_queue,
-                worker_thread,
-                output_channel,
-            ),
-        }
+            )
+        })
     }
 }
 
@@ -93,7 +71,7 @@ pub(crate) trait UringOperation: std::fmt::Debug {
     ) -> Result<(), io_uring::squeue::PushError>;
 
     fn process_opcode_and_submit_next_step(
-        self,
+        &mut self,
         idx_and_opcode: &UringUserData,
         cqe_result: i32,
         local_uring_submission_queue: &mut io_uring::squeue::SubmissionQueue,
@@ -123,20 +101,7 @@ pub(crate) trait UringOperation: std::fmt::Debug {
 }
 
 pub(crate) enum NextStep {
-    Pending(Operation), // Return Self
+    Pending,
     Done,
     ReplaceWith(Operation),
-}
-
-fn cqe_error_to_anyhow_error(cqe_result: i32, context: impl Fn() -> String) -> anyhow::Result<i32> {
-    if cqe_result < 0 {
-        let nix_err = nix::Error::from_raw(-cqe_result);
-        let full_context = format!(
-            "{nix_err} (reported by io_uring completion queue entry (CQE)). {}",
-            context()
-        );
-        Err(anyhow::Error::new(nix_err).context(full_context))
-    } else {
-        Ok(cqe_result)
-    }
 }

@@ -11,6 +11,10 @@ use crate::{
 const MAX_ENTRIES_AT_ONCE: usize = 2;
 const SQ_RING_SIZE: usize = 64;
 
+/// The io_uring submission queue "water line" is how full we want to keep the SQ before we start
+/// draining the completion queue.
+const WATERLINE: usize = SQ_RING_SIZE / 2;
+
 pub struct UringWorker {
     uring: io_uring::IoUring,
     ops_in_flight: Tracker<Operation>,
@@ -45,15 +49,32 @@ impl UringWorker {
     pub(crate) fn run(&mut self) {
         while self.worker_thread.keep_running() {
             if self.uring_is_full() {
-                // Our io_uring is full! So we have no choice: we *have* to wait for some SQEs to complete:
-                self.uring.submit_and_wait(1);
+                if self.uring.completion().is_empty() {
+                    // The SQ is full but no completion events are ready! So we have no choice:
+                    // We *have* to wait for some completion events to to complete:
+                    self.uring.submit_and_wait(1);
+                }
+                // If the CQ is not empty, then we fall through to the CQ processing loop.
             } else {
                 match self.worker_thread.find_task() {
                     Some(mut operation) => {
                         // Submit first step of `operation`, and track `operation`:
                         let index_of_op = self.ops_in_flight.get_next_index().unwrap();
                         operation.submit_first_step(index_of_op, &mut self.uring.submission());
+                        // TODO: Instead of calling `submit()` on every loop, we should keep our
+                        // own check on how long has elapsed since we last submitted to the SQ,
+                        // and only call `submit()` when we know the SQ has gone to sleep.
+                        // `submit()` loads an AtomicBool twice (with Acquire memory ordering).
+                        self.uring.submitter().submit();
                         self.ops_in_flight.put(index_of_op, operation);
+                        if self.sq_len_plus_cq_len() < WATERLINE {
+                            // We want to "top up" the SQ before we process any CQEs.
+                            // Without this, we run the risk of submitting one SQE, then draining
+                            // that CQE, then submitting another SQE, and training that CQE, etc.
+                            // In other words, we run the risk of not letting io_uring handle
+                            // multiple SQEs at once!
+                            continue;
+                        }
                     }
                     None => {
                         // There are no new operations to submit, so let's work out if we need to
@@ -72,8 +93,8 @@ impl UringWorker {
             for cqe in unsafe { self.uring.completion_shared() } {
                 let idx_and_opcode = UringUserData::from(cqe.user_data());
                 let idx_of_op = idx_and_opcode.index_of_op() as usize;
-                let op = self.ops_in_flight.as_mut(idx_of_op).unwrap();
-                let next_step = op.process_opcode_and_submit_next_step(
+                let mut op_guard = self.ops_in_flight.get(idx_of_op).unwrap();
+                let next_step = op_guard.as_mut().process_opcode_and_submit_next_step(
                     &idx_and_opcode,
                     cqe.result(),
                     &mut unsafe { self.uring.submission_shared() },
@@ -81,11 +102,10 @@ impl UringWorker {
                     &mut self.output_tx,
                 );
                 match next_step {
-                    NextStep::Pending(op) | NextStep::ReplaceWith(op) => {
-                        self.ops_in_flight.put(idx_of_op, op);
-                    }
+                    NextStep::Pending => (), // By default, op_guard will keep the operation.
+                    NextStep::ReplaceWith(op) => op_guard.replace(op),
                     NextStep::Done => {
-                        self.ops_in_flight.remove(idx_of_op).unwrap();
+                        let _ = op_guard.remove();
                     }
                 };
             }

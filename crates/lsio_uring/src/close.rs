@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use lsio_threadpool::WorkerThread;
 
 use crate::{
@@ -8,11 +10,11 @@ use crate::{
 
 #[derive(Debug)]
 pub(crate) struct Close {
-    file: OpenFile,
+    file: Arc<OpenFile>,
 }
 
 impl Close {
-    pub(crate) fn new(file: OpenFile) -> Self {
+    pub(crate) fn new(file: Arc<OpenFile>) -> Self {
         Self { file }
     }
 }
@@ -28,7 +30,7 @@ impl UringOperation for Close {
     }
 
     fn process_opcode_and_submit_next_step(
-        self,
+        &mut self,
         idx_and_opcode: &crate::user_data::UringUserData,
         _cqe_result: i32,
         _local_uring_submission_queue: &mut io_uring::squeue::SubmissionQueue,

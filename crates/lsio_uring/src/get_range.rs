@@ -51,7 +51,7 @@ impl UringOperation for GetRange {
     }
 
     fn process_opcode_and_submit_next_step(
-        mut self,
+        &mut self,
         idx_and_opcode: &UringUserData,
         cqe_result: i32,
         local_uring_submission_queue: &mut io_uring::squeue::SubmissionQueue,
@@ -75,24 +75,18 @@ impl UringOperation for GetRange {
                 .unwrap();
         };
         // Check if it's time to close the file:
-        match Arc::try_unwrap(self.file) {
-            Ok(file) => {
-                // `Arc::try_unwrap` returns `Ok<T>` if the Arc has exactly one strong reference.
-                // In our case, that means that we're the last operation on this file, so it's time
-                // to close this file.
-                let mut close_op = Close::new(file);
-                close_op
-                    .submit_first_step(
-                        idx_and_opcode.index_of_op() as _,
-                        local_uring_submission_queue,
-                    )
-                    .unwrap();
-                NextStep::ReplaceWith(Operation::Close(close_op))
-            }
-            Err(file) => {
-                self.file = file;
-                NextStep::Done
-            }
+        if Arc::strong_count(&self.file) == 1 {
+            // We're the last operation on this file, so it's time to close this file.
+            let mut close_op = Close::new(Arc::clone(&self.file));
+            close_op
+                .submit_first_step(
+                    idx_and_opcode.index_of_op() as _,
+                    local_uring_submission_queue,
+                )
+                .unwrap();
+            NextStep::ReplaceWith(Operation::Close(close_op))
+        } else {
+            NextStep::Done
         }
     }
 }

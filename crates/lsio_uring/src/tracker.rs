@@ -24,20 +24,42 @@ impl<T> Tracker<T> {
         self.len += 1;
     }
 
-    pub(crate) fn as_mut(&mut self, index: usize) -> Option<&mut T> {
-        self.ops_in_flight[index].as_mut()
-    }
-
-    pub(crate) fn remove(&mut self, index: usize) -> Option<T> {
-        self.ops_in_flight[index].take().map(|t| {
-            self.next_index.push_back(index);
-            self.len -= 1;
-            t
-        })
+    pub(crate) fn get(&mut self, index: usize) -> Option<TrackerGuard<T>> {
+        if self.ops_in_flight[index].is_none() {
+            None
+        } else {
+            Some(TrackerGuard {
+                index,
+                tracker: self,
+            })
+        }
     }
 
     pub(crate) fn is_empty(&self) -> bool {
         self.len == 0
+    }
+}
+
+pub(crate) struct TrackerGuard<'a, T> {
+    index: usize,
+    tracker: &'a mut Tracker<T>,
+}
+
+impl<'a, T> TrackerGuard<'a, T> {
+    /// Safety: If TrackerGuard exists, then we know that `self.index` is valid.
+    /// So `as_mut` can never fail.
+    pub(crate) fn as_mut(&mut self) -> &mut T {
+        self.tracker.ops_in_flight[self.index].as_mut().unwrap()
+    }
+
+    pub(crate) fn remove(&mut self) -> T {
+        self.tracker.next_index.push_back(self.index);
+        self.tracker.len -= 1;
+        self.tracker.ops_in_flight[self.index].take().unwrap()
+    }
+
+    pub(crate) fn replace(&mut self, op: T) {
+        self.tracker.ops_in_flight[self.index].replace(op);
     }
 }
 
@@ -50,14 +72,14 @@ mod tests {
         let mut tracker = Tracker::new(2);
 
         // Check that removing an item before inserting an item returns None.
-        assert!(tracker.remove(0).is_none());
+        assert!(tracker.get(0).is_none());
 
         // Put one string into the tracker, and then remove that string.
         let i0 = tracker.get_next_index().unwrap();
         assert_eq!(i0, 0);
         let s0 = "string0".to_string();
         tracker.put(i0, s0.clone());
-        assert_eq!(tracker.remove(i0).unwrap(), s0);
+        assert_eq!(tracker.get(i0).unwrap().remove(), s0);
         // The tracker is now empty.
 
         // Put another string into the tracker. Don't remove it yet.
@@ -76,14 +98,14 @@ mod tests {
         assert!(tracker.get_next_index().is_none());
 
         // Check the strings are correct
-        assert_eq!(tracker.remove(i1).unwrap(), s1);
-        assert_eq!(tracker.remove(i2).unwrap(), s2);
+        assert_eq!(tracker.get(i1).unwrap().remove(), s1);
+        assert_eq!(tracker.get(i2).unwrap().remove(), s2);
     }
 
     #[test]
     #[should_panic(expected = "index out of bounds")]
     fn test_panic_if_wrong_index() {
         let mut tracker: Tracker<String> = Tracker::new(2);
-        tracker.remove(100);
+        tracker.get(100);
     }
 }

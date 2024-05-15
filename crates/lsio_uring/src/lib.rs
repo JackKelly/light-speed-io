@@ -21,7 +21,7 @@ pub(crate) mod worker;
 
 struct IoUring {
     threadpool: ThreadPool<Operation>,
-    output_rx: crossbeam_channel::Receiver<Output>,
+    output_rx: crossbeam_channel::Receiver<anyhow::Result<Output>>,
 }
 
 impl IoUring {
@@ -30,8 +30,8 @@ impl IoUring {
         Self {
             threadpool: ThreadPool::new(
                 n_worker_threads,
-                |worker_thread: WorkerThread<Operation>| {
-                    let mut uring_worker = UringWorker::new(worker_thread, output_tx);
+                move |worker_thread: WorkerThread<Operation>| {
+                    let mut uring_worker = UringWorker::new(worker_thread, output_tx.clone());
                     uring_worker.run();
                 },
             ),
