@@ -58,7 +58,7 @@ impl UringWorker {
                 if self.uring.completion().is_empty() {
                     // The SQ is full but no completion events are ready! So we have no choice:
                     // We *have* to wait for some completion events to to complete:
-                    self.uring.submit_and_wait(1);
+                    self.uring.submit_and_wait(1).unwrap();
                 }
                 // If the CQ is not empty, then we fall through to the CQ processing loop.
             } else {
@@ -66,12 +66,14 @@ impl UringWorker {
                     Some(mut operation) => {
                         // Submit first step of `operation`, and track `operation`:
                         let index_of_op = self.ops_in_flight.get_next_index().unwrap();
-                        operation.submit_first_step(index_of_op, &mut self.uring.submission());
+                        operation
+                            .submit_first_step(index_of_op, &mut self.uring.submission())
+                            .unwrap();
                         // TODO: Instead of calling `submit()` on every loop, we should keep our
                         // own check on how long has elapsed since we last submitted to the SQ,
                         // and only call `submit()` when we know the SQ has gone to sleep.
                         // `submit()` loads an AtomicBool twice (with Acquire memory ordering).
-                        self.uring.submitter().submit();
+                        self.uring.submitter().submit().unwrap();
                         self.ops_in_flight.put(index_of_op, operation);
                         if self.sq_len_plus_cq_len() < HIGH_WATER_LINE {
                             // We want to "top up" the SQ before we process any CQEs.
@@ -119,6 +121,7 @@ impl UringWorker {
         assert!(self.ops_in_flight.is_empty());
     }
 
+    /// io_uring submission queue (SQ) length plus the io_uring completion queue (CQ) length:
     fn sq_len_plus_cq_len(&self) -> usize {
         unsafe { self.uring.submission_shared().len() + self.uring.completion_shared().len() }
     }
