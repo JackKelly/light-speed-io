@@ -72,7 +72,7 @@ impl UringWorker {
                         // TODO: Instead of calling `submit()` on every loop, we should keep our
                         // own check on how long has elapsed since we last submitted to the SQ,
                         // and only call `submit()` when we know the SQ has gone to sleep.
-                        // `submit()` loads an AtomicBool twice (with Acquire memory ordering).
+                        // See issue #129.
                         self.uring.submitter().submit().unwrap();
                         self.ops_in_flight.put(index_of_op, operation);
                         if self.sq_len_plus_cq_len() < HIGH_WATER_LINE {
