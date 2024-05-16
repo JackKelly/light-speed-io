@@ -8,12 +8,18 @@ use crate::{
     user_data::UringUserData,
 };
 
-const MAX_ENTRIES_AT_ONCE: usize = 2;
+/// `MAX_SQ_ENTRIES_PER_ITERATION` describes the most SQEs that will be submitted to the io_uring SQ by
+/// a single iteration of the `run` loop. This constant is used to make sure we have enough
+/// headroom in the SQ before each iteration of the `run` loop.
+const MAX_SQ_ENTRIES_PER_ITERATION: usize = 2;
+
+/// Size of the io_uring submission queue (SQ).
 const SQ_RING_SIZE: usize = 64;
 
-/// The io_uring submission queue "water line" is how full we want to keep the SQ before we start
-/// draining the completion queue.
-const WATERLINE: usize = SQ_RING_SIZE / 2;
+/// We keep filling the SQ until we hit the "high water line" before we start draining the
+/// completion queue. This ensures that we allow io_uring to process as many operations in parallel
+/// as possible.
+const HIGH_WATER_LINE: usize = SQ_RING_SIZE / 2;
 
 pub struct UringWorker {
     uring: io_uring::IoUring,
@@ -27,7 +33,7 @@ impl UringWorker {
         worker_thread: WorkerThread<Operation>,
         output_tx: crossbeam_channel::Sender<anyhow::Result<Output>>,
     ) -> Self {
-        assert!(MAX_ENTRIES_AT_ONCE < SQ_RING_SIZE);
+        assert!(MAX_SQ_ENTRIES_PER_ITERATION < SQ_RING_SIZE);
 
         let ring: io_uring::IoUring<squeue::Entry, cqueue::Entry> = io_uring::IoUring::builder()
             // TODO: Allow the user to decide whether sqpoll is used.
@@ -67,7 +73,7 @@ impl UringWorker {
                         // `submit()` loads an AtomicBool twice (with Acquire memory ordering).
                         self.uring.submitter().submit();
                         self.ops_in_flight.put(index_of_op, operation);
-                        if self.sq_len_plus_cq_len() < WATERLINE {
+                        if self.sq_len_plus_cq_len() < HIGH_WATER_LINE {
                             // We want to "top up" the SQ before we process any CQEs.
                             // Without this, we run the risk of submitting one SQE, then draining
                             // that CQE, then submitting another SQE, and training that CQE, etc.
@@ -118,6 +124,6 @@ impl UringWorker {
     }
 
     fn uring_is_full(&self) -> bool {
-        self.sq_len_plus_cq_len() >= SQ_RING_SIZE - MAX_ENTRIES_AT_ONCE
+        self.sq_len_plus_cq_len() >= SQ_RING_SIZE - MAX_SQ_ENTRIES_PER_ITERATION
     }
 }
