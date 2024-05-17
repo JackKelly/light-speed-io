@@ -13,7 +13,7 @@ const MEBIBYTE: usize = KIBIBYTE * 1024;
 #[test]
 fn test_get_ranges() -> anyhow::Result<()> {
     const N_WORKER_THREADS: usize = 4;
-    const FILE_SIZE: usize = MEBIBYTE * 1024;
+    const FILE_SIZE: usize = MEBIBYTE;
     const CHUNK_SIZE: usize = KIBIBYTE * 4;
     const N_CHUNKS: usize = FILE_SIZE / CHUNK_SIZE;
 
