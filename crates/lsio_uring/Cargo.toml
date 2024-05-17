@@ -20,6 +20,8 @@ nix =  { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
+tempfile = { workspace = true }
+rand = { workspace = true }
 
 [[bench]]  # Yes, this is supposed to have double square brackets!
 name = "get"

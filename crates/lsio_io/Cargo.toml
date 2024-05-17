@@ -12,6 +12,7 @@ authors.workspace = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-anyhow.workspace = true
+anyhow = { workspace = true }
 lsio_aligned_bytes = { path = "../lsio_aligned_bytes" }
+crossbeam-channel = { workspace = true }
 

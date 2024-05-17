@@ -3,7 +3,7 @@ use std::{ffi::CString, os::unix::ffi::OsStrExt};
 use crate::get_ranges::GetRanges;
 use crate::operation::Operation;
 use crate::worker::UringWorker;
-use lsio_io::{Output, Reader};
+use lsio_io::{Completion, Output, Reader};
 use lsio_threadpool::{ThreadPool, WorkerThread};
 
 pub struct IoUring {
@@ -24,6 +24,12 @@ impl IoUring {
             ),
             output_rx,
         }
+    }
+}
+
+impl Completion for IoUring {
+    fn completion(&self) -> &crossbeam_channel::Receiver<anyhow::Result<Output>> {
+        &self.output_rx
     }
 }
 

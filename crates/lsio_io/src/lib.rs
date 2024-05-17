@@ -7,6 +7,11 @@ use std::ops::Range;
 // group _n_ will be completed before any operations in group _n+1_ are started. See:
 // https://github.com/JackKelly/light-speed-io/issues/68
 
+/// All IO backends must expose their completion queue.
+pub trait Completion {
+    fn completion(&self) -> &crossbeam_channel::Receiver<anyhow::Result<Output>>;
+}
+
 /// Methods for IO backends that can read from IO.
 pub trait Reader {
     /// Submit a GetRanges operation.

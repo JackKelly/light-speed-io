@@ -18,12 +18,14 @@ criterion = { version = "0.5.1", features = ["html_reports", "async_tokio"] }
 crossbeam-deque = "0.8.5"
 crossbeam-channel = "0.5.12"
 io-uring = "0.6.4"
-libc = "0.2.154"  # Used for filesystem flags
+libc = "0.2.153"  # Used for filesystem flags
 nix = { version = "0.28.0", features = ["fs"] }
 object_store = "0.10.1"
 snafu = "0.8.2"
 tokio = { version = "1.37.0", features = ["rt-multi-thread"]}
 url = "2.5.0"
+tempfile = "3.10"
+rand = "0.8"
 
 [profile.bench]
 debug = true  # Enable debuginfo when profiling with cargo flamegraph.
