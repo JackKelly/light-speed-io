@@ -13,14 +13,19 @@ const MEBIBYTE: usize = KIBIBYTE * 1024;
 #[test]
 fn test_get_ranges() -> anyhow::Result<()> {
     const N_WORKER_THREADS: usize = 4;
-    const FILE_SIZE: usize = MEBIBYTE;
+    const FILE_SIZE: usize = MEBIBYTE * 1024;
     const CHUNK_SIZE: usize = KIBIBYTE * 4;
     const N_CHUNKS: usize = FILE_SIZE / CHUNK_SIZE;
 
     // Create random ASCII text (that we will write to disk later):
+    println!("Creating random data...");
     let distr = rand::distributions::Uniform::new_inclusive(32, 126);
     let file_contents: Vec<u8> = rand::thread_rng()
         .sample_iter(distr)
+        .take(((CHUNK_SIZE as f32) * 1.5) as _)
+        .collect::<Vec<u8>>()
+        .into_iter()
+        .cycle()
         .take(FILE_SIZE)
         .collect();
     assert_eq!(file_contents.len(), FILE_SIZE);
@@ -30,6 +35,7 @@ fn test_get_ranges() -> anyhow::Result<()> {
         std::env::temp_dir().join(format!("lsio_uring_tempfile_{}", rand::random::<u32>()));
 
     // Write file:
+    println!("Writing random data to disk...");
     {
         let mut file = File::create(&filename)?;
         file.write_all(&file_contents)?;
@@ -59,6 +65,7 @@ fn test_get_ranges() -> anyhow::Result<()> {
     let user_data = (0..N_CHUNKS as u64).collect();
 
     // Submit get_ranges operation:
+    println!("Reading data using io_uring!!!");
     let mut uring = IoUring::new(N_WORKER_THREADS);
     uring.get_ranges(&filename, ranges, user_data)?;
 
@@ -80,6 +87,7 @@ fn test_get_ranges() -> anyhow::Result<()> {
             }
         };
     }
+    println!("Finished reading using io_uring!");
 
     // Check that the completion queue does the right thing when IoUring is dropped:
     let completion = uring.completion().clone();
@@ -88,6 +96,7 @@ fn test_get_ranges() -> anyhow::Result<()> {
     drop(completion);
 
     // Re-assemble the chunks into the complete file:
+    println!("Assembling buffer:");
     let mut assembled_buf = Vec::with_capacity(FILE_SIZE);
     for aligned_bytes in vec_of_aligned_bytes {
         assembled_buf.extend_from_slice(aligned_bytes.unwrap().as_slice());
