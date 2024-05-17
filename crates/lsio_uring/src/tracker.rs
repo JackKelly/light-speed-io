@@ -38,6 +38,10 @@ impl<T> Tracker<T> {
     pub(crate) fn is_empty(&self) -> bool {
         self.len == 0
     }
+
+    pub(crate) fn is_full(&self) -> bool {
+        self.next_index.is_empty()
+    }
 }
 
 pub(crate) struct TrackerGuard<'a, T> {

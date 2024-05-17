@@ -54,21 +54,24 @@ impl UringWorker {
     /// The main loop for the thread.
     pub(crate) fn run(&mut self) {
         while self.worker_thread.keep_running() {
-            if self.uring_is_full() {
+            if self.ops_in_flight.is_full() || self.uring_is_full() {
                 if self.uring.completion().is_empty() {
                     // The SQ is full but no completion events are ready! So we have no choice:
                     // We *have* to wait for some completion events to to complete:
                     self.uring.submit_and_wait(1).unwrap();
                 }
-                // If the CQ is not empty, then we fall through to the CQ processing loop.
+                // The CQ has CQEs for us, so we fall through to the CQ processing loop.
             } else {
                 match self.worker_thread.find_task() {
                     Some(mut operation) => {
                         // Submit first step of `operation`, and track `operation`:
-                        let index_of_op = self.ops_in_flight.get_next_index().unwrap();
+                        let index_of_op = self
+                            .ops_in_flight
+                            .get_next_index()
+                            .expect("Failed to get_next_task on tracker!");
                         operation
                             .submit_first_step(index_of_op, &mut self.uring.submission())
-                            .unwrap();
+                            .expect("Failed to submit_first_step of Operation!");
                         // TODO: Instead of calling `submit()` on every loop, we should keep our
                         // own check on how long has elapsed since we last submitted to the SQ,
                         // and only call `submit()` when we know the SQ has gone to sleep.

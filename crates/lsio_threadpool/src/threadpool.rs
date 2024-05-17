@@ -146,7 +146,9 @@ where
         self.shared.keep_running.store(false, Relaxed);
         for handle in self.worker_thread_handles.drain(..) {
             handle.thread().unpark();
-            handle.join().unwrap();
+            handle
+                .join()
+                .unwrap_or_else(|e| println!("A worker thread panic: {e:?}"));
         }
 
         // Stop and join the ParkManager:

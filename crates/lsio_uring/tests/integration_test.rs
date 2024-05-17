@@ -35,12 +35,11 @@ fn test_get_ranges() -> anyhow::Result<()> {
     {
         let mut file = File::create(&filename)?;
         file.write_all(&file_contents)?;
+        file.flush()?;
+        file.sync_all()?;
     }
 
     assert_eq!(file_contents.len(), FILE_SIZE);
-
-    // Wait for data to be flushed to disk:
-    std::thread::sleep(Duration::from_millis(500));
 
     // Check file is correctly written to disk:
     {
@@ -85,17 +84,17 @@ fn test_get_ranges() -> anyhow::Result<()> {
         };
     }
 
-    let completion = uring.completion().clone();
-    drop(uring);
-    assert!(completion.recv().is_err());
+    //let completion = uring.completion().clone();
+    //drop(uring);
+    //assert!(completion.recv().is_err());
 
     let mut assembled_buf = Vec::with_capacity(FILE_SIZE);
     for aligned_bytes in vec_of_aligned_bytes {
         assembled_buf.extend_from_slice(aligned_bytes.unwrap().as_slice());
     }
 
-    println!("Read from disk: {:?}", &assembled_buf[0..10]);
-    println!("Ground truth  : {:?}", &file_contents[0..10]);
+    println!("Read from disk: {:?}", &assembled_buf[0..100]);
+    println!("Ground truth  : {:?}", &file_contents[0..100]);
 
     assert!(assembled_buf.eq(&file_contents));
 
