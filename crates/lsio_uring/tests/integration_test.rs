@@ -2,7 +2,7 @@ use crossbeam_channel::RecvTimeoutError;
 use lsio_aligned_bytes::AlignedBytes;
 use lsio_io::{Completion, Reader};
 use lsio_uring::IoUring;
-use rand::RngCore;
+use rand::Rng;
 use std::fs::File;
 use std::io::Read;
 use std::{io::Write, time::Duration};
@@ -12,24 +12,22 @@ const MEBIBYTE: usize = KIBIBYTE * 1024;
 
 #[test]
 fn test_get_ranges() -> anyhow::Result<()> {
-    const N_WORKER_THREADS: usize = 1;
+    const N_WORKER_THREADS: usize = 4;
     const FILE_SIZE: usize = MEBIBYTE;
     const CHUNK_SIZE: usize = KIBIBYTE * 4;
     const N_CHUNKS: usize = FILE_SIZE / CHUNK_SIZE;
 
-    let mut uring = IoUring::new(N_WORKER_THREADS);
+    // Create random ASCII text (that we will write to disk later):
+    let distr = rand::distributions::Uniform::new_inclusive(32, 126);
+    let file_contents: Vec<u8> = rand::thread_rng()
+        .sample_iter(distr)
+        .take(FILE_SIZE)
+        .collect();
+    assert_eq!(file_contents.len(), FILE_SIZE);
 
-    // Automatically create file
-    // TODO: Persist this file?
+    // Create filename in temporary directory:
     let filename =
         std::env::temp_dir().join(format!("lsio_uring_tempfile_{}", rand::random::<u32>()));
-    let mut file_contents: Vec<u8> = Vec::with_capacity(FILE_SIZE);
-    rand::thread_rng().fill_bytes(&mut file_contents);
-    unsafe {
-        file_contents.set_len(FILE_SIZE);
-    }
-    // Prevent mutation of file_contents:
-    let file_contents = file_contents;
 
     // Write file:
     {
@@ -38,8 +36,6 @@ fn test_get_ranges() -> anyhow::Result<()> {
         file.flush()?;
         file.sync_all()?;
     }
-
-    assert_eq!(file_contents.len(), FILE_SIZE);
 
     // Check file is correctly written to disk:
     {
@@ -63,6 +59,7 @@ fn test_get_ranges() -> anyhow::Result<()> {
     let user_data = (0..N_CHUNKS as u64).collect();
 
     // Submit get_ranges operation:
+    let mut uring = IoUring::new(N_WORKER_THREADS);
     uring.get_ranges(&filename, ranges, user_data)?;
 
     // Re-assemble byte ranges:
@@ -84,17 +81,26 @@ fn test_get_ranges() -> anyhow::Result<()> {
         };
     }
 
-    //let completion = uring.completion().clone();
-    //drop(uring);
-    //assert!(completion.recv().is_err());
+    // Check that the completion queue does the right thing when IoUring is dropped:
+    let completion = uring.completion().clone();
+    drop(uring);
+    assert!(completion.recv().is_err());
+    drop(completion);
 
+    // Re-assemble the chunks into the complete file:
     let mut assembled_buf = Vec::with_capacity(FILE_SIZE);
     for aligned_bytes in vec_of_aligned_bytes {
         assembled_buf.extend_from_slice(aligned_bytes.unwrap().as_slice());
     }
 
-    println!("Read from disk: {:?}", &assembled_buf[0..100]);
-    println!("Ground truth  : {:?}", &file_contents[0..100]);
+    println!(
+        "Read from disk: {:?}",
+        core::str::from_utf8(&assembled_buf[0..100]).unwrap()
+    );
+    println!(
+        "Ground truth  : {:?}",
+        core::str::from_utf8(&file_contents[0..100]).unwrap()
+    );
 
     assert!(assembled_buf.eq(&file_contents));
 
