@@ -21,6 +21,7 @@ The list below is in (rough) chronological order. This roadmap is also represnte
 - [ ] [Implement minimal `object_store_bridge` IO backend](https://github.com/JackKelly/light-speed-io/milestone/4)
 - [ ] [Compare benchmarks for `lsio_uring` vs `object_store_bridge`](https://github.com/JackKelly/light-speed-io/milestone/7)
 - [ ] [Improve usability and robustness](https://github.com/JackKelly/light-speed-io/milestone/8)
+- [ ] [Group operations](https://github.com/JackKelly/light-speed-io/milestone/9)
 
 ### MVP Compute:
 - [ ] Build a general-purpose work-steeling framework for applying arbitrary functions to chunks of data in parallel
