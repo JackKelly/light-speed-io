@@ -13,16 +13,14 @@ See [`planned_design.md`](planned_design.md) for more info.
 
 (This will almost certainly change!)
 
-The list below is in (rough) chronological order.
+The list below is in (rough) chronological order. This roadmap is also represnted in the [GitHub milestones for this project, when sorted alphabetically](https://github.com/JackKelly/light-speed-io/milestones?direction=asc&sort=title&state=open).
 
 ### MVP IO backends
 - [x] Implement minimal `lsio_uring` IO backend (for loading data from a local SSD)
-- [ ] Implement a simple command-line benchmarking tool
-- [ ] Benchmark `lsio_uring` backend
-- [ ] Implement minimal `object_store_bridge` IO backend
-- [ ] Compare benchmarks for `lsio_uring` vs `object_store_bridge`
-- [ ] Implement long-running automated testing of the IO backends
-- [ ] Improve usability and robustness
+- [ ] [Benchmark `lsio_uring` backend](https://github.com/JackKelly/light-speed-io/milestone/3)
+- [ ] [Implement minimal `object_store_bridge` IO backend](https://github.com/JackKelly/light-speed-io/milestone/4)
+- [ ] [Compare benchmarks for `lsio_uring` vs `object_store_bridge`](https://github.com/JackKelly/light-speed-io/milestone/7)
+- [ ] [Improve usability and robustness](https://github.com/JackKelly/light-speed-io/milestone/8)
 
 ### MVP Compute:
 - [ ] Build a general-purpose work-steeling framework for applying arbitrary functions to chunks of data in parallel
