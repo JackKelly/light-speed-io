@@ -22,7 +22,7 @@ The list below is in (rough) chronological order.
 - [ ] Implement minimal `object_store_bridge` IO backend
 - [ ] Compare benchmarks for `lsio_uring` vs `object_store_bridge`
 - [ ] Implement long-running automated testing of the IO backends
-- [ ] Improve usability and robustness of `lsio_uring`
+- [ ] Improve usability and robustness
 
 ### MVP Compute:
 - [ ] Build a general-purpose work-steeling framework for applying arbitrary functions to chunks of data in parallel
