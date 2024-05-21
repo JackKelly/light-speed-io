@@ -15,7 +15,7 @@ See [`planned_design.md`](planned_design.md) for more info.
 
 The list below is in (rough) chronological order.
 
-## MVP IO backends:
+### MVP IO backends
 - [x] Implement minimal `lsio_io_uring` IO backend (for loading data from a local SSD)
 - [ ] Implement a simple command-line benchmarking tool
 - [ ] Benchmark `lsio_io_uring` backend
@@ -23,23 +23,23 @@ The list below is in (rough) chronological order.
 - [ ] Compare benchmarks for `io_uring` vs `object_store_bridge`
 - [ ] Implement long-running automated testing of the IO backends
 
-## MVP Compute:
+### MVP Compute:
 - [ ] Build a general-purpose work-steeling framework for applying arbitrary functions to chunks of data in parallel
 - [ ] Wrap a few decompression algorithms
 - [ ] MVP Zarr library (just for reading data), with Python API
 - [ ] Benchmark `lsio_zarr` vs `zarr-python v3`
 
-## Iterate on the IO backends:
+### Iterate on the IO backends:
 - [ ] Optimise (merge and split) IO operations
 - [ ] Implement writing using `lsio_io_uring`
 - [ ] Implement writing using `lsio_object_store_backend`
 - [ ] Re-use IO buffers
 - [ ] Register buffers with `io_uring`
 
-## Iterate on compute
+### Iterate on compute
 - [ ] Investigate how to integrate LSIO with xarray, such that chunkwise computation can be "pushed down" to LSIO
 
-## Iterate on file format libraries
+### Iterate on file format libraries
 - [ ] Implement writing in `lsio_zarr`
 - [ ] Implement simple GRIB reader
 
