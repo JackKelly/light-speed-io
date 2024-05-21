@@ -16,11 +16,11 @@ See [`planned_design.md`](planned_design.md) for more info.
 The list below is in (rough) chronological order.
 
 ### MVP IO backends
-- [x] Implement minimal `lsio_io_uring` IO backend (for loading data from a local SSD)
+- [x] Implement minimal `lsio_uring` IO backend (for loading data from a local SSD)
 - [ ] Implement a simple command-line benchmarking tool
-- [ ] Benchmark `lsio_io_uring` backend
+- [ ] Benchmark `lsio_uring` backend
 - [ ] Implement minimal `object_store_bridge` IO backend
-- [ ] Compare benchmarks for `io_uring` vs `object_store_bridge`
+- [ ] Compare benchmarks for `lsio_uring` vs `object_store_bridge`
 - [ ] Implement long-running automated testing of the IO backends
 
 ### MVP Compute:
@@ -31,8 +31,8 @@ The list below is in (rough) chronological order.
 
 ### Iterate on the IO backends:
 - [ ] Optimise (merge and split) IO operations
-- [ ] Implement writing using `lsio_io_uring`
-- [ ] Implement writing using `lsio_object_store_backend`
+- [ ] Implement writing using `lsio_uring`
+- [ ] Implement writing using `lsio_object_store_bridge`
 - [ ] Re-use IO buffers
 - [ ] Register buffers with `io_uring`
 
