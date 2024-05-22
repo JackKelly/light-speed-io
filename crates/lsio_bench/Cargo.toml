@@ -1,0 +1,15 @@
+[package]
+name = "lsio_bench"
+version = "0.0.0"
+description = "Benchmark LSIO."
+publish = false
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+readme = "README.md"
+authors.workspace = true
+
+[dependencies]
+clap = { version = "4.5.4", features = ["derive"] }
+indicatif = "0.17.8"
