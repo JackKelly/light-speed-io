@@ -4,6 +4,8 @@ use std::{
     io::Write,
     ops::Range,
     path::{Path, PathBuf},
+    process::Command,
+    time::{Duration, Instant},
 };
 
 use clap::{error::ErrorKind, CommandFactory, Parser};
@@ -12,6 +14,7 @@ use lsio_io::{Completion, Reader};
 use lsio_uring::IoUring;
 
 const FILENAME_PREFIX: &str = "lsio_bench_";
+const MEBIBYTE: f64 = (1024 * 1024) as _;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -34,8 +37,8 @@ struct Args {
     blocksize: Option<u64>,
 
     /// The number of worker threads that lsio_uring uses:
-    #[arg(short, long, default_value_t = 4, value_parser = clap::value_parser!(usize).range(1..1024))]
-    nr_worker_threads: usize,
+    #[arg(short = 'w', long, default_value_t = 4, value_parser = clap::value_parser!(u64).range(1..1024))]
+    nr_worker_threads: u64,
 }
 
 fn main() -> std::io::Result<()> {
@@ -49,11 +52,13 @@ fn main() -> std::io::Result<()> {
 
     create_files_if_necessary(&filenames, args.filesize)?;
 
+    clear_page_cache(&directory);
+
     read_files(
         &filenames,
         args.filesize,
         args.blocksize,
-        args.nr_worker_threads,
+        args.nr_worker_threads as usize,
     );
 
     Ok(())
@@ -137,16 +142,58 @@ fn read_files(
             chunk_start..chunk_end
         })
         .collect();
+    assert_eq!(chunks.len(), n_chunks as _);
 
     // Define user_data (so we can identify the chunks!)
     let user_data: Vec<u64> = (0..n_chunks as u64).collect();
 
     let mut uring = IoUring::new(n_worker_threads);
 
+    // Set up progress bar:
+    let n_files = filenames.len() as u64;
+    let n_total_chunks = n_files * n_chunks;
+    println!("Performing read benchmark for {n_files} files x {n_chunks} chunks per file = {n_total_chunks} total chunks:");
+    let pb = ProgressBar::new(n_total_chunks);
+    pb.set_style(get_progress_bar_style());
+
+    let started = Instant::now();
+
     // Submit all the get_ranges requests:
     for filename in filenames {
-        uring.get_ranges(&filename, chunks.clone(), user_data.clone());
+        uring
+            .get_ranges(&filename, chunks.clone(), user_data.clone())
+            .unwrap();
     }
 
-    // TODO: Collect results
+    // Collect results
+    for _ in 0..n_total_chunks {
+        match uring
+            .completion()
+            .recv_timeout(Duration::from_millis(10000))
+        {
+            Ok(_) => pb.inc(1),
+            Err(e) => panic!("Error collecting chunk! {e:?}"),
+        }
+    }
+    pb.finish();
+
+    // Calculate bandwidth
+    let total_secs = started.elapsed().as_secs_f64();
+    let total_bytes = (filesize * n_files) as f64;
+    let bytes_per_sec = total_bytes / total_secs;
+    println!("Total runtime: {} secs", total_secs);
+    println!("Total mebibytes: {} MiB", total_bytes / MEBIBYTE);
+    println!(
+        "Total bandwidth = {} mebibytes per sec",
+        bytes_per_sec / MEBIBYTE
+    );
+}
+
+fn clear_page_cache(directory: &Path) {
+    println!("Clearing page cache for {directory:?}...");
+    let _ = Command::new("vmtouch")
+        .arg("-e")
+        .arg(directory)
+        .output()
+        .expect("vmtouch failed to start");
 }
