@@ -32,17 +32,12 @@ struct Args {
 }
 
 fn main() -> std::io::Result<()> {
-    let mut args = Args::parse();
+    let args = Args::parse();
 
-    check_directory_or_use_temp_dir(&mut args.directory);
+    let directory = check_directory_or_use_temp_dir(&args.directory);
 
     let filenames: Vec<PathBuf> = (0..args.nrfiles)
-        .map(|i| {
-            args.directory
-                .as_ref()
-                .unwrap()
-                .join(format!("{FILENAME_PREFIX}{i}"))
-        })
+        .map(|i| directory.join(format!("{FILENAME_PREFIX}{i}")))
         .collect();
 
     create_files_if_necessary(&filenames, args.filesize)?;
@@ -52,10 +47,12 @@ fn main() -> std::io::Result<()> {
     Ok(())
 }
 
-fn check_directory_or_use_temp_dir(directory: &mut Option<PathBuf>) {
+fn check_directory_or_use_temp_dir(directory: &Option<PathBuf>) -> PathBuf {
     // Check directory exists. Or use temp_dir.
     if let Some(directory) = directory.as_deref() {
-        if !directory.is_dir() {
+        if directory.is_dir() {
+            directory.to_path_buf()
+        } else {
             let mut cmd = Args::command();
             cmd.error(
                 ErrorKind::ValueValidation,
@@ -64,7 +61,7 @@ fn check_directory_or_use_temp_dir(directory: &mut Option<PathBuf>) {
             .exit();
         }
     } else {
-        *directory = Some(temp_dir());
+        temp_dir()
     }
 }
 
