@@ -2,11 +2,14 @@ use std::{
     env::temp_dir,
     fs::File,
     io::Write,
+    ops::Range,
     path::{Path, PathBuf},
 };
 
 use clap::{error::ErrorKind, CommandFactory, Parser};
 use indicatif::{ProgressBar, ProgressStyle};
+use lsio_io::{Completion, Reader};
+use lsio_uring::IoUring;
 
 const FILENAME_PREFIX: &str = "lsio_bench_";
 
@@ -29,6 +32,10 @@ struct Args {
     /// The chunk size in bytes. By default, the blocksize will be the same as the filesize.
     #[arg(short, long, value_parser = clap::value_parser!(u64).range(1..))]
     blocksize: Option<u64>,
+
+    /// The number of worker threads that lsio_uring uses:
+    #[arg(short, long, default_value_t = 4, value_parser = clap::value_parser!(usize).range(1..1024))]
+    nr_worker_threads: usize,
 }
 
 fn main() -> std::io::Result<()> {
@@ -42,7 +49,12 @@ fn main() -> std::io::Result<()> {
 
     create_files_if_necessary(&filenames, args.filesize)?;
 
-    // read_files(&filenames, args.filesize, args.blocksize);
+    read_files(
+        &filenames,
+        args.filesize,
+        args.blocksize,
+        args.nr_worker_threads,
+    );
 
     Ok(())
 }
@@ -104,11 +116,37 @@ fn get_progress_bar_style() -> ProgressStyle {
         .progress_chars("##-")
 }
 
-fn read_files(filenames: &[PathBuf], filesize: u64, blocksize: Option<u64>) {
+fn read_files(
+    filenames: &[PathBuf],
+    filesize: u64,
+    blocksize: Option<u64>,
+    n_worker_threads: usize,
+) {
     let blocksize = if let Some(bs) = blocksize {
         bs
     } else {
         filesize
     };
-    todo!();
+
+    // Calculate chunks
+    let n_chunks = filesize / blocksize;
+    let chunks: Vec<Range<isize>> = (0..n_chunks)
+        .map(|chunk_i| {
+            let chunk_start = (chunk_i * blocksize) as isize;
+            let chunk_end = chunk_start + (blocksize as isize);
+            chunk_start..chunk_end
+        })
+        .collect();
+
+    // Define user_data (so we can identify the chunks!)
+    let user_data: Vec<u64> = (0..n_chunks as u64).collect();
+
+    let mut uring = IoUring::new(n_worker_threads);
+
+    // Submit all the get_ranges requests:
+    for filename in filenames {
+        uring.get_ranges(&filename, chunks.clone(), user_data.clone());
+    }
+
+    // TODO: Collect results
 }

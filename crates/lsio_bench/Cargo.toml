@@ -13,3 +13,5 @@ authors.workspace = true
 [dependencies]
 clap = { version = "4.5.4", features = ["derive"] }
 indicatif = "0.17.8"
+lsio_uring = { path = "../lsio_uring" }
+lsio_io = { path = "../lsio_io" }
