@@ -3,9 +3,14 @@ use std::{
     fs::File,
     io::Write,
     path::{Path, PathBuf},
+    thread,
+    time::Duration,
 };
 
 use clap::{error::ErrorKind, CommandFactory, Parser};
+use indicatif::{ProgressBar, ProgressStyle};
+
+const FILENAME_PREFIX: &str = "lsio_bench_";
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -33,11 +38,18 @@ fn main() -> std::io::Result<()> {
 
     check_directory_or_use_temp_dir(&mut args.directory);
 
-    create_files(
-        args.directory.as_ref().unwrap(),
-        args.nrfiles,
-        args.filesize,
-    )?;
+    let filenames: Vec<PathBuf> = (0..args.nrfiles)
+        .map(|i| {
+            args.directory
+                .as_ref()
+                .unwrap()
+                .join(format!("{FILENAME_PREFIX}{i}"))
+        })
+        .collect();
+
+    create_files_if_necessary(&filenames, args.filesize)?;
+
+    // read_files(&filenames, args.filesize, args.blocksize);
 
     Ok(())
 }
@@ -58,11 +70,27 @@ fn check_directory_or_use_temp_dir(directory: &mut Option<PathBuf>) {
     }
 }
 
-fn create_files(directory: &Path, nrfiles: u32, filesize: u64) -> std::io::Result<()> {
+fn create_files_if_necessary(filenames: &[PathBuf], filesize: u64) -> std::io::Result<()> {
+    // Create progress bar:
+    println!(
+        "Creating {} files (if necessary), each of filesize {filesize} bytes...",
+        filenames.len()
+    );
+    let pb = ProgressBar::new(filenames.len() as _);
+    let sty = ProgressStyle::with_template(
+        "[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}",
+    )
+    .unwrap()
+    .progress_chars("##-");
+    pb.set_style(sty);
+
+    // Loop through files:
     let mut file_contents: Option<Vec<u8>> = None;
-    for file_i in 0..nrfiles {
-        let filename = directory.join(format!("lsio_bench_{file_i}"));
-        if !(filename.exists() && File::open(&filename)?.metadata()?.len() == filesize) {
+    for filename in filenames {
+        if filename.exists() && get_filesize(&filename)? == filesize {
+            pb.set_message(format!("exists: {filename:?}"));
+        } else {
+            pb.set_message(format!("creating: {filename:?}"));
             if file_contents.is_none() {
                 file_contents = Some((0..filesize).map(|i| i as u8).collect());
             }
@@ -70,6 +98,21 @@ fn create_files(directory: &Path, nrfiles: u32, filesize: u64) -> std::io::Resul
             file.write_all(file_contents.as_ref().unwrap())?;
             file.flush()?;
         }
+        pb.inc(1);
     }
+    pb.finish_with_message("done");
     Ok(())
+}
+
+fn get_filesize(filename: &Path) -> std::io::Result<u64> {
+    Ok(File::open(&filename)?.metadata()?.len())
+}
+
+fn read_files(filenames: &[PathBuf], filesize: u64, blocksize: Option<u64>) {
+    let blocksize = if let Some(bs) = blocksize {
+        bs
+    } else {
+        filesize
+    };
+    todo!();
 }
