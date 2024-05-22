@@ -3,8 +3,6 @@ use std::{
     fs::File,
     io::Write,
     path::{Path, PathBuf},
-    thread,
-    time::Duration,
 };
 
 use clap::{error::ErrorKind, CommandFactory, Parser};
@@ -77,12 +75,7 @@ fn create_files_if_necessary(filenames: &[PathBuf], filesize: u64) -> std::io::R
         filenames.len()
     );
     let pb = ProgressBar::new(filenames.len() as _);
-    let sty = ProgressStyle::with_template(
-        "[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}",
-    )
-    .unwrap()
-    .progress_chars("##-");
-    pb.set_style(sty);
+    pb.set_style(get_progress_bar_style());
 
     // Loop through files:
     let mut file_contents: Option<Vec<u8>> = None;
@@ -106,6 +99,12 @@ fn create_files_if_necessary(filenames: &[PathBuf], filesize: u64) -> std::io::R
 
 fn get_filesize(filename: &Path) -> std::io::Result<u64> {
     Ok(File::open(&filename)?.metadata()?.len())
+}
+
+fn get_progress_bar_style() -> ProgressStyle {
+    ProgressStyle::with_template("[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}")
+        .unwrap()
+        .progress_chars("##-")
 }
 
 fn read_files(filenames: &[PathBuf], filesize: u64, blocksize: Option<u64>) {
