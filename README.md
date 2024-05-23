@@ -58,23 +58,24 @@ The list below is in (rough) chronological order. This roadmap is also represent
 - [ ] Maybe experiment with using io_uring for reading from cloud storage buckets
 - [ ] Re-use IO buffers
 - [ ] Register buffers with `io_uring`
+- [ ] Python API for LSIO's IO layer (and LSIO's compute layer?)
 
 ### Iterate on the file formats layer: Add GRIB support
-- [ ] Implement simple GRIB reader?? (Maybe do this later. This may take a while!)
-- [ ] Convert GRIB to Zarr?
-- [ ] Load GRIB into a PyTorch training pipeline?
+- [ ] Implement simple GRIB reader
+- [ ] Convert GRIB to Zarr
+- [ ] Load GRIB into a PyTorch training pipeline
 
-### Grow the team??
+### Grow the team? (Only if the preceding work has shown promise)
 - [ ] Try to raise grant funding?
 - [ ] Hire???
 
-### Future work
+### Future work (in no particular order)
 - [ ] Allow xarray to "push down" all its operations to LSIO
 - [ ] xarray-like data structures implemented in Rust? ([notes](https://docs.google.com/document/d/1_T0ay9wXozgqq334E2w1SROdlAM7y6JSgL1rmXJnIO0/edit#heading=h.7ctns22vpab5))
+- [ ] Fast indexing operations for xarray ([notes](https://docs.google.com/document/d/1_T0ay9wXozgqq334E2w1SROdlAM7y6JSgL1rmXJnIO0/edit#heading=h.kjphntldyaaw))
 - [ ] Support for kerchunk / [VirtualiZarr](https://discourse.pangeo.io/t/pangeo-showcase-virtualizarr-create-virtual-zarr-stores-using-xarray-syntax/4127) / [Zarr Manifest Storage Transformer](https://github.com/zarr-developers/zarr-specs/issues/287)
 - [ ] Compute using SIMD / NPUs / GPUs, perhaps using [Bend](https://github.com/JackKelly/light-speed-io/issues/132) / [Mojo](https://github.com/JackKelly/light-speed-io/discussions/12)
 - [ ] Support many compression algorithms
-- [ ] Fast indexing operations for xarray ([notes](https://docs.google.com/document/d/1_T0ay9wXozgqq334E2w1SROdlAM7y6JSgL1rmXJnIO0/edit#heading=h.kjphntldyaaw))
 - [ ] Automatically tune performance
 - [ ] "Smart" scheduling of compute and IO (see [notes](https://docs.google.com/document/d/1_T0ay9wXozgqq334E2w1SROdlAM7y6JSgL1rmXJnIO0/edit#heading=h.bqhd2mq9o42t))
 - [ ] Tile-based algorithms for numpy
@@ -85,6 +86,7 @@ The list below is in (rough) chronological order. This roadmap is also represent
 - [ ] Converting between formats (e.g. convert EUMETSAT `.nat` files to 10-bit per channel bit-packed Zarr). If there's no computation to be done on the data during conversion then do all the copying with `io_uring`: open source file -> read chunks from source -> write to destination -> etc.
 - [ ] Write a wiki (or a book) on high-performance multi-dimensional data IO and compute
 - [ ] Integrate with Dask to run tasks across many machines
+- [ ] Use LSIO as the storage and compute backend for other software packages
 
 # Project structure
 
