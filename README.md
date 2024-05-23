@@ -13,47 +13,59 @@ See [`planned_design.md`](planned_design.md) for more info.
 
 (This will almost certainly change!)
 
-The list below is in (rough) chronological order. This roadmap is also represnted in the [GitHub milestones for this project, when sorted alphabetically](https://github.com/JackKelly/light-speed-io/milestones?direction=asc&sort=title&state=open).
+The list below is in (rough) chronological order. This roadmap is also represented in the [GitHub milestones for this project, when sorted alphabetically](https://github.com/JackKelly/light-speed-io/milestones?direction=asc&sort=title&state=open).
 
-### MVP IO backends
+### MVP IO layer
 - [x] Implement minimal `lsio_uring` IO backend (for loading data from a local SSD)
-- [-] [Benchmark `lsio_uring` backend](https://github.com/JackKelly/light-speed-io/milestone/3)
-- [ ] [Implement minimal `object_store_bridge` IO backend](https://github.com/JackKelly/light-speed-io/milestone/4)
-- [ ] [Compare benchmarks for `lsio_uring` vs `object_store_bridge`](https://github.com/JackKelly/light-speed-io/milestone/7)
+- [ ] [Benchmark `lsio_uring` backend](https://github.com/JackKelly/light-speed-io/milestone/3)
+- [ ] [Implement minimal `lsio_object_store_bridge` IO backend](https://github.com/JackKelly/light-speed-io/milestone/4)
+- [ ] [Compare benchmarks for `lsio_uring` vs `lsio_object_store_bridge`](https://github.com/JackKelly/light-speed-io/milestone/7)
 - [ ] [Improve usability and robustness](https://github.com/JackKelly/light-speed-io/milestone/8)
 - [ ] [Group operations](https://github.com/JackKelly/light-speed-io/milestone/9)
 
-### MVP Compute:
-- [ ] Build a general-purpose work-steeling framework for applying arbitrary functions to chunks of data in parallel
+### MVP Compute layer
+- [ ] Build a general-purpose work-steeling framework for applying arbitrary functions to chunks of data in parallel. And respect groups.
 - [ ] Wrap a few decompression algorithms
-- [ ] MVP Zarr library (just for _reading_ data), with Python API
+
+### MVP File format layer: Enable reading from Zarr
+- [ ] MVP Zarr library (just for _reading_ data)
+- [ ] Python API for `lsio_zarr`
 - [ ] Benchmark `lsio_zarr` vs `zarr-python v3` (from Python)
 
-### Iterate on the IO backends:
+### Iterate on the IO layer:
 - [ ] Optimise (merge and split) IO operations
 
-### Iterate on compute
-- [ ] Investigate how to integrate LSIO with xarray, such that chunkwise computation can be "pushed down" to LSIO
+### Iterate on the compute layer
+- [ ] Investigate how xarray can "push down" chunkwise computation to LSIO
 
-### Iterate on file format libraries
+### MVP End-user applications!
+- [ ] Compute simple stats of a large dataset (to see if we hit our target of processing 1 TB per 5 mins on a laptop!)
+- [ ] Load Zarr into a PyTorch training pipeline
+- [ ] Implement merging multiple datasets on-the-fly (e.g. NWP and satellite).
+
+### First public release!
+- [ ] Docs; GitHub actions for Python releases; more rigorous testing; etc.
+- [ ] Release!
+- [ ] Enable Zarr-Python to use LSIO as a storage and codec pipeline?
+
+### Implement writing
 - [ ] Implement writing using `lsio_uring`
 - [ ] Implement writing using `lsio_object_store_bridge`
 - [ ] Implement writing in `lsio_zarr`
-- [ ] Implement simple GRIB reader?? (Maybe do this later. This may take a while!)
-
-### MVP End-user applications!
-- [ ] Convert GRIB to Zarr?
-- [ ] Compute simple stats of a large dataset (to see if we hit our target of processing 1 TB per 5 mins on a laptop!)
-- [ ] Load Zarr into a PyTorch training pipeline
-- [ ] Load GRIB into a PyTorch training pipeline?
-- [ ] Implement merging multiple datasets on-the-fly (e.g. NWP and satellite).
-- [ ] Enable Zarr-Python to use LSIO as a storage and codec pipeline?
 
 ### Iterate on IO:
 - [ ] Speed up reading from cloud storage buckets (using object_store)
 - [ ] Maybe experiment with using io_uring for reading from cloud storage buckets
 - [ ] Re-use IO buffers
 - [ ] Register buffers with `io_uring`
+
+### Iterate on the file formats layer: Add GRIB support
+- [ ] Implement simple GRIB reader?? (Maybe do this later. This may take a while!)
+- [ ] Convert GRIB to Zarr?
+- [ ] Load GRIB into a PyTorch training pipeline?
+
+### Grow the team?!
+
 
 # Project structure
 
