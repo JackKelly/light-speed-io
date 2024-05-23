@@ -70,15 +70,21 @@ The list below is in (rough) chronological order. This roadmap is also represent
 
 ### Future work
 - [ ] Allow xarray to "push down" all its operations to LSIO
+- [ ] xarray-like data structures implemented in Rust? ([notes](https://docs.google.com/document/d/1_T0ay9wXozgqq334E2w1SROdlAM7y6JSgL1rmXJnIO0/edit#heading=h.7ctns22vpab5))
 - [ ] Support for kerchunk / [VirtualiZarr](https://discourse.pangeo.io/t/pangeo-showcase-virtualizarr-create-virtual-zarr-stores-using-xarray-syntax/4127) / [Zarr Manifest Storage Transformer](https://github.com/zarr-developers/zarr-specs/issues/287)
-- [ ] Compute using Bend / Mojo / NPUs / GPUs
+- [ ] Compute using SIMD / NPUs / GPUs, perhaps using [Bend](https://github.com/JackKelly/light-speed-io/issues/132) / [Mojo](https://github.com/JackKelly/light-speed-io/discussions/12)
 - [ ] Support many compression algorithms
+- [ ] Fast indexing operations for xarray ([notes](https://docs.google.com/document/d/1_T0ay9wXozgqq334E2w1SROdlAM7y6JSgL1rmXJnIO0/edit#heading=h.kjphntldyaaw))
 - [ ] Automatically tune performance
-- [ ] "Smart" scheduling of compute and IO
+- [ ] "Smart" scheduling of compute and IO (see [notes](https://docs.google.com/document/d/1_T0ay9wXozgqq334E2w1SROdlAM7y6JSgL1rmXJnIO0/edit#heading=h.bqhd2mq9o42t))
 - [ ] Tile-based algorithms for numpy
 - [ ] EUMETSAT Native file format
 - [ ] NetCDF
 - [ ] Warping / spatial reprojection
+- [ ] Rechunking Zarr
+- [ ] Converting between formats (e.g. convert EUMETSAT `.nat` files to 10-bit per channel bit-packed Zarr). If there's no computation to be done on the data during conversion then do all the copying with `io_uring`: open source file -> read chunks from source -> write to destination -> etc.
+- [ ] Write a wiki (or a book) on high-performance multi-dimensional data IO and compute
+- [ ] Integrate with Dask to run tasks across many machines
 
 # Project structure
 
