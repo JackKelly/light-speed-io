@@ -13,35 +13,80 @@ See [`planned_design.md`](planned_design.md) for more info.
 
 (This will almost certainly change!)
 
-The list below is in (rough) chronological order. This roadmap is also represnted in the [GitHub milestones for this project, when sorted alphabetically](https://github.com/JackKelly/light-speed-io/milestones?direction=asc&sort=title&state=open).
+The list below is in (rough) chronological order. This roadmap is also represented in the [GitHub milestones for this project, when sorted alphabetically](https://github.com/JackKelly/light-speed-io/milestones?direction=asc&sort=title&state=open).
 
-### MVP IO backends
+### MVP IO layer
 - [x] Implement minimal `lsio_uring` IO backend (for loading data from a local SSD)
 - [ ] [Benchmark `lsio_uring` backend](https://github.com/JackKelly/light-speed-io/milestone/3)
-- [ ] [Implement minimal `object_store_bridge` IO backend](https://github.com/JackKelly/light-speed-io/milestone/4)
-- [ ] [Compare benchmarks for `lsio_uring` vs `object_store_bridge`](https://github.com/JackKelly/light-speed-io/milestone/7)
+- [ ] [Implement minimal `lsio_object_store_bridge` IO backend](https://github.com/JackKelly/light-speed-io/milestone/4)
+- [ ] [Compare benchmarks for `lsio_uring` vs `lsio_object_store_bridge`](https://github.com/JackKelly/light-speed-io/milestone/7)
 - [ ] [Improve usability and robustness](https://github.com/JackKelly/light-speed-io/milestone/8)
 - [ ] [Group operations](https://github.com/JackKelly/light-speed-io/milestone/9)
 
-### MVP Compute:
-- [ ] Build a general-purpose work-steeling framework for applying arbitrary functions to chunks of data in parallel
+### MVP Compute layer
+- [ ] Build a general-purpose work-steeling framework for applying arbitrary functions to chunks of data in parallel. And respect groups.
 - [ ] Wrap a few decompression algorithms
-- [ ] MVP Zarr library (just for reading data), with Python API
-- [ ] Benchmark `lsio_zarr` vs `zarr-python v3`
 
-### Iterate on the IO backends:
+### MVP File format layer: Read from Zarr
+- [ ] MVP Zarr library (just for _reading_ data)
+- [ ] Python API for `lsio_zarr`
+- [ ] Benchmark `lsio_zarr` vs `zarr-python v3` (from Python)
+
+### Iterate on the IO layer:
 - [ ] Optimise (merge and split) IO operations
+
+### Iterate on the compute layer
+- [ ] Investigate how xarray can "push down" chunkwise computation to LSIO
+
+### MVP End-user applications!
+- [ ] Compute simple stats of a large dataset (to see if we hit our target of processing 1 TB per 5 mins on a laptop!)
+- [ ] Load Zarr into a PyTorch training pipeline
+- [ ] Implement merging multiple datasets on-the-fly (e.g. NWP and satellite).
+
+### First release!
+- [ ] Docs; GitHub actions for Python releases; more rigorous automated testing; etc.
+- [ ] Release!
+- [ ] Enable Zarr-Python to use LSIO as a storage and codec pipeline?
+
+### Implement writing
 - [ ] Implement writing using `lsio_uring`
 - [ ] Implement writing using `lsio_object_store_bridge`
+- [ ] Implement writing in `lsio_zarr`
+
+### Iterate on IO:
+- [ ] Speed up reading from cloud storage buckets (using object_store)
+- [ ] Maybe experiment with using io_uring for reading from cloud storage buckets
 - [ ] Re-use IO buffers
 - [ ] Register buffers with `io_uring`
+- [ ] Python API for LSIO's IO layer (and LSIO's compute layer?)
 
-### Iterate on compute
-- [ ] Investigate how to integrate LSIO with xarray, such that chunkwise computation can be "pushed down" to LSIO
-
-### Iterate on file format libraries
-- [ ] Implement writing in `lsio_zarr`
+### Iterate on the file formats layer: Add GRIB support
 - [ ] Implement simple GRIB reader
+- [ ] Convert GRIB to Zarr
+- [ ] Load GRIB into a PyTorch training pipeline
+
+### Grow the team? (Only if the preceding work has shown promise)
+- [ ] Try to raise grant funding?
+- [ ] Hire???
+
+### Future work (in no particular order)
+- [ ] Allow xarray to "push down" all its operations to LSIO
+- [ ] xarray-like data structures implemented in Rust? ([notes](https://docs.google.com/document/d/1_T0ay9wXozgqq334E2w1SROdlAM7y6JSgL1rmXJnIO0/edit#heading=h.7ctns22vpab5))
+- [ ] Fast indexing operations for xarray ([notes](https://docs.google.com/document/d/1_T0ay9wXozgqq334E2w1SROdlAM7y6JSgL1rmXJnIO0/edit#heading=h.kjphntldyaaw))
+- [ ] Support for kerchunk / [VirtualiZarr](https://discourse.pangeo.io/t/pangeo-showcase-virtualizarr-create-virtual-zarr-stores-using-xarray-syntax/4127) / [Zarr Manifest Storage Transformer](https://github.com/zarr-developers/zarr-specs/issues/287)
+- [ ] Compute using SIMD / NPUs / GPUs, perhaps using [Bend](https://github.com/JackKelly/light-speed-io/issues/132) / [Mojo](https://github.com/JackKelly/light-speed-io/discussions/12)
+- [ ] Support many compression algorithms
+- [ ] Automatically tune performance
+- [ ] "Smart" scheduling of compute and IO (see [notes](https://docs.google.com/document/d/1_T0ay9wXozgqq334E2w1SROdlAM7y6JSgL1rmXJnIO0/edit#heading=h.bqhd2mq9o42t))
+- [ ] Tile-based algorithms for numpy
+- [ ] EUMETSAT Native file format
+- [ ] NetCDF
+- [ ] Warping / spatial reprojection
+- [ ] Rechunking Zarr
+- [ ] Converting between formats (e.g. convert EUMETSAT `.nat` files to 10-bit per channel bit-packed Zarr). If there's no computation to be done on the data during conversion then do all the copying with `io_uring`: open source file -> read chunks from source -> write to destination -> etc.
+- [ ] Write a wiki (or a book) on high-performance multi-dimensional data IO and compute
+- [ ] Integrate with Dask to run tasks across many machines
+- [ ] Use LSIO as the storage and compute backend for other software packages
 
 # Project structure
 
