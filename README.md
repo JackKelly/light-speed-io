@@ -27,7 +27,7 @@ The list below is in (rough) chronological order. This roadmap is also represent
 - [ ] Build a general-purpose work-steeling framework for applying arbitrary functions to chunks of data in parallel. And respect groups.
 - [ ] Wrap a few decompression algorithms
 
-### MVP File format layer: Enable reading from Zarr
+### MVP File format layer: Read from Zarr
 - [ ] MVP Zarr library (just for _reading_ data)
 - [ ] Python API for `lsio_zarr`
 - [ ] Benchmark `lsio_zarr` vs `zarr-python v3` (from Python)
@@ -43,8 +43,8 @@ The list below is in (rough) chronological order. This roadmap is also represent
 - [ ] Load Zarr into a PyTorch training pipeline
 - [ ] Implement merging multiple datasets on-the-fly (e.g. NWP and satellite).
 
-### First public release!
-- [ ] Docs; GitHub actions for Python releases; more rigorous testing; etc.
+### First release!
+- [ ] Docs; GitHub actions for Python releases; more rigorous automated testing; etc.
 - [ ] Release!
 - [ ] Enable Zarr-Python to use LSIO as a storage and codec pipeline?
 
@@ -64,8 +64,21 @@ The list below is in (rough) chronological order. This roadmap is also represent
 - [ ] Convert GRIB to Zarr?
 - [ ] Load GRIB into a PyTorch training pipeline?
 
-### Grow the team?!
+### Grow the team??
+- [ ] Try to raise grant funding?
+- [ ] Hire???
 
+### Future work
+- [ ] Allow xarray to "push down" all its operations to LSIO
+- [ ] Support for kerchunk / [VirtualiZarr](https://discourse.pangeo.io/t/pangeo-showcase-virtualizarr-create-virtual-zarr-stores-using-xarray-syntax/4127) / [Zarr Manifest Storage Transformer](https://github.com/zarr-developers/zarr-specs/issues/287)
+- [ ] Compute using Bend / Mojo / NPUs / GPUs
+- [ ] Support many compression algorithms
+- [ ] Automatically tune performance
+- [ ] "Smart" scheduling of compute and IO
+- [ ] Tile-based algorithms for numpy
+- [ ] EUMETSAT Native file format
+- [ ] NetCDF
+- [ ] Warping / spatial reprojection
 
 # Project structure
 
