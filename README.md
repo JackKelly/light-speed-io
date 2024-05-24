@@ -15,8 +15,29 @@ See [`planned_design.md`](planned_design.md) for more info.
 
 The list below is in (rough) chronological order. This roadmap is also represented in the [GitHub milestones for this project, when sorted alphabetically](https://github.com/JackKelly/light-speed-io/milestones?direction=asc&sort=title&state=open).
 
+### Throw-away prototype
+- [x] Initial prototype where a single crate does the IO and compute
+- [x] `io_uring` prototype
+- [x] `io_uring` prototype using `Rayon` to loop through io_uring completion queue
+- [x] `io_uring` async/await implementation with `object_store`-like API
+- [x] Try mixing `Tokio` with `Rayon`
+- [x] Don't initialise buffers
+- [x] Use aligned buffers and `O_DIRECT`
+- [x] Benchmark against `object_store` using `criterion`
+- [x] Chain open, read, close ops in `io_uring`
+- [x] Build new workstation (with PCIe5 SSD)
+- [x] Try using trait objects vs enum  vs `Box::into_raw` for tracking in-flight operations
+- [x] Try using fixed (registered) file descriptors
+- [x] Try using `Rayon` for the IO threadpool
+- [x] Investigate Rust's `Stream`.
+
+### Fresh start. Laying the foundations. New crates:
+- [x] `lsio_aligned_bytes`: Shareable buffer which can be aligned to arbitrary boundaries at runtime
+- [x] `lsio_threadpool`: Work-stealing threadpool (based on `crossbeam-deque`)
+- [x] `lsio_io`: Traits for all LSIO IO backends
+
 ### MVP IO layer
-- [x] Implement minimal `lsio_uring` IO backend (for loading data from a local SSD)
+- [x] Implement minimal `lsio_uring` IO backend (for loading data from a local SSD) with use-defined number of worker threads
 - [ ] [Benchmark `lsio_uring` backend](https://github.com/JackKelly/light-speed-io/milestone/3)
 - [ ] [Implement minimal `lsio_object_store_bridge` IO backend](https://github.com/JackKelly/light-speed-io/milestone/4)
 - [ ] [Compare benchmarks for `lsio_uring` vs `lsio_object_store_bridge`](https://github.com/JackKelly/light-speed-io/milestone/7)
