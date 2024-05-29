@@ -7,7 +7,7 @@ Under the hood, `light-speed-io` uses [`io_uring`](https://kernel.dk/io_uring.pd
 
 My first use-case for light-speed-io is to help to speed up reading [Zarr](https://zarr.dev/). After that, I'm interested in helping to create fast readers for "native" geospatial file formats like GRIB2 and EUMETSAT native files. And, even further than that, I'm interested in efficient & fast _computation_ on [out-of-core](https://en.wikipedia.org/w/index.php?title=Out-of-core), chunked, labelled, multi-dimensional data.
 
-See [`planned_design.md`](planned_design.md) for more info.
+See [`planned_design.md`](planned_design.md) for more info on the planned design. And please see [this blogpost](https://jack-kelly.com/blog/2023-07-28-speeding-up-zarr) for my motivations for wanting to help speed up Zarr.
 
 # Roadmap
 
