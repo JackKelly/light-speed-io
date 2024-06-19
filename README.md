@@ -53,10 +53,10 @@ The list below is in (rough) chronological order. This roadmap is also represent
 - [ ] Python API for `lsio_zarr`
 - [ ] Benchmark `lsio_zarr` vs `zarr-python v3` (from Python)
 
-### Iterate on the IO layer:
+### Improve the IO layer:
 - [ ] Optimise (merge and split) IO operations
 
-### Iterate on the compute layer
+### Improve the compute layer
 - [ ] Investigate how xarray can "push down" chunkwise computation to LSIO
 
 ### MVP End-user applications!
@@ -74,14 +74,14 @@ The list below is in (rough) chronological order. This roadmap is also represent
 - [ ] Implement writing using `lsio_object_store_bridge`
 - [ ] Implement writing in `lsio_zarr`
 
-### Iterate on IO:
+### Improve IO:
 - [ ] Speed up reading from cloud storage buckets (using object_store)
 - [ ] Maybe experiment with using io_uring for reading from cloud storage buckets
 - [ ] Re-use IO buffers
 - [ ] Register buffers with `io_uring`
 - [ ] Python API for LSIO's IO layer (and LSIO's compute layer?)
 
-### Iterate on the file formats layer: Add GRIB support
+### Improve the file formats layer: Add GRIB support
 - [ ] Implement simple GRIB reader
 - [ ] Convert GRIB to Zarr
 - [ ] Load GRIB into a PyTorch training pipeline
