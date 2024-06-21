@@ -4,7 +4,11 @@
 
 The ultimate aim is to load and process multi-dimensional arrays as quickly and as efficiently as modern hardware will allow!
 
-Why? Initially, to make life as easy as possible for folks who want to train ML models on large multi-dimensional datasets (like weather predictions). Specifically, enable folks to train directly from source datasets (instead of having to prepare batches ahead-of-time), and to make it as easy as possible to combine different datasets (e.g. NWPs and satellite datasets, see [issue #142](https://github.com/JackKelly/light-speed-io/issues/142)), and to use a single on-disk datasets for as many ML experiments as possible (see [issue #141](https://github.com/JackKelly/light-speed-io/issues/141)).
+Why? Initially, to make life as easy as possible for folks who want to train ML models on large multi-dimensional datasets (like weather predictions). Specifically:
+
+- Enable folks to train directly from source datasets (instead of having to prepare batches ahead-of-time) at multiple GB/sec,
+- make it as easy as possible to combine different datasets on-the-fly (e.g. NWPs and satellite datasets, see [issue #142](https://github.com/JackKelly/light-speed-io/issues/142)),
+- use single on-disk datasets for as many ML experiments as possible (see [issue #141](https://github.com/JackKelly/light-speed-io/issues/141)). Stop people having to manually duplicate data (with different chunking schemes) for each ML model.
 
 LSIO will provide a suite of tools for loading and processing large, labelled, multi-dimensional datasets. Where "large" means datasets that are too large to fit into RAM, and where "labelled" means datasets where each array dimension can be associated with coordinates. For example, a dataset of satellite imagery might have 4 dimensions: x, y, time, and spectral channel. The x and y dimensions might be labelled with longitude and latitude coordinates, respectively.
 
