@@ -4,19 +4,23 @@
 
 The ultimate aim is to load and process multi-dimensional arrays as quickly and as efficiently as modern hardware will allow!
 
-LSIO will provide a suite of tools for loading and processing large, labelled, multi-dimensional datasets. By "large" I mean datasets that are too large to fit into RAM. By "labelled" I mean datasets where each array dimension can be associated with coordinates. For example, a dataset of satellite imagery might have 4 dimensions: x, y, time, and spectral channel. The x and y dimensions might be labelled with longitude and latitude coordinates, respectively.
+Why? Initially, to make life as easy as possible for folks who want to train ML models on large multi-dimensional datasets (like weather predictions). Specifically, enable folks to train directly from source datasets (instead of having to prepare batches ahead-of-time), and to make it as easy as possible to combine different datasets (e.g. NWPs and satellite datasets, see [issue #142](https://github.com/JackKelly/light-speed-io/issues/142)), and to use a single on-disk datasets for as many ML experiments as possible (see [issue #141](https://github.com/JackKelly/light-speed-io/issues/141)).
 
-The main focus will be on processing data on a single machine. Hopefully tools like Dask can be used to work with LSIO across multiple machines.
+LSIO will provide a suite of tools for loading and processing large, labelled, multi-dimensional datasets. Where "large" means datasets that are too large to fit into RAM, and where "labelled" means datasets where each array dimension can be associated with coordinates. For example, a dataset of satellite imagery might have 4 dimensions: x, y, time, and spectral channel. The x and y dimensions might be labelled with longitude and latitude coordinates, respectively.
+
+The main focus will be on processing data on a single machine. Hopefully tools like Dask could schedule LSIO across multiple machines.
 
 Please see [this blog post](https://jack-kelly.com/blog/2023-07-28-speeding-up-zarr) for more details of the background and motivations behind this project.
 
 This git repository contains multiple crates. Each crate implements "just one thing". Each crate will exist in one of five levels of abstraction. And there will be a Python API to each level of abstraction. See the "planned design" diagram below.
 
 ## Fitting into the ecosystem
-Today, there are many awesome software packages for working with large, labelled, multi-dimensional datasets (such as xarray, fsspec, dask, kerchunk, satpy, etc.). My aim is to help speed up this existing stack: Either by providing tools that existing Python packages can hook into, or by providing new tools which play nicely with the existing stack.
+Today, there are many awesome software packages for working with large, labelled, multi-dimensional datasets (such as xarray, fsspec, dask, kerchunk, satpy, etc.). LSIO aims to help speed up this existing stack: Either by providing tools that existing Python packages can hook into, or by providing new tools which play nicely with the existing stack, or by creating new tools with very similar Python APIs to existing Python APIs.
 
 ## Why bother to build `light-speed-io`? What gap does it fill?
 LSIO is all about computational speed _and_ efficiency! Today, using existing packages, you can achieve high throughput by spinning up a large cluster. But that's expensive, power-hungry, and tedious! The aim of LSIO is to enable high throughput and low latency on a single machine.
+
+To look at this from the users' perspective: one of the main aims is to enable users to far more easily train ML models on huge multi-dimensional datasets.
 
 ## How to be efficient and fast?
 By being [sympathetic](https://dzone.com/articles/mechanical-sympathy) to the hardware!
@@ -27,12 +31,13 @@ Minimise the number of:
 - round-trips to RAM,
 - system calls,
 - heap allocations,
+- network requests,
 - memory copies.
 
-Maximise:
-- the use of the CPU cache,
-- and exploit all the levels of parallelism available within a single machine.
-- the use of modern, efficient IO APIs like io_uring.
+Maximise the use of:
+- CPU caches,
+- all the levels of parallelism available within a single machine,
+- modern, efficient IO APIs like io_uring.
 
 ## Concrete goals
 Some example concrete goals include:
@@ -40,7 +45,7 @@ Some example concrete goals include:
 - Train a large machine learning model from two Zarr datasets (e.g. satellite imagery and numerical weather predictions) at a sustained bandwidth to the GPU of at least 1 gigabyte per second (from local SSDs or from a cloud storage bucket), whilst performing some light processing on the data on-the-fly. Crucially, each ML training example should be a random crop of the multi-dimensional dataset. (Random cropping is particularly slow on today's software stack.)
 
 ## Priorities
-My first area of focus is on high-speed IO for local SSDs on Linux, to speed up training ML models from sharded Zarr datasets. But I'm definitely also interested in helping speed up access to data stored in cloud object storage, and in helping to speed up general data analytics tasks on multi-dimensional data.
+The first area of focus is on high-speed IO for local SSDs on Linux, to speed up training ML models from sharded Zarr datasets. But we're definitely also interested in helping speed up access to data stored in cloud object storage (see [issue #10](https://github.com/JackKelly/light-speed-io/issues/10)), and in helping to speed up general data analytics tasks on multi-dimensional data.
 
 ## How long will this take?
 Implementing the complete design sketched out in this doc will take _years_!
