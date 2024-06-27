@@ -37,7 +37,7 @@ The list below is in (rough) chronological order. This roadmap is also represent
 - [x] `lsio_io`: Traits for all LSIO IO backends
 
 ### MVP IO layer
-- [x] Implement minimal `lsio_uring` IO backend (for loading data from a local SSD) with use-defined number of worker threads
+- [x] Implement minimal `lsio_uring` IO backend (for loading data from a local SSD) with user-defined number of worker threads
 - [ ] [Benchmark `lsio_uring` backend](https://github.com/JackKelly/light-speed-io/milestone/3)
 - [ ] [Implement minimal `lsio_object_store_bridge` IO backend](https://github.com/JackKelly/light-speed-io/milestone/4)
 - [ ] [Compare benchmarks for `lsio_uring` vs `lsio_object_store_bridge`](https://github.com/JackKelly/light-speed-io/milestone/7)
@@ -75,22 +75,24 @@ The list below is in (rough) chronological order. This roadmap is also represent
 - [ ] Implement writing in `lsio_zarr`
 
 ### Improve IO:
-- [ ] Speed up reading from cloud storage buckets (using object_store)
-- [ ] Maybe experiment with using io_uring for reading from cloud storage buckets
+- [ ] [Speed up reading from cloud storage buckets](https://github.com/JackKelly/light-speed-io/issues/10) (using object_store)
+- [ ] Maybe experiment with [using io_uring for reading from cloud storage buckets](https://github.com/JackKelly/light-speed-io/issues/10#issuecomment-2178689758)
 - [ ] Re-use IO buffers
 - [ ] Register buffers with `io_uring`
 - [ ] Python API for LSIO's IO layer (and LSIO's compute layer?)
 
-### Improve the file formats layer: Add GRIB support
-- [ ] Implement simple GRIB reader
-- [ ] Convert GRIB to Zarr
-- [ ] Load GRIB into a PyTorch training pipeline
+### Improve the file formats layer: Add GRIB support???
+(Although maybe this won't be necessary because [dynamical.org](https://dynamical.org) are converting datasets to Zarr)
+- [ ] Implement simple GRIB reader?
+- [ ] Convert GRIB to Zarr?
+- [ ] Load GRIB into a PyTorch training pipeline?
 
 ### Grow the team? (Only if the preceding work has shown promise)
 - [ ] Try to raise grant funding?
 - [ ] Hire???
 
-### Future work (in no particular order)
+### Future work (in no particular order, and no promise any of these will be done!)
+- [ ] [Multi-dataset abstraction layer](https://github.com/JackKelly/light-speed-io/issues/142) (under the hood, the same data would be chunked differently for different use-cases. But that complexity would be hidden from users. Users would just interact with a single "logical dataset".)
 - [ ] Allow xarray to "push down" all its operations to LSIO
 - [ ] xarray-like data structures implemented in Rust? ([notes](https://docs.google.com/document/d/1_T0ay9wXozgqq334E2w1SROdlAM7y6JSgL1rmXJnIO0/edit#heading=h.7ctns22vpab5))
 - [ ] Fast indexing operations for xarray ([notes](https://docs.google.com/document/d/1_T0ay9wXozgqq334E2w1SROdlAM7y6JSgL1rmXJnIO0/edit#heading=h.kjphntldyaaw))
