@@ -2,7 +2,7 @@
 
 > **Warning**
 > I've paused development on LSIO for now. I've shifted my focus to [`hypergrib`](https://github.com/JackKelly/hypergrib).
-> In it's current state, LSIO is a very minimal proof-of-concept that io_uring is faster than object_store when reading many small chunks of files from local PCIe 5 SSDs on Linux. There is no Python API yet.
+> In its current state, LSIO is a very minimal proof-of-concept that io_uring is faster than object_store when reading many small chunks of files from local PCIe 5 SSDs on Linux. There is no Python API yet.
 
 The ultimate ambition is to enable folks to efficiently load and process large, multi-dimensional datasets as fast as modern CPUs & I/O subsystems will allow.
 
