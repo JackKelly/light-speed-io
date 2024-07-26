@@ -1,7 +1,12 @@
 # Light Speed IO (LSIO)
+
+> **Warning**
+> I've paused development on LSIO for now. I've shifted my focus to [`hypergrib`](https://github.com/JackKelly/hypergrib).
+> In it's current state, LSIO is a very minimal proof-of-concept that io_uring is faster than object_store when reading many small chunks of files from local PCIe 5 SSDs on Linux. There is no Python API yet.
+
 The ultimate ambition is to enable folks to efficiently load and process large, multi-dimensional datasets as fast as modern CPUs & I/O subsystems will allow.
 
-For now, this repo is just a place for me to tinker with ideas. This code won't do anything vaguely useful for months!
+For now, this repo is just a place for me to tinker with ideas.
 
 Under the hood, `light-speed-io` uses [`io_uring`](https://kernel.dk/io_uring.pdf) on Linux for local files, and will use [`object_store`](https://lib.rs/crates/object_store) for all other data I/O.
 
