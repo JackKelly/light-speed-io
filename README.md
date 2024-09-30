@@ -1,6 +1,6 @@
 # Light Speed IO (LSIO)
 
-> **Warning**
+> [!WARNING]
 > I've paused development on LSIO for now. I've shifted my focus to [`hypergrib`](https://github.com/JackKelly/hypergrib).
 > In its current state, LSIO is a very minimal proof-of-concept that io_uring is faster than object_store when reading many small chunks of files from local PCIe 5 SSDs on Linux. There is no Python API yet.
 
