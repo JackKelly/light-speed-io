@@ -1,8 +1,8 @@
 # Light Speed IO (LSIO)
 
 > [!WARNING]
-> I've paused development on LSIO for now. I've shifted my focus to [`hypergrib`](https://github.com/JackKelly/hypergrib).
-> In its current state, LSIO is a very minimal proof-of-concept that io_uring is faster than object_store when reading many small chunks of files from local PCIe 5 SSDs on Linux. There is no Python API yet.
+> I've paused development on LSIO for now because it's clear that, for most users and most datasets in the world of weather forecasting, the data will increasingly be stored on cloud object storage, not local storage. And LSIO was mostly focused on speeding up local storage.
+> In its current state, LSIO is a very minimal proof-of-concept that `io_uring` is faster than `object_store` when reading many small chunks of files from local PCIe 5 SSDs on Linux. There is no Python API yet.
 
 The ultimate ambition is to enable folks to efficiently load and process large, multi-dimensional datasets as fast as modern CPUs & I/O subsystems will allow.
 
@@ -43,7 +43,7 @@ The list below is in (rough) chronological order. This roadmap is also represent
 
 ### MVP IO layer
 - [x] Implement minimal `lsio_uring` IO backend (for loading data from a local SSD) with user-defined number of worker threads
-- [ ] [Benchmark `lsio_uring` backend](https://github.com/JackKelly/light-speed-io/milestone/3)
+- [x] [Benchmark `lsio_uring` backend](https://github.com/JackKelly/light-speed-io/milestone/3)
 - [ ] [Implement minimal `lsio_object_store_bridge` IO backend](https://github.com/JackKelly/light-speed-io/milestone/4)
 - [ ] [Compare benchmarks for `lsio_uring` vs `lsio_object_store_bridge`](https://github.com/JackKelly/light-speed-io/milestone/7)
 - [ ] [Improve usability and robustness](https://github.com/JackKelly/light-speed-io/milestone/8)
