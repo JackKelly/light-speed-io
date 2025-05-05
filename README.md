@@ -14,6 +14,22 @@ My first use-case for light-speed-io is to help to speed up reading [Zarr](https
 
 See [`planned_design.md`](planned_design.md) for more info on the planned design. And please see [this blogpost](https://jack-kelly.com/blog/2023-07-28-speeding-up-zarr) for my motivations for wanting to help speed up Zarr.
 
+# Benchmarks
+
+Hardware:
+- Epyc 9124 (16 physical cores, 64 MB L3, 3 GHz base)
+- PCIe 5 SSD for benchmarking (1 TB Crucial T700 with heatsink)
+- 64 GB RAM (4800 MT/s)
+
+Task:
+- Read data from 500 files, each file is 41,214,400 bytes, using a block size of 262,144 bytes.
+
+Results:
+- `object_store`: 6.045 GiB/s
+- `LSIO` (using 8 worker threads): 11.2 GiB/s
+
+See [this issue](https://github.com/JackKelly/light-speed-io/issues/50#issuecomment-1992230414) for more details of the benchmarking.
+
 # Roadmap
 
 (This will almost certainly change!)
