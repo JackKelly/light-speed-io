@@ -17,9 +17,9 @@ See [`planned_design.md`](planned_design.md) for more info on the planned design
 # Benchmarks
 
 Hardware:
-- Epyc 9124 (16 physical cores, 64 MB L3, 3 GHz base)
+- CPU: AMD [Epyc 9124](https://en.wikichip.org/wiki/amd/epyc/9124) (16 physical cores, 64 MB L3, 3 GHz base, Zen 4)
 - PCIe 5 SSD for benchmarking (1 TB Crucial T700 with heatsink)
-- 64 GB RAM (4800 MT/s)
+- 64 GB RAM (4 sticks of Kingston 16 GB DDR5 Pro RDIMM 4800 MT/s)
 
 Task:
 - Read data from 500 files, each file is 41,214,400 bytes, using a block size of 262,144 bytes.
